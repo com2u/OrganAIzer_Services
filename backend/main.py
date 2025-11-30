@@ -16,7 +16,7 @@ from core.error_handling import (
     validation_error_handler,
     generic_error_handler
 )
-from api import tts
+from api import tts, stt, image_gen
 
 # Set up logging
 setup_logging()
@@ -50,6 +50,8 @@ app.add_exception_handler(Exception, generic_error_handler)
 
 # Include API routers
 app.include_router(tts.router, prefix="/api")
+app.include_router(stt.router, prefix="/api")
+app.include_router(image_gen.router, prefix="/api")
 
 
 @app.on_event("startup")
@@ -63,6 +65,15 @@ async def startup_event():
     # Ensure required directories exist
     config.ensure_directories()
     logger.info(f"TTS temporary directory: {config.TTS_TEMP_DIR}")
+    logger.info(f"Image generation temporary directory: {config.IMAGE_GEN_TEMP_DIR}")
+    
+    # Initialize Vertex AI
+    try:
+        import vertexai
+        vertexai.init(project=config.GOOGLE_CLOUD_PROJECT, location=config.GOOGLE_CLOUD_LOCATION)
+        logger.info(f"Vertex AI initialized: {config.GOOGLE_CLOUD_PROJECT}")
+    except Exception as e:
+        logger.warning(f"Failed to initialize Vertex AI: {str(e)}")
     
     logger.info("Application startup complete")
 

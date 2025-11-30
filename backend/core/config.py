@@ -20,6 +20,14 @@ class Config:
     # TTS Configuration - directory for storing temporary audio files
     TTS_TEMP_DIR: str = os.getenv("TTS_TEMP_DIR", "./data/tts")
     
+    # Image Generation Configuration
+    IMAGE_GEN_TEMP_DIR: str = os.getenv("IMAGE_GEN_TEMP_DIR", "./data/images")
+    
+    # Google Cloud Vertex AI Configuration
+    GOOGLE_CLOUD_PROJECT: str = os.getenv("GOOGLE_CLOUD_PROJECT", "projects/1053209052640")
+    GOOGLE_CLOUD_LOCATION: str = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+    GOOGLE_APPLICATION_CREDENTIALS: str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+    
     # Logging Configuration
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
     LOG_FILE_PATH: str = os.getenv("LOG_FILE_PATH", "")  # Empty string means no file logging
@@ -36,6 +44,7 @@ class Config:
         Used during application startup to prepare the environment.
         """
         Path(cls.TTS_TEMP_DIR).mkdir(parents=True, exist_ok=True)
+        Path(cls.IMAGE_GEN_TEMP_DIR).mkdir(parents=True, exist_ok=True)
 
 
 # Create a singleton instance for easy import

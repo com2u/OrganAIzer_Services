@@ -13,5 +13,12 @@ gTTS==2.4.0
 # Language detection
 langdetect==1.0.9
 
+# Speech-to-Text
+openai-whisper==20231117
+
+# Image Generation (Google Vertex AI)
+google-cloud-aiplatform==1.38.0
+Pillow==10.1.0
+
 # CORS middleware (included with FastAPI/Starlette)
 # starlette is a dependency of FastAPI

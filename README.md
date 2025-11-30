@@ -1,5 +1,41 @@
 # OrganAIzer Services - Text-to-Speech Utility
 
+## Quick Start
+
+### Running the Services
+
+**Option 1: Run Both Services (Recommended)**
+```bash
+start_services.bat
+```
+
+**Option 2: Run Services Individually**
+```bash
+# Backend only
+start_backend.bat
+
+# Frontend only
+start_frontend.bat
+```
+
+**Option 3: Manual Commands**
+```bash
+# Backend
+cd backend && python main.py
+
+# Frontend
+cd frontend && npm run dev
+```
+
+**Service URLs:**
+- Backend API: http://localhost:8000
+- API Docs: http://localhost:8000/docs
+- Frontend App: http://localhost:5173
+
+📖 **For detailed setup and commands, see [QUICK_START.md](QUICK_START.md)**
+
+---
+
 ## Project Overview
 
 This is a browser-based AI utility platform starting with Text-to-Speech (TTS) functionality. The project is designed as a modular system where additional AI tools can be added in future phases.
@@ -48,9 +84,7 @@ The TTS tool accepts markdown-formatted text, automatically detects the language
 
 ### Backend Setup
 
-1. Navigate to the backend directory:
-```bash
-cd backend
+ 
 ```
 
 2. Create and activate a virtual environment:
@@ -75,7 +109,7 @@ pip install -r requirements.txt
 4. Configure environment variables:
 ```bash
 # Copy the example environment file
-copy .env.envexample .  # Windows
+copy .env.example .env  # Windows
 # or
 cp .env.example .env    # macOS/Linux
 
@@ -99,6 +133,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 The API will be available at `http://localhost:8000`
 
+
 ### Frontend Setup
 
 1. Navigate to the frontend directory:
@@ -121,7 +156,7 @@ copy .env.example .env  # Windows
 cp .env.example .env    # macOS/Linux
 
 # Edit .env and set:
-# VITE_API_BASE_URL=http://localhost:8000
+# VITE_API_BASE_URL
 ```
 
 4. Run the development server:
