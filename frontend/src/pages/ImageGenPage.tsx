@@ -34,8 +34,8 @@ export default function ImageGenPage() {
         aspect_ratio: aspectRatio,
       });
 
-      const images = result.images.map((url: string) => ({
-        url: `http://localhost:8000${url}`,
+      const images = result.images.map((img) => ({
+        url: `http://localhost:8000${img}`,
         prompt: result.prompt,
       }));
 
@@ -62,10 +62,10 @@ export default function ImageGenPage() {
       <div className="max-w-4xl mx-auto">
         <div className="text-center mb-8">
           <h1 className="text-4xl font-bold text-gray-900 mb-2">
-            AI Image Generation
+            🍌 AI Image Generation
           </h1>
           <p className="text-gray-600">
-            Create stunning images from text descriptions using Google Vertex AI Imagen
+            Create stunning images from text descriptions using <span className="font-semibold text-purple-700">Google Vertex AI Imagen</span>
           </p>
         </div>
 

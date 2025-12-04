@@ -49,9 +49,10 @@ app.add_exception_handler(RequestValidationError, validation_error_handler)
 app.add_exception_handler(Exception, generic_error_handler)
 
 # Include API routers
-app.include_router(tts.router, prefix="/api")
-app.include_router(stt.router, prefix="/api")
-app.include_router(image_gen.router, prefix="/api")
+app.include_router(tts.router, prefix="/api/tts")
+app.include_router(stt.router, prefix="/api/stt")
+app.include_router(image_gen.router, prefix="/api")  # Includes both /image-gen and /nano-banana endpoints
+
 
 
 @app.on_event("startup")
@@ -67,13 +68,8 @@ async def startup_event():
     logger.info(f"TTS temporary directory: {config.TTS_TEMP_DIR}")
     logger.info(f"Image generation temporary directory: {config.IMAGE_GEN_TEMP_DIR}")
     
-    # Initialize Vertex AI
-    try:
-        import vertexai
-        vertexai.init(project=config.GOOGLE_CLOUD_PROJECT, location=config.GOOGLE_CLOUD_LOCATION)
-        logger.info(f"Vertex AI initialized: {config.GOOGLE_CLOUD_PROJECT}")
-    except Exception as e:
-        logger.warning(f"Failed to initialize Vertex AI: {str(e)}")
+    # Note: Image generation now uses Google AI Studio (Gemini) via Node.js scripts
+    # Vertex AI initialization removed
     
     logger.info("Application startup complete")
 

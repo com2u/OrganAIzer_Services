@@ -115,6 +115,56 @@ export async function generateImages(request: ImageGenRequest): Promise<ImageGen
 }
 
 /**
+ * Request payload for nano banana (Gemini 2.5 Flash Image) generation.
+ */
+export interface NanoBananaRequest {
+  prompt: string;
+  num_images?: number;
+}
+
+/**
+ * Response from the nano banana image generation endpoint.
+ */
+export interface NanoBananaResponse {
+  success: boolean;
+  model: string;
+  prompt: string;
+  images: Array<{
+    image_id: string;
+    url: string;
+    dataUrl: string;
+  }>;
+}
+
+/**
+ * Generates images using Gemini 2.5 Flash Image (nano banana).
+ * 
+ * @param request - Image generation request with prompt
+ * @returns Promise resolving to the nano banana response with images
+ * @throws Error if the request fails
+ */
+export async function generateNanoBananaImages(request: NanoBananaRequest): Promise<NanoBananaResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/nano-banana/generate`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  });
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    if (data.error) {
+      throw new Error(data.error.message || 'Failed to generate images with nano banana');
+    }
+    throw new Error('Failed to generate images with nano banana');
+  }
+
+  return data;
+}
+
+/**
  * Builds the full URL for downloading or playing an audio file.
  * Takes the relative audio URL from the API response and makes it absolute.
  * 
