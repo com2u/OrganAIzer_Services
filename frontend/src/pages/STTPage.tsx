@@ -11,7 +11,8 @@ import { transcribeAudio } from '../lib/api';
 export default function STTPage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [transcript, setTranscript] = useState('');
-  const [language, setLanguage] = useState('');
+  const [detectedLanguage, setDetectedLanguage] = useState('');
+  const [selectedLanguage, setSelectedLanguage] = useState<string>('auto');
   const [duration, setDuration] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
@@ -66,16 +67,18 @@ export default function STTPage() {
     // Clear previous results and errors
     setError('');
     setTranscript('');
-    setLanguage('');
+    setDetectedLanguage('');
     setDuration(null);
 
     setIsLoading(true);
 
     try {
-      const response = await transcribeAudio(selectedFile);
+      // Pass language hint if not auto-detect
+      const languageHint = selectedLanguage === 'auto' ? undefined : selectedLanguage;
+      const response = await transcribeAudio(selectedFile, languageHint);
       
       setTranscript(response.transcript);
-      setLanguage(response.language || '');
+      setDetectedLanguage(response.language || '');
       setDuration(response.duration_seconds || null);
     } catch (err) {
       if (err instanceof Error) {
@@ -146,6 +149,35 @@ export default function STTPage() {
           </p>
         </div>
 
+        <div className="mb-6">
+          <label htmlFor="language-select" className="block text-sm font-medium text-gray-700 mb-2">
+            Language (for better accuracy)
+          </label>
+          <select
+            id="language-select"
+            value={selectedLanguage}
+            onChange={(e) => setSelectedLanguage(e.target.value)}
+            disabled={isLoading}
+            className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <option value="auto">Auto-detect</option>
+            <option value="en">English</option>
+            <option value="de">German (Deutsch)</option>
+            <option value="es">Spanish (Español)</option>
+            <option value="fr">French (Français)</option>
+            <option value="it">Italian (Italiano)</option>
+            <option value="pt">Portuguese (Português)</option>
+            <option value="nl">Dutch (Nederlands)</option>
+            <option value="pl">Polish (Polski)</option>
+            <option value="ru">Russian (Русский)</option>
+            <option value="ja">Japanese (日本語)</option>
+            <option value="zh">Chinese (中文)</option>
+          </select>
+          <p className="mt-2 text-sm text-gray-500">
+            💡 Tip: Selecting the correct language improves accuracy significantly
+          </p>
+        </div>
+
         {selectedFile && (
           <div className="mb-6 p-4 bg-gray-50 rounded-md border border-gray-200">
             <h3 className="text-sm font-medium text-gray-700 mb-2">Selected File</h3>
@@ -193,13 +225,13 @@ export default function STTPage() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {language && (
+            {detectedLanguage && (
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Detected Language
                 </label>
                 <div className="bg-gray-50 p-3 rounded-md border border-gray-200">
-                  <p className="text-gray-800 font-mono">{language}</p>
+                  <p className="text-gray-800 font-mono">{detectedLanguage}</p>
                 </div>
               </div>
             )}

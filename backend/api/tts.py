@@ -20,7 +20,7 @@ from core.error_handling import AppError
 logger = logging.getLogger(__name__)
 
 # Create router for TTS endpoints
-router = APIRouter(prefix="/tts", tags=["Text-to-Speech"])
+router = APIRouter(tags=["Text-to-Speech"])
 
 
 @router.post("/generate", response_model=TTSGenerateResponse)

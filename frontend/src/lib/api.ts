@@ -186,16 +186,32 @@ export interface STTTranscribeResponse {
 }
 
 /**
+ * Response from the unified video transcription endpoint.
+ */
+export interface VideoTranscribeResponse {
+  source_type: string;
+  source_url?: string;
+  transcript: string;
+  detected_language?: string;
+}
+
+/**
  * Transcribes an audio file to text.
  * Calls the backend STT API to convert audio to text.
  * 
  * @param audioFile - Audio file to transcribe (MP3, WAV, M4A, OGG, FLAC)
+ * @param language - Optional language hint (e.g., 'en', 'de') for better accuracy
  * @returns Promise resolving to the STT response with transcript
  * @throws Error with ApiError structure if the request fails
  */
-export async function transcribeAudio(audioFile: File): Promise<STTTranscribeResponse> {
+export async function transcribeAudio(audioFile: File, language?: string): Promise<STTTranscribeResponse> {
   const formData = new FormData();
   formData.append('file', audioFile);
+  
+  // Add language hint if provided
+  if (language) {
+    formData.append('language', language);
+  }
 
   const response = await fetch(`${API_BASE_URL}/api/stt/transcribe`, {
     method: 'POST',
@@ -210,6 +226,55 @@ export async function transcribeAudio(audioFile: File): Promise<STTTranscribeRes
       throw new Error(data.error.message || 'Failed to transcribe audio');
     }
     throw new Error('Failed to transcribe audio');
+  }
+
+  return data;
+}
+
+/**
+ * Transcribes a video from YouTube URL, generic video URL, or uploaded file.
+ * Uses the unified video transcription endpoint.
+ * 
+ * @param sourceType - Type of video source: 'youtube', 'url', or 'upload'
+ * @param videoUrl - Video URL (for youtube and url types)
+ * @param languagePreference - Language hint for transcription
+ * @param qualityMode - Quality mode: 'fast' or 'accurate'
+ * @param file - Video file (for upload type)
+ * @returns Promise resolving to the video transcription response
+ * @throws Error if the request fails
+ */
+export async function transcribeVideo(
+  sourceType: 'youtube' | 'url' | 'upload',
+  videoUrl?: string,
+  languagePreference: string = 'auto',
+  qualityMode: 'fast' | 'accurate' = 'accurate',
+  file?: File
+): Promise<VideoTranscribeResponse> {
+  const formData = new FormData();
+  formData.append('source_type', sourceType);
+  formData.append('language_preference', languagePreference);
+  formData.append('quality_mode', qualityMode);
+  
+  if (videoUrl) {
+    formData.append('video_url', videoUrl);
+  }
+  
+  if (file) {
+    formData.append('file', file);
+  }
+
+  const response = await fetch(`${API_BASE_URL}/api/video/transcribe`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    if (data.error) {
+      throw new Error(data.error.message || 'Failed to transcribe video');
+    }
+    throw new Error('Failed to transcribe video');
   }
 
   return data;

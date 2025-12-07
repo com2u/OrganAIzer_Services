@@ -8,8 +8,9 @@ import TopNav from './components/TopNav';
 import TTSPage from './pages/TTSPage';
 import STTPage from './pages/STTPage';
 import ImageGenPage from './pages/ImageGenPage';
+import YouTubePage from './pages/YouTubePage';
 
-type PageType = 'tts' | 'stt' | 'image-gen';
+type PageType = 'tts' | 'stt' | 'image-gen' | 'youtube';
 
 export default function App() {
   const [currentPage, setCurrentPage] = useState<PageType>('tts');
@@ -52,6 +53,16 @@ export default function App() {
             >
               Text → Image
             </button>
+            <button
+              onClick={() => setCurrentPage('youtube')}
+              className={`py-4 px-6 font-medium text-sm border-b-2 transition-colors ${
+                currentPage === 'youtube'
+                  ? 'border-red-600 text-red-600'
+                  : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+              }`}
+            >
+              Video → Text
+            </button>
           </nav>
         </div>
       </div>
@@ -60,6 +71,7 @@ export default function App() {
         {currentPage === 'tts' && <TTSPage />}
         {currentPage === 'stt' && <STTPage />}
         {currentPage === 'image-gen' && <ImageGenPage />}
+        {currentPage === 'youtube' && <YouTubePage />}
       </main>
     </div>
   );

@@ -16,7 +16,7 @@ from core.error_handling import (
     validation_error_handler,
     generic_error_handler
 )
-from api import tts, stt, image_gen
+from api import tts, stt, image_gen, youtube, video
 
 # Set up logging
 setup_logging()
@@ -52,6 +52,8 @@ app.add_exception_handler(Exception, generic_error_handler)
 app.include_router(tts.router, prefix="/api/tts")
 app.include_router(stt.router, prefix="/api/stt")
 app.include_router(image_gen.router, prefix="/api")  # Includes both /image-gen and /nano-banana endpoints
+app.include_router(youtube.router, prefix="/api")  # YouTube transcription endpoints (backwards compatible)
+app.include_router(video.router, prefix="/api")  # Unified video transcription endpoints
 
 
 

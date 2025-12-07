@@ -23,10 +23,11 @@ class Config:
     # Image Generation Configuration
     IMAGE_GEN_TEMP_DIR: str = os.getenv("IMAGE_GEN_TEMP_DIR", "./data/images")
     
-    # Google Cloud Vertex AI Configuration
-    GOOGLE_CLOUD_PROJECT: str = os.getenv("GOOGLE_CLOUD_PROJECT", "projects/1053209052640")
-    GOOGLE_CLOUD_LOCATION: str = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
-    GOOGLE_APPLICATION_CREDENTIALS: str = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+    # OpenRouter Configuration
+    OPENROUTER_API_KEY: str = os.getenv("OPENROUTER_API_KEY", "")
+    
+    # Google AI Studio Configuration (legacy - kept for backward compatibility)
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     
     # Logging Configuration
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
