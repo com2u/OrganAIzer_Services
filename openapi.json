@@ -1,0 +1,586 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "OrganAIzer Service",
+    "description": "A browser-based AI media utility suite with multiple tools for working with audio, video, text, and images.",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/": {
+      "get": {
+        "tags": ["root"],
+        "summary": "Root",
+        "description": "Returns a welcome message",
+        "operationId": "root__get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": ["root"],
+        "summary": "Health Check",
+        "description": "Returns the health status of the service",
+        "operationId": "health__get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/youtube/download": {
+      "post": {
+        "tags": ["youtube"],
+        "summary": "Download Video",
+        "description": "Download a video from YouTube URL",
+        "operationId": "download_video_api_youtube_download_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DownloadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ]
+      }
+    },
+    "/api/tts/generate": {
+      "post": {
+        "tags": ["tts"],
+        "summary": "Generate Speech",
+        "description": "Generate speech from markdown-formatted text with language auto-detection",
+        "operationId": "generate_speech_api_tts_generate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ]
+      }
+    },
+    "/api/tts/audio/{audio_id}": {
+      "get": {
+        "tags": ["tts"],
+        "summary": "Get Audio",
+        "description": "Download generated audio file by ID",
+        "operationId": "get_audio_api_tts_audio__audio_id__get",
+        "parameters": [
+          {
+            "name": "audio_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Audio Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "audio/mpeg": {}
+            }
+          },
+          "404": {
+            "description": "Audio not found"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/stt/transcribe": {
+      "post": {
+        "tags": ["stt"],
+        "summary": "Transcribe Audio",
+        "description": "Transcribe audio file or URL to text using OpenAI Whisper",
+        "operationId": "transcribe_api_stt_transcribe_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_transcribe_api_stt_transcribe_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscribeResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ]
+      }
+    },
+    "/api/video-text/transcribe": {
+      "post": {
+        "tags": ["video-text"],
+        "summary": "Transcribe Video",
+        "description": "Extract and transcribe spoken content from video file or YouTube URL",
+        "operationId": "transcribe_api_video_text_transcribe_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_transcribe_api_video_text_transcribe_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscribeResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ]
+      }
+    },
+    "/api/text-image/generate": {
+      "post": {
+        "tags": ["text-image"],
+        "summary": "Generate Images",
+        "description": "Generate AI images from text prompt using Google Gemini API",
+        "operationId": "generate_api_text_image_generate_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_generate_api_text_image_generate_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "images": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "url": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ]
+      }
+    },
+    "/api/llm": {
+      "post": {
+        "tags": ["llm"],
+        "summary": "Get LLM Response",
+        "description": "Send a prompt to a language model and get a response",
+        "operationId": "get_llm_response_api_llm_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LLMRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "DownloadRequest": {
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Url",
+            "description": "YouTube video URL"
+          }
+        },
+        "title": "DownloadRequest"
+      },
+      "GenerateRequest": {
+        "type": "object",
+        "required": ["text_md"],
+        "properties": {
+          "text_md": {
+            "type": "string",
+            "title": "Text Md",
+            "description": "Markdown-formatted text to convert to speech"
+          }
+        },
+        "title": "GenerateRequest"
+      },
+      "GenerateResponse": {
+        "type": "object",
+        "required": ["text_normalized", "language", "audio_url"],
+        "properties": {
+          "text_normalized": {
+            "type": "string",
+            "title": "Text Normalized",
+            "description": "Normalized plain text"
+          },
+          "language": {
+            "type": "string",
+            "title": "Language",
+            "description": "Detected language code"
+          },
+          "audio_url": {
+            "type": "string",
+            "title": "Audio Url",
+            "description": "URL to download the generated audio"
+          }
+        },
+        "title": "GenerateResponse"
+      },
+      "Body_transcribe_api_stt_transcribe_post": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "title": "File",
+            "description": "Audio file to transcribe"
+          },
+          "audio_url": {
+            "type": "string",
+            "title": "Audio Url",
+            "description": "URL of audio to transcribe"
+          }
+        },
+        "title": "Body_transcribe_api_stt_transcribe_post"
+      },
+      "Body_transcribe_api_video_text_transcribe_post": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "title": "File",
+            "description": "Video file to transcribe"
+          },
+          "video_url": {
+            "type": "string",
+            "title": "Video Url",
+            "description": "URL of video to transcribe (e.g., YouTube URL)"
+          }
+        },
+        "title": "Body_transcribe_api_video_text_transcribe_post"
+      },
+      "Body_generate_api_text_image_generate_post": {
+        "type": "object",
+        "required": ["prompt"],
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "title": "Prompt",
+            "description": "Text prompt for image generation"
+          },
+          "images": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "binary"
+            },
+            "title": "Images",
+            "description": "Optional reference images"
+          }
+        },
+        "title": "Body_generate_api_text_image_generate_post"
+      },
+      "TranscribeResponse": {
+        "type": "object",
+        "required": ["text", "language"],
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "description": "Transcribed text"
+          },
+          "language": {
+            "type": "string",
+            "title": "Language",
+            "description": "Detected language code"
+          },
+          "segments": {
+            "type": "array",
+            "items": {},
+            "title": "Segments",
+            "default": [],
+            "description": "Transcription segments with timestamps"
+          }
+        },
+        "title": "TranscribeResponse"
+      },
+      "LLMRequest": {
+        "type": "object",
+        "required": ["prompt"],
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "title": "Prompt",
+            "description": "The prompt to send to the LLM"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model",
+            "default": "openrouter/auto",
+            "description": "The model to use (default: openrouter/auto)"
+          }
+        },
+        "title": "LLMRequest"
+      },
+      "LLMResponse": {
+        "type": "object",
+        "properties": {
+          "response": {
+            "type": "string",
+            "title": "Response",
+            "description": "The LLM's response to the prompt"
+          }
+        },
+        "title": "LLMResponse"
+      },
+      "HTTPValidationError": {
+        "type": "object",
+        "properties": {
+          "detail": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail"
+          }
+        },
+        "title": "HTTPValidationError"
+      },
+      "ValidationError": {
+        "type": "object",
+        "required": ["loc", "msg", "type"],
+        "properties": {
+          "loc": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "APIKeyHeader": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
+        "description": "API key for authentication. Required for all /api/* endpoints."
+      }
+    }
+  }
+}

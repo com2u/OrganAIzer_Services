@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  # Backend FastAPI service
+  backend:
+    build: ./backend
+    container_name: organizer-backend
+    ports:
+      - "5263:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+    env_file:
+      - .env
+    volumes:
+      - ./backend:/app
+      - /app/__pycache__
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - organizer-network
+
+  # Frontend service
+  frontend:
+    build: ./frontend
+    container_name: organizer-frontend
+    ports:
+      - "5264:80"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - organizer-network
+
+networks:
+  organizer-network:
+    driver: bridge
+
+volumes:
+  backend-data:
+  frontend-data:

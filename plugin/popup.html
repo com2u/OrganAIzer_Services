@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OrganAIzer Plugin</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🤖 OrganAIzer Plugin</h1>
+      <p class="subtitle">AI-powered document assistant</p>
+      <div id="connectionStatus" class="connection-status">
+        <span id="statusDot" class="status-dot checking"></span>
+        <span id="statusText">Checking...</span>
+      </div>
+    </header>
+
+    <section class="actions">
+      <h2>Quick Actions</h2>
+      <p class="section-hint">Select text first, then click an action</p>
+      <button class="btn btn-action" id="textToSpeech">
+        <span class="icon">🔊</span>
+        <span class="btn-content">
+          <span class="btn-title">Read Aloud</span>
+        </span>
+      </button>
+      <button class="btn btn-action" id="textToSummary">
+        <span class="icon">📝</span>
+        <span class="btn-content">
+          <span class="btn-title">Summarize</span>
+        </span>
+      </button>
+      <button class="btn btn-action" id="dictation">
+        <span class="icon">🎤</span>
+        <span class="btn-content">
+          <span class="btn-title">Dictation</span>
+        </span>
+      </button>
+      <button class="btn btn-action" id="textToImage">
+        <span class="icon">🖼️</span>
+        <span class="btn-content">
+          <span class="btn-title">Generate Image</span>
+        </span>
+      </button>
+      <button class="btn btn-action" id="translate">
+        <span class="icon">🌐</span>
+        <span class="btn-content">
+          <span class="btn-title">Translate</span>
+        </span>
+      </button>
+    </section>
+
+    <details class="settings-panel">
+      <summary>⚙️ Settings</summary>
+      <section class="settings">
+        <div class="setting-item">
+          <label for="apiUrl">Backend URL:</label>
+          <input type="text" id="apiUrl" value="http://localhost:8000" placeholder="http://localhost:8000" />
+        </div>
+        <div class="setting-item">
+          <label for="apiKey">API Key (optional):</label>
+          <input type="password" id="apiKey" placeholder="Enter API key if required" />
+        </div>
+        <div class="setting-item">
+          <label for="dictationLanguage">Dictation Language:</label>
+          <select id="dictationLanguage">
+            <!-- Options populated by JavaScript -->
+          </select>
+        </div>
+        <div class="button-row">
+          <button id="saveSettings" class="btn btn-primary">Save Settings</button>
+          <button id="testConnection" class="btn btn-secondary">Test Connection</button>
+        </div>
+        <div id="settingsStatus" class="status-message"></div>
+      </section>
+    </details>
+
+    <details class="settings-panel">
+      <summary>📝 Custom Prompts</summary>
+      <section class="prompts">
+        <div class="prompt-item">
+          <label for="summaryPrompt">Summary Prompt:</label>
+          <textarea id="summaryPrompt" rows="3" placeholder="Use {text} as placeholder for selected text">Summarize the following text in a concise manner, highlighting the key points:
+
+{text}</textarea>
+          <span class="hint">Use {text} as placeholder for selected text</span>
+        </div>
+        <div class="prompt-item">
+          <label for="translatePrompt">Translation Prompt:</label>
+          <textarea id="translatePrompt" rows="3" placeholder="Use {text} as placeholder for selected text">Translate the following text to English:
+
+{text}</textarea>
+          <span class="hint">Change "English" to any target language</span>
+        </div>
+        <div class="button-row">
+          <button id="savePrompts" class="btn btn-primary">Save Prompts</button>
+          <button id="resetPrompts" class="btn btn-secondary">Reset to Defaults</button>
+        </div>
+        <div id="promptsStatus" class="status-message"></div>
+      </section>
+    </details>
+
+    <footer>
+      <p class="help-text">💡 Use <strong>Ctrl+Shift+.</strong> to open this menu quickly</p>
+      <p class="help-text">📋 Results are automatically copied to clipboard</p>
+      <p class="help-text">Right-click selected text for context menu options</p>
+      <p class="version">v1.0.0</p>
+    </footer>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
