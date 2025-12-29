@@ -2,15 +2,67 @@
   "openapi": "3.1.0",
   "info": {
     "title": "OrganAIzer Service",
-    "description": "A browser-based AI media utility suite with multiple tools for working with audio, video, text, and images.",
+    "description": "A comprehensive browser-based AI media utility suite providing multiple tools for working with audio, video, text, and images. The service includes YouTube video downloading, text-to-speech generation, speech-to-text transcription, video transcription, AI image generation, LLM integration, and email/calendar integration with Google and Outlook.\n\n## Features\n\n- **YouTube Integration**: Download videos from YouTube URLs\n- **Text-to-Speech**: Generate speech from markdown-formatted text with automatic language detection\n- **Speech-to-Text**: Transcribe audio files or URLs using OpenAI Whisper\n- **Video Transcription**: Extract and transcribe spoken content from video files or YouTube URLs\n- **AI Image Generation**: Generate images from text prompts using Google Gemini API\n- **LLM Integration**: Send prompts to language models and get responses\n- **Google Integration**: Read emails, send emails, and read calendar events\n- **Outlook Integration**: Read emails, send emails, read calendar events, and OAuth authentication\n\n## Authentication\n\nAll endpoints under `/api/*` require an API key passed via the `X-API-Key` header. The key must be provided in the request headers.\n\n## Base URL\n\n- Local development: `http://localhost:8000`\n- Production: `https://api.organaizer.com`\n\n## Rate Limiting\n\nThe service implements rate limiting to ensure fair usage. Please refer to the documentation for specific limits.\n\n## Error Handling\n\nThe API returns standard HTTP status codes and JSON error responses with detailed error messages.\n\n## Support\n\nFor detailed documentation, see the [README](https://github.com/com2u/OrganAIzer_Services/blob/main/README.md).",
     "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8000",
+      "description": "Local development server"
+    },
+    {
+      "url": "https://api.organaizer.com",
+      "description": "Production server"
+    }
+  ],
+  "tags": [
+    {
+      "name": "root",
+      "description": "Basic service endpoints"
+    },
+    {
+      "name": "youtube",
+      "description": "YouTube video downloading"
+    },
+    {
+      "name": "tts",
+      "description": "Text-to-speech generation"
+    },
+    {
+      "name": "stt",
+      "description": "Speech-to-text transcription"
+    },
+    {
+      "name": "video-text",
+      "description": "Video transcription"
+    },
+    {
+      "name": "text-image",
+      "description": "AI image generation"
+    },
+    {
+      "name": "llm",
+      "description": "Large Language Model integration"
+    },
+    {
+      "name": "google",
+      "description": "Google email and calendar integration"
+    },
+    {
+      "name": "outlook",
+      "description": "Outlook email and calendar integration"
+    }
+  ],
+  "externalDocs": {
+    "description": "Project documentation and source code",
+    "url": "https://github.com/com2u/OrganAIzer_Services"
   },
   "paths": {
     "/": {
       "get": {
         "tags": ["root"],
-        "summary": "Root",
-        "description": "Returns a welcome message",
+        "summary": "Root endpoint",
+        "description": "Returns a welcome message and service information",
         "operationId": "root__get",
         "responses": {
           "200": {
@@ -21,7 +73,8 @@
                   "type": "object",
                   "properties": {
                     "message": {
-                      "type": "string"
+                      "type": "string",
+                      "example": "OrganAIzer Service API"
                     }
                   }
                 }
@@ -34,7 +87,7 @@
     "/health": {
       "get": {
         "tags": ["root"],
-        "summary": "Health Check",
+        "summary": "Health check",
         "description": "Returns the health status of the service",
         "operationId": "health__get",
         "responses": {
@@ -46,7 +99,8 @@
                   "type": "object",
                   "properties": {
                     "status": {
-                      "type": "string"
+                      "type": "string",
+                      "example": "ok"
                     }
                   }
                 }
@@ -59,7 +113,7 @@
     "/api/youtube/download": {
       "post": {
         "tags": ["youtube"],
-        "summary": "Download Video",
+        "summary": "Download video",
         "description": "Download a video from YouTube URL",
         "operationId": "download_video_api_youtube_download_post",
         "requestBody": {
@@ -102,7 +156,7 @@
     "/api/tts/generate": {
       "post": {
         "tags": ["tts"],
-        "summary": "Generate Speech",
+        "summary": "Generate speech",
         "description": "Generate speech from markdown-formatted text with language auto-detection",
         "operationId": "generate_speech_api_tts_generate_post",
         "requestBody": {
@@ -147,7 +201,7 @@
     "/api/tts/audio/{audio_id}": {
       "get": {
         "tags": ["tts"],
-        "summary": "Get Audio",
+        "summary": "Get audio",
         "description": "Download generated audio file by ID",
         "operationId": "get_audio_api_tts_audio__audio_id__get",
         "parameters": [
@@ -187,7 +241,7 @@
     "/api/stt/transcribe": {
       "post": {
         "tags": ["stt"],
-        "summary": "Transcribe Audio",
+        "summary": "Transcribe audio",
         "description": "Transcribe audio file or URL to text using OpenAI Whisper",
         "operationId": "transcribe_api_stt_transcribe_post",
         "requestBody": {
@@ -231,7 +285,7 @@
     "/api/video-text/transcribe": {
       "post": {
         "tags": ["video-text"],
-        "summary": "Transcribe Video",
+        "summary": "Transcribe video",
         "description": "Extract and transcribe spoken content from video file or YouTube URL",
         "operationId": "transcribe_api_video_text_transcribe_post",
         "requestBody": {
@@ -275,7 +329,7 @@
     "/api/text-image/generate": {
       "post": {
         "tags": ["text-image"],
-        "summary": "Generate Images",
+        "summary": "Generate images",
         "description": "Generate AI images from text prompt using Google Gemini API",
         "operationId": "generate_api_text_image_generate_post",
         "requestBody": {
@@ -332,7 +386,7 @@
     "/api/llm": {
       "post": {
         "tags": ["llm"],
-        "summary": "Get LLM Response",
+        "summary": "Get LLM response",
         "description": "Send a prompt to a language model and get a response",
         "operationId": "get_llm_response_api_llm_post",
         "requestBody": {
@@ -365,6 +419,309 @@
                 }
               }
             }
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ]
+      }
+    },
+    "/api/google/emails": {
+      "get": {
+        "tags": ["google"],
+        "summary": "Read emails",
+        "description": "Read emails from Google account",
+        "operationId": "get_emails_api_google_emails_get",
+        "parameters": [
+          {
+            "name": "max_results",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 10,
+              "title": "Max Results"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "emails": {
+                      "type": "array",
+                      "items": {}
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ]
+      }
+    },
+    "/api/google/emails/send": {
+      "post": {
+        "tags": ["google"],
+        "summary": "Send email",
+        "description": "Send an email via Google account",
+        "operationId": "send_email_api_google_emails_send_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendEmailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "result": {}
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ]
+      }
+    },
+    "/api/google/calendar/events": {
+      "get": {
+        "tags": ["google"],
+        "summary": "Read calendar events",
+        "description": "Read calendar events from Google account",
+        "operationId": "get_calendar_events_api_google_calendar_events_get",
+        "parameters": [
+          {
+            "name": "max_results",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 10,
+              "title": "Max Results"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "events": {
+                      "type": "array",
+                      "items": {}
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ]
+      }
+    },
+    "/api/outlook/emails": {
+      "get": {
+        "tags": ["outlook"],
+        "summary": "Read emails",
+        "description": "Read emails from Outlook account",
+        "operationId": "get_emails_api_outlook_emails_get",
+        "parameters": [
+          {
+            "name": "max_results",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 10,
+              "title": "Max Results"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "emails": {
+                      "type": "array",
+                      "items": {}
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ]
+      }
+    },
+    "/api/outlook/emails/send": {
+      "post": {
+        "tags": ["outlook"],
+        "summary": "Send email",
+        "description": "Send an email via Outlook account",
+        "operationId": "send_email_api_outlook_emails_send_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendEmailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ]
+      }
+    },
+    "/api/outlook/calendar/events": {
+      "get": {
+        "tags": ["outlook"],
+        "summary": "Read calendar events",
+        "description": "Read calendar events from Outlook account",
+        "operationId": "get_calendar_events_api_outlook_calendar_events_get",
+        "parameters": [
+          {
+            "name": "max_results",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 10,
+              "title": "Max Results"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "events": {
+                      "type": "array",
+                      "items": {}
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ]
+      }
+    },
+    "/api/outlook/auth": {
+      "get": {
+        "tags": ["outlook"],
+        "summary": "Get authentication info",
+        "description": "Initiate Outlook OAuth authentication and return device code info",
+        "operationId": "get_auth_info_api_outlook_auth_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user_code": {
+                      "type": "string"
+                    },
+                    "verification_uri": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error"
           }
         },
         "security": [
@@ -530,6 +887,52 @@
           }
         },
         "title": "LLMResponse"
+      },
+      "SendEmailRequest": {
+        "type": "object",
+        "required": ["to", "subject", "body"],
+        "properties": {
+          "to": {
+            "type": "string",
+            "title": "To",
+            "description": "Recipient email address"
+          },
+          "subject": {
+            "type": "string",
+            "title": "Subject",
+            "description": "Email subject"
+          },
+          "body": {
+            "type": "string",
+            "title": "Body",
+            "description": "Email body content"
+          }
+        },
+        "title": "SendEmailRequest"
+      },
+      "ReadEmailsRequest": {
+        "type": "object",
+        "properties": {
+          "max_results": {
+            "type": "integer",
+            "title": "Max Results",
+            "default": 10,
+            "description": "Maximum number of emails to return"
+          }
+        },
+        "title": "ReadEmailsRequest"
+      },
+      "ReadCalendarRequest": {
+        "type": "object",
+        "properties": {
+          "max_results": {
+            "type": "integer",
+            "title": "Max Results",
+            "default": 10,
+            "description": "Maximum number of calendar events to return"
+          }
+        },
+        "title": "ReadCalendarRequest"
       },
       "HTTPValidationError": {
         "type": "object",
