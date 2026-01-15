@@ -21,8 +21,9 @@ async function generateImages(prompt, numImages = 1) {
     console.log(`🍌 Generating ${numImages} image(s) with nano banana...`);
     console.log(`Prompt: ${prompt}`);
 
+    // Updated API for @google/genai v1.34.0+
     const response = await ai.models.generateImages({
-      model: "gemini-2.5-flash-image",
+      model: "imagen-3.0-generate-001",
       prompt: prompt,
       config: {
         numberOfImages: numImages,
@@ -45,6 +46,7 @@ async function generateImages(prompt, numImages = 1) {
 
   } catch (err) {
     console.error("❌ Error generating images:", err.message);
+    console.error("Full error:", err);
     throw err;
   }
 }

@@ -43,25 +43,34 @@ export interface TTSGenerateResponse {
  * @throws Error with ApiError structure if the request fails
  */
 export async function generateSpeech(textMd: string): Promise<TTSGenerateResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/tts/generate`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ text_md: textMd }),
-  });
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/tts/generate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ text_md: textMd }),
+    });
 
-  const data = await response.json();
+    const data = await response.json();
 
-  if (!response.ok) {
-    // Backend returns errors in { "error": { ... } } format
-    if (data.error) {
-      throw new Error(data.error.message || 'Failed to generate speech');
+    if (!response.ok) {
+      // Backend returns errors in { "error": { ... } } format
+      if (data.error) {
+        throw new Error(data.error.message || 'Failed to generate speech');
+      }
+      throw new Error('Failed to generate speech');
     }
-    throw new Error('Failed to generate speech');
-  }
 
-  return data;
+    return data;
+  } catch (error: any) {
+    // Handle network errors (server not running, CORS issues, etc.)
+    if (error instanceof TypeError && error.message === 'Failed to fetch') {
+      throw new Error(`Cannot connect to backend at ${API_BASE_URL}. Please ensure the backend server is running.`);
+    }
+    // Re-throw any other errors
+    throw error;
+  }
 }
 
 /**
@@ -93,25 +102,34 @@ export interface ImageGenResponse {
  * @throws Error with ApiError structure if the request fails
  */
 export async function generateImages(request: ImageGenRequest): Promise<ImageGenResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/image-gen/generate`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(request),
-  });
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/image-gen/generate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
+    });
 
-  const data = await response.json();
+    const data = await response.json();
 
-  if (!response.ok) {
-    // Backend returns errors in { "error": { ... } } format
-    if (data.error) {
-      throw new Error(data.error.message || 'Failed to generate images');
+    if (!response.ok) {
+      // Backend returns errors in { "error": { ... } } format
+      if (data.error) {
+        throw new Error(data.error.message || 'Failed to generate images');
+      }
+      throw new Error('Failed to generate images');
     }
-    throw new Error('Failed to generate images');
-  }
 
-  return data;
+    return data;
+  } catch (error: any) {
+    // Handle network errors (server not running, CORS issues, etc.)
+    if (error instanceof TypeError && error.message === 'Failed to fetch') {
+      throw new Error(`Cannot connect to backend at ${API_BASE_URL}. Please ensure the backend server is running.`);
+    }
+    // Re-throw any other errors
+    throw error;
+  }
 }
 
 /**
@@ -144,24 +162,33 @@ export interface NanoBananaResponse {
  * @throws Error if the request fails
  */
 export async function generateNanoBananaImages(request: NanoBananaRequest): Promise<NanoBananaResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/nano-banana/generate`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(request),
-  });
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/nano-banana/generate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
+    });
 
-  const data = await response.json();
+    const data = await response.json();
 
-  if (!response.ok) {
-    if (data.error) {
-      throw new Error(data.error.message || 'Failed to generate images with nano banana');
+    if (!response.ok) {
+      if (data.error) {
+        throw new Error(data.error.message || 'Failed to generate images with nano banana');
+      }
+      throw new Error('Failed to generate images with nano banana');
     }
-    throw new Error('Failed to generate images with nano banana');
-  }
 
-  return data;
+    return data;
+  } catch (error: any) {
+    // Handle network errors (server not running, CORS issues, etc.)
+    if (error instanceof TypeError && error.message === 'Failed to fetch') {
+      throw new Error(`Cannot connect to backend at ${API_BASE_URL}. Please ensure the backend server is running.`);
+    }
+    // Re-throw any other errors
+    throw error;
+  }
 }
 
 /**
@@ -205,30 +232,39 @@ export interface VideoTranscribeResponse {
  * @throws Error with ApiError structure if the request fails
  */
 export async function transcribeAudio(audioFile: File, language?: string): Promise<STTTranscribeResponse> {
-  const formData = new FormData();
-  formData.append('file', audioFile);
-  
-  // Add language hint if provided
-  if (language) {
-    formData.append('language', language);
-  }
-
-  const response = await fetch(`${API_BASE_URL}/api/stt/transcribe`, {
-    method: 'POST',
-    body: formData,
-  });
-
-  const data = await response.json();
-
-  if (!response.ok) {
-    // Backend returns errors in { "error": { ... } } format
-    if (data.error) {
-      throw new Error(data.error.message || 'Failed to transcribe audio');
+  try {
+    const formData = new FormData();
+    formData.append('file', audioFile);
+    
+    // Add language hint if provided
+    if (language) {
+      formData.append('language', language);
     }
-    throw new Error('Failed to transcribe audio');
-  }
 
-  return data;
+    const response = await fetch(`${API_BASE_URL}/api/stt/transcribe`, {
+      method: 'POST',
+      body: formData,
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      // Backend returns errors in { "error": { ... } } format
+      if (data.error) {
+        throw new Error(data.error.message || 'Failed to transcribe audio');
+      }
+      throw new Error('Failed to transcribe audio');
+    }
+
+    return data;
+  } catch (error: any) {
+    // Handle network errors (server not running, CORS issues, etc.)
+    if (error instanceof TypeError && error.message === 'Failed to fetch') {
+      throw new Error(`Cannot connect to backend at ${API_BASE_URL}. Please ensure the backend server is running.`);
+    }
+    // Re-throw any other errors
+    throw error;
+  }
 }
 
 /**
@@ -250,32 +286,162 @@ export async function transcribeVideo(
   qualityMode: 'fast' | 'accurate' = 'accurate',
   file?: File
 ): Promise<VideoTranscribeResponse> {
-  const formData = new FormData();
-  formData.append('source_type', sourceType);
-  formData.append('language_preference', languagePreference);
-  formData.append('quality_mode', qualityMode);
-  
-  if (videoUrl) {
-    formData.append('video_url', videoUrl);
-  }
-  
-  if (file) {
-    formData.append('file', file);
-  }
-
-  const response = await fetch(`${API_BASE_URL}/api/video/transcribe`, {
-    method: 'POST',
-    body: formData,
-  });
-
-  const data = await response.json();
-
-  if (!response.ok) {
-    if (data.error) {
-      throw new Error(data.error.message || 'Failed to transcribe video');
+  try {
+    const formData = new FormData();
+    formData.append('source_type', sourceType);
+    formData.append('language_preference', languagePreference);
+    formData.append('quality_mode', qualityMode);
+    
+    if (videoUrl) {
+      formData.append('video_url', videoUrl);
     }
-    throw new Error('Failed to transcribe video');
-  }
+    
+    if (file) {
+      formData.append('file', file);
+    }
 
-  return data;
+    const response = await fetch(`${API_BASE_URL}/api/video/transcribe`, {
+      method: 'POST',
+      body: formData,
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      if (data.error) {
+        throw new Error(data.error.message || 'Failed to transcribe video');
+      }
+      throw new Error('Failed to transcribe video');
+    }
+
+    return data;
+  } catch (error: any) {
+    // Handle network errors (server not running, CORS issues, etc.)
+    if (error instanceof TypeError && error.message === 'Failed to fetch') {
+      throw new Error(`Cannot connect to backend at ${API_BASE_URL}. Please ensure the backend server is running.`);
+    }
+    // Re-throw any other errors
+    throw error;
+  }
+}
+
+/**
+ * Message in a chat conversation.
+ */
+export interface ChatMessage {
+  role: string;
+  content: string;
+}
+
+/**
+ * Request payload for chat completion.
+ */
+export interface ChatRequest {
+  prompt: string;
+  model?: string;
+  conversation_history?: ChatMessage[];
+  temperature?: number;
+  max_tokens?: number;
+}
+
+/**
+ * Response from the chat completion endpoint.
+ */
+export interface ChatResponse {
+  response: string;
+  model: string;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+  };
+}
+
+/**
+ * Information about an available AI model.
+ */
+export interface ModelInfo {
+  id: string;
+  name: string;
+  description?: string;
+}
+
+/**
+ * Response from the available models endpoint.
+ */
+export interface AvailableModelsResponse {
+  current_model: string;
+  models: ModelInfo[];
+}
+
+/**
+ * Sends a chat prompt to an LLM and receives a response.
+ * 
+ * @param request - Chat request with prompt and optional parameters
+ * @returns Promise resolving to the chat response
+ * @throws Error if the request fails
+ */
+export async function chatCompletion(request: ChatRequest): Promise<ChatResponse> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/chat/completion`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      if (data.detail && data.detail.message) {
+        throw new Error(data.detail.message);
+      }
+      throw new Error('Failed to get chat response');
+    }
+
+    return data;
+  } catch (error: any) {
+    // Handle network errors (server not running, CORS issues, etc.)
+    if (error instanceof TypeError && error.message === 'Failed to fetch') {
+      throw new Error(`Cannot connect to backend at ${API_BASE_URL}. Please ensure the backend server is running.`);
+    }
+    // Re-throw any other errors
+    throw error;
+  }
+}
+
+/**
+ * Gets the list of available AI models.
+ * 
+ * @returns Promise resolving to the available models response
+ * @throws Error if the request fails
+ */
+export async function getAvailableModels(): Promise<AvailableModelsResponse> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/chat/models`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      if (data.detail && data.detail.message) {
+        throw new Error(data.detail.message);
+      }
+      throw new Error('Failed to fetch available models');
+    }
+
+    return data;
+  } catch (error: any) {
+    // Handle network errors (server not running, CORS issues, etc.)
+    if (error instanceof TypeError && error.message === 'Failed to fetch') {
+      throw new Error(`Cannot connect to backend at ${API_BASE_URL}. Please ensure the backend server is running.`);
+    }
+    // Re-throw any other errors
+    throw error;
+  }
 }

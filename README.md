@@ -1,4 +1,4 @@
-# OrganAIzer Services - Text-to-Speech Utility
+# OrganAIzer Services - AI-Powered Utilities Platform
 
 ## Quick Start
 
@@ -38,21 +38,52 @@ cd frontend && npm run dev
 
 ## Project Overview
 
-This is a browser-based AI utility platform starting with Text-to-Speech (TTS) functionality. The project is designed as a modular system where additional AI tools can be added in future phases.
+This is a comprehensive AI-powered utilities platform offering multiple services including Text-to-Speech, Speech-to-Text, Image Generation, Video Transcription, and AI Chat capabilities.
 
-**Current Phase: Phase 1 – Text-to-Speech Only**
+## Available Services
 
-The TTS tool accepts markdown-formatted text, automatically detects the language, normalizes the markdown to plain text, and generates a downloadable MP3 audio file.
+### 🗣️ Text-to-Speech (TTS)
+- Converts markdown-formatted text to natural-sounding speech
+- Automatic language detection
+- Markdown normalization to plain text
+- Downloadable MP3 audio files
+- In-browser playback
 
-## Features (Phase 1)
+### 🎤 Speech-to-Text (STT)
+- Transcribes audio files to text
+- Supports multiple formats (MP3, WAV, M4A, OGG, FLAC)
+- Optional language hints for better accuracy
+- Powered by Google Speech-to-Text
 
-### Text-to-Speech
-- **Markdown Input**: Accepts markdown-formatted text from users
-- **Automatic Language Detection**: Detects the language of the input text
-- **Markdown Normalization**: Converts markdown to plain text suitable for speech synthesis
-- **Text Preprocessing**: Expands abbreviations and normalizes numbers for natural speech
-- **MP3 Generation**: Creates downloadable MP3 audio files
-- **In-Browser Playback**: Embedded audio player for immediate playback
+### 🎨 Image Generation
+- Creates images from text prompts
+- Multiple aspect ratios supported
+- Batch generation (1-4 images)
+- Powered by OpenRouter API
+
+### 🎥 Video Transcription
+- YouTube video transcription
+- Generic video URL support
+- Direct file upload capability
+- Fast and accurate quality modes
+- Cached transcripts for efficiency
+
+### 💬 AI Chat
+- Interactive chat with various LLM models
+- Model switching capability
+- Conversation history support
+- Powered by OpenRouter with multiple model options
+- Default: Google Gemini 2.5 Flash
+
+## API Documentation
+
+**Complete OpenAPI Specification**: See [`openapi.yaml`](openapi.yaml) for the full API documentation.
+
+**Interactive API Docs**: 
+- Swagger UI: http://localhost:8000/docs
+- ReDoc: http://localhost:8000/redoc
+
+All services are accessible through a RESTful API with consistent error handling and response formats.
 
 ## Architecture
 

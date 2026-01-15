@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CORS Test - OrganAIzer</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+            margin: 10px;
+        }
+        #result {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f0f0f0;
+            border-radius: 5px;
+            min-height: 100px;
+        }
+        .success { color: green; }
+        .error { color: red; }
+    </style>
+</head>
+<body>
+    <h1>OrganAIzer CORS Test</h1>
+    <p>This page tests if the backend API is accessible with proper CORS headers.</p>
+    
+    <button onclick="testHealth()">Test Health Endpoint</button>
+    <button onclick="testImageGen()">Test Image Generation</button>
+    
+    <div id="result"></div>
+
+    <script>
+        const backendUrl = 'http://localhost:8000';
+        
+        async function testHealth() {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = '<p>Testing health endpoint...</p>';
+            
+            try {
+                const response = await fetch(`${backendUrl}/health`);
+                const data = await response.json();
+                
+                if (response.ok) {
+                    resultDiv.innerHTML = `<p class="success">✅ Health check passed!</p><pre>${JSON.stringify(data, null, 2)}</pre>`;
+                } else {
+                    resultDiv.innerHTML = `<p class="error">❌ Health check failed: ${response.status}</p>`;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `<p class="error">❌ Error: ${error.message}</p>`;
+            }
+        }
+        
+        async function testImageGen() {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = '<p>Testing image generation... (this may take 15-20 seconds)</p>';
+            
+            try {
+                const response = await fetch(`${backendUrl}/api/image-gen/generate`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        prompt: 'a cute cat',
+                        num_images: 1
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    const imageUrl = `${backendUrl}${data.images[0]}`;
+                    resultDiv.innerHTML = `
+                        <p class="success">✅ Image generation successful!</p>
+                        <pre>${JSON.stringify(data, null, 2)}</pre>
+                        <img src="${imageUrl}" alt="Generated image" style="max-width: 100%; margin-top: 10px;">
+                    `;
+                } else {
+                    resultDiv.innerHTML = `<p class="error">❌ Image generation failed: ${response.status}</p><pre>${JSON.stringify(data, null, 2)}</pre>`;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `<p class="error">❌ Error: ${error.message}</p>`;
+            }
+        }
+    </script>
+</body>
+</html>

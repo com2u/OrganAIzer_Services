@@ -4,8 +4,10 @@ Sets up FastAPI app, registers middleware, exception handlers, and API routes.
 """
 
 import logging
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
 from core.config import config
 from core.logging_config import setup_logging
@@ -16,32 +18,63 @@ from core.error_handling import (
     validation_error_handler,
     generic_error_handler
 )
-from api import tts, stt, image_gen, youtube, video
+from api import tts, stt, image_gen, youtube, video, chat, document, translation, knowledge_base
 
 # Set up logging
 setup_logging()
 logger = logging.getLogger(__name__)
 
-# Create FastAPI application
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Lifespan event handler for application startup and shutdown.
+    Replaces deprecated @app.on_event decorators.
+    """
+    # Startup
+    logger.info("Starting OrganAIzer Services API")
+    
+    # Ensure required directories exist
+    config.ensure_directories()
+    logger.info(f"TTS temporary directory: {config.TTS_TEMP_DIR}")
+    logger.info(f"Image generation temporary directory: {config.IMAGE_GEN_TEMP_DIR}")
+    
+    # Note: Image generation now uses Google AI Studio (Gemini) via Node.js scripts
+    # Vertex AI initialization removed
+    
+    logger.info("Application startup complete")
+    
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down OrganAIzer Services API")
+
+
+# Create FastAPI application with lifespan handler
 app = FastAPI(
     title="OrganAIzer Services API",
     description="Backend API for AI-powered utilities including Text-to-Speech",
     version="1.0.0",
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
+    lifespan=lifespan
 )
 
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # In production, specify allowed origins
-    allow_credentials=True,
+    allow_credentials=False,  # Must be False when using wildcard origins
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Add logging middleware
 app.add_middleware(LoggingMiddleware)
+
+# Mount static files directory for images
+# This allows images to be accessed directly via /static/images/{filename}
+app.mount("/static/images", StaticFiles(directory=config.IMAGE_GEN_TEMP_DIR), name="images")
 
 # Register exception handlers
 app.add_exception_handler(AppError, app_error_handler)
@@ -54,35 +87,10 @@ app.include_router(stt.router, prefix="/api/stt")
 app.include_router(image_gen.router, prefix="/api")  # Includes both /image-gen and /nano-banana endpoints
 app.include_router(youtube.router, prefix="/api")  # YouTube transcription endpoints (backwards compatible)
 app.include_router(video.router, prefix="/api")  # Unified video transcription endpoints
-
-
-
-@app.on_event("startup")
-async def startup_event():
-    """
-    Runs on application startup.
-    Ensures required directories exist and logs startup information.
-    """
-    logger.info("Starting OrganAIzer Services API")
-    
-    # Ensure required directories exist
-    config.ensure_directories()
-    logger.info(f"TTS temporary directory: {config.TTS_TEMP_DIR}")
-    logger.info(f"Image generation temporary directory: {config.IMAGE_GEN_TEMP_DIR}")
-    
-    # Note: Image generation now uses Google AI Studio (Gemini) via Node.js scripts
-    # Vertex AI initialization removed
-    
-    logger.info("Application startup complete")
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """
-    Runs on application shutdown.
-    Performs cleanup tasks if needed.
-    """
-    logger.info("Shutting down OrganAIzer Services API")
+app.include_router(chat.router, prefix="/api")  # LLM chat endpoints
+app.include_router(document.router, prefix="/api")  # Document analysis endpoints
+app.include_router(translation.router, prefix="/api")  # Translation endpoints
+app.include_router(knowledge_base.router, prefix="/api")  # Knowledge base (RAG) endpoints
 
 
 @app.get("/health")

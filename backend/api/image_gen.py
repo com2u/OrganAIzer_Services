@@ -44,8 +44,9 @@ async def generate_images(request: ImageGenerateRequest):
             aspect_ratio=request.aspect_ratio
         )
         
-        # Build image URLs
-        image_urls = [f"/api/image-gen/image/{image_id}" for image_id in image_ids]
+        # Build static file URLs that can be accessed directly
+        # Format: /static/images/image_{id}.png
+        image_urls = [f"/static/images/image_{image_id}.png" for image_id in image_ids]
         
         logger.info(f"Successfully generated {len(image_urls)} images")
         

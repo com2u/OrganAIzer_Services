@@ -1,0 +1,484 @@
+openapi: 3.0.3
+info:
+  title: OrganAIzer Services API
+  description: |
+    Backend API for AI-powered utilities including:
+    - Text-to-Speech (TTS)
+    - Speech-to-Text (STT)
+    - Image Generation
+    - Video Transcription
+    - AI Chat (LLM)
+    
+    All services leverage advanced AI models including Google Gemini and OpenRouter.
+  version: 1.0.0
+  contact:
+    name: OrganAIzer Services
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8000
+    description: Local development server
+  - url: https://api.organizer.example.com
+    description: Production server (example)
+
+tags:
+  - name: Health
+    description: API health and status endpoints
+  - name: TTS
+    description: Text-to-Speech generation
+  - name: STT
+    description: Speech-to-Text transcription
+  - name: Image Generation
+    description: Text-to-Image generation
+  - name: Video
+    description: Video transcription (YouTube and file uploads)
+  - name: Chat
+    description: LLM chat completions via OpenRouter
+
+paths:
+  /:
+    get:
+      summary: Root endpoint
+      description: Returns basic API information and links to documentation
+      tags:
+        - Health
+      responses:
+        '200':
+          description: API information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: OrganAIzer Services API
+                  version:
+                    type: string
+                    example: 1.0.0
+                  docs:
+                    type: string
+                    example: /docs
+                  redoc:
+                    type: string
+                    example: /redoc
+                  health:
+                    type: string
+                    example: /health
+
+  /health:
+    get:
+      summary: Health check
+      description: Returns API health status for monitoring
+      tags:
+        - Health
+      responses:
+        '200':
+          description: API is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /api/tts/generate:
+    post:
+      summary: Generate speech from text
+      description: Converts markdown-formatted text to speech audio using Google TTS
+      tags:
+        - TTS
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - text_md
+              properties:
+                text_md:
+                  type: string
+                  description: Markdown-formatted text to convert to speech
+                  example: "# Hello World\n\nThis is a **test**."
+      responses:
+        '200':
+          description: Speech generated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  text_normalized:
+                    type: string
+                    description: Normalized text (markdown converted to plain text)
+                  language:
+                    type: string
+                    description: Detected language code
+                    example: en
+                  audio_url:
+                    type: string
+                    description: URL to download/stream the generated audio
+                    example: /api/tts/audio/abc123
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/tts/audio/{audio_id}:
+    get:
+      summary: Download generated audio
+      description: Retrieves the generated audio file
+      tags:
+        - TTS
+      parameters:
+        - name: audio_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Audio file identifier
+      responses:
+        '200':
+          description: Audio file
+          content:
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/stt/transcribe:
+    post:
+      summary: Transcribe audio to text
+      description: Converts audio file to text using Google Speech-to-Text
+      tags:
+        - STT
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Audio file (MP3, WAV, M4A, OGG, FLAC)
+                language:
+                  type: string
+                  description: Optional language hint (e.g., 'en', 'de')
+                  example: en
+      responses:
+        '200':
+          description: Transcription successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transcript:
+                    type: string
+                    description: Transcribed text
+                  language:
+                    type: string
+                    description: Detected language
+                  duration_seconds:
+                    type: number
+                    description: Audio duration in seconds
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/image-gen/generate:
+    post:
+      summary: Generate images from text (OpenRouter)
+      description: Creates images from text prompts using OpenRouter API
+      tags:
+        - Image Generation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - prompt
+              properties:
+                prompt:
+                  type: string
+                  description: Text description of the image to generate
+                  example: A beautiful sunset over mountains
+                num_images:
+                  type: integer
+                  description: Number of images to generate (1-4)
+                  default: 1
+                  minimum: 1
+                  maximum: 4
+                aspect_ratio:
+                  type: string
+                  description: Image aspect ratio
+                  default: "1:1"
+                  enum: ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]
+      responses:
+        '200':
+          description: Images generated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  prompt:
+                    type: string
+                  images:
+                    type: array
+                    items:
+                      type: string
+                      description: Image ID
+                  num_images:
+                    type: integer
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/image-gen/image/{image_id}:
+    get:
+      summary: Download generated image
+      description: Retrieves a generated image file
+      tags:
+        - Image Generation
+      parameters:
+        - name: image_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Image identifier
+      responses:
+        '200':
+          description: Image file
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/video/transcribe:
+    post:
+      summary: Transcribe video to text
+      description: Transcribes video from YouTube URL, generic URL, or uploaded file
+      tags:
+        - Video
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - source_type
+              properties:
+                source_type:
+                  type: string
+                  enum: [youtube, url, upload]
+                  description: Type of video source
+                video_url:
+                  type: string
+                  description: Video URL (required for youtube and url types)
+                  example: https://www.youtube.com/watch?v=dQw4w9WgXcQ
+                file:
+                  type: string
+                  format: binary
+                  description: Video file (required for upload type)
+                language_preference:
+                  type: string
+                  description: Language preference for transcription
+                  default: auto
+                  example: en
+                quality_mode:
+                  type: string
+                  enum: [fast, accurate]
+                  description: Transcription quality mode
+                  default: accurate
+      responses:
+        '200':
+          description: Video transcribed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  source_type:
+                    type: string
+                    example: youtube
+                  source_url:
+                    type: string
+                  transcript:
+                    type: string
+                    description: Transcribed text
+                  detected_language:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/chat/completion:
+    post:
+      summary: Generate chat completion
+      description: Sends a prompt to an LLM and receives a response via OpenRouter
+      tags:
+        - Chat
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - prompt
+              properties:
+                prompt:
+                  type: string
+                  description: User's message/prompt
+                  example: What is the capital of France?
+                model:
+                  type: string
+                  description: Model to use (defaults to .env MODEL setting)
+                  example: google/gemini-2.5-flash
+                conversation_history:
+                  type: array
+                  description: Previous conversation messages for context
+                  items:
+                    type: object
+                    properties:
+                      role:
+                        type: string
+                        enum: [user, assistant, system]
+                      content:
+                        type: string
+                temperature:
+                  type: number
+                  description: Sampling temperature (0.0 to 2.0)
+                  default: 0.7
+                  minimum: 0.0
+                  maximum: 2.0
+                max_tokens:
+                  type: integer
+                  description: Maximum tokens to generate
+                  default: 1000
+                  minimum: 1
+      responses:
+        '200':
+          description: Chat completion successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  response:
+                    type: string
+                    description: AI's response
+                  model:
+                    type: string
+                    description: Model that generated the response
+                  usage:
+                    type: object
+                    description: Token usage information
+                    properties:
+                      prompt_tokens:
+                        type: integer
+                      completion_tokens:
+                        type: integer
+                      total_tokens:
+                        type: integer
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/chat/models:
+    get:
+      summary: Get available AI models
+      description: Returns list of available LLM models from OpenRouter
+      tags:
+        - Chat
+      responses:
+        '200':
+          description: Models retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  current_model:
+                    type: string
+                    description: Currently configured default model
+                    example: google/gemini-2.5-flash
+                  models:
+                    type: array
+                    description: List of available models
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          description: Model identifier
+                        name:
+                          type: string
+                          description: Display name
+                        description:
+                          type: string
+                          description: Model description
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  responses:
+    BadRequest:
+      description: Bad request - invalid input
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        detail:
+          type: object
+          properties:
+            code:
+              type: string
+              description: Error code
+            message:
+              type: string
+              description: Error message
+            details:
+              type: object
+              description: Additional error details

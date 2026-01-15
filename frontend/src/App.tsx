@@ -9,8 +9,9 @@ import TTSPage from './pages/TTSPage';
 import STTPage from './pages/STTPage';
 import ImageGenPage from './pages/ImageGenPage';
 import YouTubePage from './pages/YouTubePage';
+import ChatPage from './pages/ChatPage';
 
-type PageType = 'tts' | 'stt' | 'image-gen' | 'youtube';
+type PageType = 'tts' | 'stt' | 'image-gen' | 'youtube' | 'chat';
 
 export default function App() {
   const [currentPage, setCurrentPage] = useState<PageType>('tts');
@@ -63,6 +64,16 @@ export default function App() {
             >
               Video → Text
             </button>
+            <button
+              onClick={() => setCurrentPage('chat')}
+              className={`py-4 px-6 font-medium text-sm border-b-2 transition-colors ${
+                currentPage === 'chat'
+                  ? 'border-green-600 text-green-600'
+                  : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+              }`}
+            >
+              AI Chat
+            </button>
           </nav>
         </div>
       </div>
@@ -72,6 +83,7 @@ export default function App() {
         {currentPage === 'stt' && <STTPage />}
         {currentPage === 'image-gen' && <ImageGenPage />}
         {currentPage === 'youtube' && <YouTubePage />}
+        {currentPage === 'chat' && <ChatPage />}
       </main>
     </div>
   );
