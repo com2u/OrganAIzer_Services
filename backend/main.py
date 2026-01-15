@@ -18,7 +18,7 @@ from core.error_handling import (
     validation_error_handler,
     generic_error_handler
 )
-from api import tts, stt, image_gen, youtube, video, chat, document, translation, knowledge_base
+from api import tts, stt, image_gen, youtube, video, chat, document, translation, knowledge_base, integrations
 
 # Set up logging
 setup_logging()
@@ -53,10 +53,55 @@ async def lifespan(app: FastAPI):
 # Create FastAPI application with lifespan handler
 app = FastAPI(
     title="OrganAIzer Services API",
-    description="Backend API for AI-powered utilities including Text-to-Speech",
+    description="""
+    **OrganAIzer Services** - Comprehensive AI-powered backend API
+    
+    ## Features
+    
+    * **Text-to-Speech (TTS)** - Convert text to natural speech using Google TTS
+    * **Speech-to-Text (STT)** - Transcribe audio files to text
+    * **Image Generation** - Create images from text prompts (Vertex AI Imagen & Gemini)
+    * **Video Transcription** - Transcribe videos from YouTube, URLs, or uploads
+    * **AI Chat** - LLM chat completions via OpenRouter (Gemini, Claude, GPT, etc.)
+    * **Document Analysis** - Upload, summarize, and chat with documents (PDF, DOCX, TXT, MD)
+    * **Translation** - Translate text, audio, and files between 30+ languages
+    * **Knowledge Base (RAG)** - Semantic search and Q&A over your content
+    * **Integrations** - Google and Outlook integration (Calendar, Mail) - BETA
+    
+    ## Technology Stack
+    
+    * FastAPI for high-performance API
+    * Google AI (Gemini, Vertex AI) for advanced AI capabilities
+    * OpenRouter for multi-model LLM access
+    * TF-IDF vectorization for semantic search
+    * FFmpeg for audio/video processing
+    
+    All services are designed for production use with comprehensive error handling,
+    logging, and monitoring capabilities.
+    """,
     version="1.0.0",
+    contact={
+        "name": "OrganAIzer Services",
+        "url": "https://github.com/com2u/OrganAIzer_Services",
+    },
+    license_info={
+        "name": "MIT",
+        "url": "https://opensource.org/licenses/MIT",
+    },
     docs_url="/docs",
     redoc_url="/redoc",
+    openapi_tags=[
+        {"name": "Health", "description": "API health and status endpoints"},
+        {"name": "TTS", "description": "Text-to-Speech generation using Google TTS"},
+        {"name": "STT", "description": "Speech-to-Text transcription using Google STT"},
+        {"name": "Image Generation", "description": "Text-to-Image generation (Vertex AI Imagen & Gemini 2.5 Flash Image)"},
+        {"name": "Video Transcription", "description": "Video transcription from YouTube, URLs, or file uploads"},
+        {"name": "chat", "description": "LLM chat completions via OpenRouter"},
+        {"name": "documents", "description": "Document upload, summarization, and Q&A"},
+        {"name": "translation", "description": "Multi-language translation for text, audio, and files"},
+        {"name": "knowledge-base", "description": "Knowledge base (RAG) for semantic search and Q&A"},
+        {"name": "Integrations", "description": "External service integrations (Google, Outlook) - BETA/PLANNED"},
+    ],
     lifespan=lifespan
 )
 
@@ -91,6 +136,7 @@ app.include_router(chat.router, prefix="/api")  # LLM chat endpoints
 app.include_router(document.router, prefix="/api")  # Document analysis endpoints
 app.include_router(translation.router, prefix="/api")  # Translation endpoints
 app.include_router(knowledge_base.router, prefix="/api")  # Knowledge base (RAG) endpoints
+app.include_router(integrations.router, prefix="/api")  # External integrations (Google, Outlook) - BETA
 
 
 @app.get("/health")

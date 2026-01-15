@@ -77,13 +77,40 @@ This is a comprehensive AI-powered utilities platform offering multiple services
 
 ## API Documentation
 
-**Complete OpenAPI Specification**: See [`openapi.yaml`](openapi.yaml) for the full API documentation.
+**Complete OpenAPI Specification**: See [`openapi.yaml`](openapi.yaml) or [`openapi.json`](openapi.json) for the full API documentation.
 
 **Interactive API Docs**: 
 - Swagger UI: http://localhost:8000/docs
 - ReDoc: http://localhost:8000/redoc
 
 All services are accessible through a RESTful API with consistent error handling and response formats.
+
+### Regenerating OpenAPI Specification
+
+To regenerate the OpenAPI specification files (e.g., after adding new endpoints or modifying existing ones):
+
+```bash
+# Make sure you're in the repository root directory
+python backend/export_openapi.py
+```
+
+This will:
+1. Load the FastAPI application and all registered routes
+2. Generate the complete OpenAPI 3.1.0 specification
+3. Export both `openapi.yaml` and `openapi.json` to the repository root
+
+**When to regenerate:**
+- After adding new API endpoints
+- After modifying endpoint parameters or response models
+- After updating API metadata (title, description, version)
+- Before creating a new release
+
+**Note:** The OpenAPI spec is automatically generated from your FastAPI app code, including:
+- All route definitions and HTTP methods
+- Request/response models (Pydantic schemas)
+- Endpoint descriptions and summaries
+- Tags and security schemes
+- Example values and validation rules
 
 ## Architecture
 

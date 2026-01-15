@@ -1,484 +1,2798 @@
-openapi: 3.0.3
+openapi: 3.1.0
 info:
   title: OrganAIzer Services API
-  description: |
-    Backend API for AI-powered utilities including:
-    - Text-to-Speech (TTS)
-    - Speech-to-Text (STT)
-    - Image Generation
-    - Video Transcription
-    - AI Chat (LLM)
-    
-    All services leverage advanced AI models including Google Gemini and OpenRouter.
-  version: 1.0.0
+  description: "\n    **OrganAIzer Services** - Comprehensive AI-powered backend API\n\
+    \    \n    ## Features\n    \n    * **Text-to-Speech (TTS)** - Convert text to\
+    \ natural speech using Google TTS\n    * **Speech-to-Text (STT)** - Transcribe\
+    \ audio files to text\n    * **Image Generation** - Create images from text prompts\
+    \ (Vertex AI Imagen & Gemini)\n    * **Video Transcription** - Transcribe videos\
+    \ from YouTube, URLs, or uploads\n    * **AI Chat** - LLM chat completions via\
+    \ OpenRouter (Gemini, Claude, GPT, etc.)\n    * **Document Analysis** - Upload,\
+    \ summarize, and chat with documents (PDF, DOCX, TXT, MD)\n    * **Translation**\
+    \ - Translate text, audio, and files between 30+ languages\n    * **Knowledge\
+    \ Base (RAG)** - Semantic search and Q&A over your content\n    * **Integrations**\
+    \ - Google and Outlook integration (Calendar, Mail) - BETA\n    \n    ## Technology\
+    \ Stack\n    \n    * FastAPI for high-performance API\n    * Google AI (Gemini,\
+    \ Vertex AI) for advanced AI capabilities\n    * OpenRouter for multi-model LLM\
+    \ access\n    * TF-IDF vectorization for semantic search\n    * FFmpeg for audio/video\
+    \ processing\n    \n    All services are designed for production use with comprehensive\
+    \ error handling,\n    logging, and monitoring capabilities.\n    "
   contact:
     name: OrganAIzer Services
+    url: https://github.com/com2u/OrganAIzer_Services
   license:
     name: MIT
-
-servers:
-  - url: http://localhost:8000
-    description: Local development server
-  - url: https://api.organizer.example.com
-    description: Production server (example)
-
-tags:
-  - name: Health
-    description: API health and status endpoints
-  - name: TTS
-    description: Text-to-Speech generation
-  - name: STT
-    description: Speech-to-Text transcription
-  - name: Image Generation
-    description: Text-to-Image generation
-  - name: Video
-    description: Video transcription (YouTube and file uploads)
-  - name: Chat
-    description: LLM chat completions via OpenRouter
-
+    url: https://opensource.org/licenses/MIT
+  version: 1.0.0
 paths:
-  /:
-    get:
-      summary: Root endpoint
-      description: Returns basic API information and links to documentation
-      tags:
-        - Health
-      responses:
-        '200':
-          description: API information
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                    example: OrganAIzer Services API
-                  version:
-                    type: string
-                    example: 1.0.0
-                  docs:
-                    type: string
-                    example: /docs
-                  redoc:
-                    type: string
-                    example: /redoc
-                  health:
-                    type: string
-                    example: /health
-
-  /health:
-    get:
-      summary: Health check
-      description: Returns API health status for monitoring
-      tags:
-        - Health
-      responses:
-        '200':
-          description: API is healthy
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    example: ok
-
   /api/tts/generate:
     post:
-      summary: Generate speech from text
-      description: Converts markdown-formatted text to speech audio using Google TTS
       tags:
-        - TTS
+      - Text-to-Speech
+      summary: Generate Speech
+      description: "Generates speech from markdown-formatted text.\n\nProcesses the\
+        \ input through the following steps:\n1. Normalizes markdown to plain text\n\
+        2. Detects language\n3. Preprocesses text for natural speech\n4. Synthesizes\
+        \ speech and saves as MP3\n\nUsed by the frontend to convert user-provided\
+        \ markdown text into downloadable audio.\n\nArgs:\n    request: Request containing\
+        \ markdown text\n    \nReturns:\n    Response with normalized text, detected\
+        \ language, and audio download URL\n    \nRaises:\n    AppError: If any step\
+        \ in the TTS pipeline fails"
+      operationId: generate_speech_api_tts_generate_post
       requestBody:
-        required: true
         content:
           application/json:
             schema:
-              type: object
-              required:
-                - text_md
-              properties:
-                text_md:
-                  type: string
-                  description: Markdown-formatted text to convert to speech
-                  example: "# Hello World\n\nThis is a **test**."
+              $ref: '#/components/schemas/TTSGenerateRequest'
+        required: true
       responses:
         '200':
-          description: Speech generated successfully
+          description: Successful Response
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  text_normalized:
-                    type: string
-                    description: Normalized text (markdown converted to plain text)
-                  language:
-                    type: string
-                    description: Detected language code
-                    example: en
-                  audio_url:
-                    type: string
-                    description: URL to download/stream the generated audio
-                    example: /api/tts/audio/abc123
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '500':
-          $ref: '#/components/responses/InternalError'
-
+                $ref: '#/components/schemas/TTSGenerateResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/tts/audio/{audio_id}:
     get:
-      summary: Download generated audio
-      description: Retrieves the generated audio file
       tags:
-        - TTS
+      - Text-to-Speech
+      summary: Get Audio
+      description: "Downloads a generated MP3 audio file by its ID.\n\nRetrieves the\
+        \ MP3 file from temporary storage and returns it with appropriate headers.\n\
+        Used by the frontend to download or play generated audio files.\n\nArgs:\n\
+        \    audio_id: Unique identifier of the audio file (UUID)\n    \nReturns:\n\
+        \    FileResponse containing the MP3 audio file\n    \nRaises:\n    AppError:\
+        \ If the audio file is not found"
+      operationId: get_audio_api_tts_audio__audio_id__get
       parameters:
-        - name: audio_id
-          in: path
-          required: true
-          schema:
-            type: string
-          description: Audio file identifier
+      - name: audio_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Audio Id
       responses:
         '200':
-          description: Audio file
+          description: Successful Response
           content:
-            audio/mpeg:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
               schema:
-                type: string
-                format: binary
-        '404':
-          $ref: '#/components/responses/NotFound'
-
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/stt/transcribe:
     post:
-      summary: Transcribe audio to text
-      description: Converts audio file to text using Google Speech-to-Text
       tags:
-        - STT
+      - Speech-to-Text
+      summary: Transcribe Speech
+      description: "Transcribes an audio file to text using OpenAI Whisper.\n\nProcesses\
+        \ the uploaded audio through:\n1. File validation (format and size checks)\n\
+        2. Audio transcription using Whisper model with optional language hint\n3.\
+        \ Language detection\n4. Duration extraction\n\nProviding a language hint\
+        \ can significantly improve transcription accuracy,\nespecially for English\
+        \ ('en') and German ('de') content.\n\nUsed by the frontend to convert audio\
+        \ files into text transcripts.\n\nArgs:\n    file: Uploaded audio file (supports\
+        \ MP3, WAV, M4A, OGG, FLAC formats)\n    language: Optional language code\
+        \ hint (e.g., 'en', 'de', 'es', 'fr')\n    \nReturns:\n    Response with transcribed\
+        \ text, detected language, and audio duration\n    \nRaises:\n    AppError:\
+        \ If file validation or transcription fails"
+      operationId: transcribe_speech_api_stt_transcribe_post
       requestBody:
-        required: true
         content:
           multipart/form-data:
             schema:
-              type: object
-              required:
-                - file
-              properties:
-                file:
-                  type: string
-                  format: binary
-                  description: Audio file (MP3, WAV, M4A, OGG, FLAC)
-                language:
-                  type: string
-                  description: Optional language hint (e.g., 'en', 'de')
-                  example: en
+              $ref: '#/components/schemas/Body_transcribe_speech_api_stt_transcribe_post'
+        required: true
       responses:
         '200':
-          description: Transcription successful
+          description: Successful Response
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  transcript:
-                    type: string
-                    description: Transcribed text
-                  language:
-                    type: string
-                    description: Detected language
-                  duration_seconds:
-                    type: number
-                    description: Audio duration in seconds
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '500':
-          $ref: '#/components/responses/InternalError'
-
+                $ref: '#/components/schemas/STTTranscribeResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/image-gen/generate:
     post:
-      summary: Generate images from text (OpenRouter)
-      description: Creates images from text prompts using OpenRouter API
       tags:
-        - Image Generation
+      - Image Generation
+      summary: Generate Images
+      description: "Generate images from a text prompt using Vertex AI Imagen.\n\n\
+        Args:\n    request: Image generation request containing prompt and parameters\n\
+        \nReturns:\n    ImageGenerateResponse with generated image URLs\n\nRaises:\n\
+        \    HTTPException: If image generation fails"
+      operationId: generate_images_api_image_gen_generate_post
       requestBody:
-        required: true
         content:
           application/json:
             schema:
-              type: object
-              required:
-                - prompt
-              properties:
-                prompt:
-                  type: string
-                  description: Text description of the image to generate
-                  example: A beautiful sunset over mountains
-                num_images:
-                  type: integer
-                  description: Number of images to generate (1-4)
-                  default: 1
-                  minimum: 1
-                  maximum: 4
-                aspect_ratio:
-                  type: string
-                  description: Image aspect ratio
-                  default: "1:1"
-                  enum: ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"]
+              $ref: '#/components/schemas/ImageGenerateRequest'
+        required: true
       responses:
         '200':
-          description: Images generated successfully
+          description: Successful Response
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  prompt:
-                    type: string
-                  images:
-                    type: array
-                    items:
-                      type: string
-                      description: Image ID
-                  num_images:
-                    type: integer
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '500':
-          $ref: '#/components/responses/InternalError'
-
+                $ref: '#/components/schemas/ImageGenerateResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/image-gen/image/{image_id}:
     get:
-      summary: Download generated image
-      description: Retrieves a generated image file
       tags:
-        - Image Generation
+      - Image Generation
+      summary: Get Image
+      description: "Retrieve a generated image by its ID.\n\nArgs:\n    image_id:\
+        \ UUID of the generated image\n\nReturns:\n    FileResponse with the image\
+        \ file\n\nRaises:\n    HTTPException: If image not found"
+      operationId: get_image_api_image_gen_image__image_id__get
       parameters:
-        - name: image_id
-          in: path
-          required: true
-          schema:
-            type: string
-          description: Image identifier
+      - name: image_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Image Id
       responses:
         '200':
-          description: Image file
+          description: Successful Response
           content:
-            image/png:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
               schema:
-                type: string
-                format: binary
-        '404':
-          $ref: '#/components/responses/NotFound'
-
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/nano-banana/generate:
+    post:
+      tags:
+      - Image Generation
+      summary: Generate Nano Banana Images
+      description: "Generate images using Gemini 2.5 Flash Image (nano banana).\n\n\
+        Args:\n    request: Nano banana generation request containing prompt\n\nReturns:\n\
+        \    NanoBananaResponse with generated image data\n\nRaises:\n    HTTPException:\
+        \ If image generation fails"
+      operationId: generate_nano_banana_images_api_nano_banana_generate_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NanoBananaRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NanoBananaResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/nano-banana/image/{image_id}:
+    get:
+      tags:
+      - Image Generation
+      summary: Get Nano Banana Image
+      description: "Retrieve a nano banana generated image by its ID.\n\nArgs:\n \
+        \   image_id: UUID of the generated image\n\nReturns:\n    FileResponse with\
+        \ the image file\n\nRaises:\n    HTTPException: If image not found"
+      operationId: get_nano_banana_image_api_nano_banana_image__image_id__get
+      parameters:
+      - name: image_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Image Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/youtube/transcribe:
+    post:
+      tags:
+      - YouTube
+      summary: Transcribe Youtube
+      description: "Transcribes a YouTube video to text.\n\nDownloads the audio from\
+        \ the provided YouTube URL and transcribes it\nusing OpenRouter's audio-capable\
+        \ AI model.\n\nProcess:\n1. Downloads audio from YouTube using yt-dlp\n2.\
+        \ Transcribes audio using OpenRouter API (gpt-4o-audio-preview)\n3. Returns\
+        \ the transcript\n\nQuality Modes:\n- fast: Lower audio quality (64kbps),\
+        \ smaller files, faster processing\n- accurate: Higher audio quality (128kbps),\
+        \ better transcription accuracy\n\nUsed by the frontend to convert YouTube\
+        \ videos into text transcripts.\n\nArgs:\n    body: Request containing the\
+        \ YouTube URL and quality mode\n    \nReturns:\n    Response with the original\
+        \ URL and transcribed text\n    \nRaises:\n    AppError: If download or transcription\
+        \ fails"
+      operationId: transcribe_youtube_api_youtube_transcribe_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/YoutubeTranscribeRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/YoutubeTranscribeResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/video/transcribe:
     post:
-      summary: Transcribe video to text
-      description: Transcribes video from YouTube URL, generic URL, or uploaded file
       tags:
-        - Video
+      - Video Transcription
+      summary: Transcribe Video Endpoint
+      description: "Unified endpoint for transcribing videos from multiple sources.\n\
+        \nSupports three input types:\n1. YouTube URL - Downloads and transcribes\
+        \ YouTube videos\n2. Generic video URL - Downloads and transcribes videos\
+        \ from direct links\n3. File upload - Transcribes user-uploaded video files\n\
+        \nProcess:\n1. Validates input based on source type\n2. Downloads/receives\
+        \ video file\n3. Extracts audio using ffmpeg (for URL and upload types)\n\
+        4. Transcribes audio using Whisper or OpenRouter\n5. Returns transcript and\
+        \ metadata\n\nArgs:\n    source_type: Type of video source\n    video_url:\
+        \ URL to video (for youtube and url types)\n    language_preference: Language\
+        \ hint for better accuracy\n    quality_mode: Transcription quality mode\n\
+        \    file: Uploaded video file (for upload type)\n    \nReturns:\n    Response\
+        \ with transcript and detected language\n    \nRaises:\n    AppError: If transcription\
+        \ fails or invalid input provided"
+      operationId: transcribe_video_endpoint_api_video_transcribe_post
       requestBody:
-        required: true
         content:
           multipart/form-data:
             schema:
-              type: object
-              required:
-                - source_type
-              properties:
-                source_type:
-                  type: string
-                  enum: [youtube, url, upload]
-                  description: Type of video source
-                video_url:
-                  type: string
-                  description: Video URL (required for youtube and url types)
-                  example: https://www.youtube.com/watch?v=dQw4w9WgXcQ
-                file:
-                  type: string
-                  format: binary
-                  description: Video file (required for upload type)
-                language_preference:
-                  type: string
-                  description: Language preference for transcription
-                  default: auto
-                  example: en
-                quality_mode:
-                  type: string
-                  enum: [fast, accurate]
-                  description: Transcription quality mode
-                  default: accurate
+              $ref: '#/components/schemas/Body_transcribe_video_endpoint_api_video_transcribe_post'
+        required: true
       responses:
         '200':
-          description: Video transcribed successfully
+          description: Successful Response
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  source_type:
-                    type: string
-                    example: youtube
-                  source_url:
-                    type: string
-                  transcript:
-                    type: string
-                    description: Transcribed text
-                  detected_language:
-                    type: string
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '500':
-          $ref: '#/components/responses/InternalError'
-
+                $ref: '#/components/schemas/VideoTranscribeResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/chat/completion:
     post:
-      summary: Generate chat completion
-      description: Sends a prompt to an LLM and receives a response via OpenRouter
       tags:
-        - Chat
+      - chat
+      summary: Chat Completion
+      description: "Generate a chat completion using an LLM via OpenRouter.\n\nArgs:\n\
+        \    request: ChatRequest with prompt and optional parameters\n\nReturns:\n\
+        \    ChatResponse with AI's response"
+      operationId: chat_completion_api_chat_completion_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/chat/models:
+    get:
+      tags:
+      - chat
+      summary: Get Available Models
+      description: "Get list of available LLM models from OpenRouter.\n\nReturns:\n\
+        \    AvailableModelsResponse with current model and available models"
+      operationId: get_available_models_api_chat_models_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailableModelsResponse'
+  /api/documents/upload:
+    post:
+      tags:
+      - documents
+      summary: Upload Document
+      description: 'Upload and process a document.
+
+
+        Supports:
+
+        - PDF files
+
+        - DOCX files
+
+        - TXT files
+
+        - MD (Markdown) files
+
+
+        The document will be:
+
+        1. Text extracted
+
+        2. Chunked for processing
+
+        3. Language detected
+
+        4. Stored with unique ID
+
+
+        Returns document ID and metadata for further operations.'
+      operationId: upload_document_api_documents_upload_post
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_upload_document_api_documents_upload_post'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentUploadResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/documents/summarize:
+    post:
+      tags:
+      - documents
+      summary: Summarize Document
+      description: 'Generate summary and key points for a document.
+
+
+        Uses LLM to create:
+
+        - Concise summary (adjustable length)
+
+        - Key points/highlights as bullet list
+
+
+        Results are cached for faster subsequent access.'
+      operationId: summarize_document_api_documents_summarize_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DocumentSummaryRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentSummaryResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/documents/chat:
+    post:
+      tags:
+      - documents
+      summary: Chat With Document
+      description: 'Ask questions about a document (Q&A mode).
+
+
+        Uses RAG (Retrieval-Augmented Generation):
+
+        1. Finds relevant document sections
+
+        2. Uses them as context for LLM
+
+        3. Generates accurate, document-based answer
+
+
+        Supports conversation history for follow-up questions.'
+      operationId: chat_with_document_api_documents_chat_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DocumentChatRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentChatResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/documents/list:
+    get:
+      tags:
+      - documents
+      summary: List Documents
+      description: 'List all uploaded documents.
+
+
+        Returns basic info for each document including:
+
+        - Document ID
+
+        - Filename
+
+        - Text preview
+
+        - Metadata
+
+        - Cached summary (if available)'
+      operationId: list_documents_api_documents_list_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentListResponse'
+  /api/documents/{document_id}:
+    get:
+      tags:
+      - documents
+      summary: Get Document
+      description: 'Get document information by ID.
+
+
+        Returns full document metadata and cached analysis results.'
+      operationId: get_document_api_documents__document_id__get
+      parameters:
+      - name: document_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Document Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentInfo'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - documents
+      summary: Delete Document
+      description: 'Delete a document by ID.
+
+
+        Removes document and all associated data.'
+      operationId: delete_document_api_documents__document_id__delete
+      parameters:
+      - name: document_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Document Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentDeleteResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/translate/text:
+    post:
+      tags:
+      - translation
+      summary: Translate Text
+      description: 'Translate text to target language.
+
+
+        Features:
+
+        - Auto-detects source language if not provided
+
+        - High-quality LLM-based translation
+
+        - Supports 30+ languages
+
+
+        The translation uses context-aware LLM processing for natural,
+
+        accurate translations.'
+      operationId: translate_text_api_translate_text_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TextTranslationRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TextTranslationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/translate/audio:
+    post:
+      tags:
+      - translation
+      summary: Translate Audio
+      description: 'Translate audio file to target language.
+
+
+        Process:
+
+        1. Transcribe audio (STT)
+
+        2. Detect source language
+
+        3. Translate to target language
+
+        4. Optionally generate TTS audio
+
+
+        This integrates OrganAIzer''s STT, translation, and TTS capabilities
+
+        into a complete audio translation pipeline.'
+      operationId: translate_audio_api_translate_audio_post
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_translate_audio_api_translate_audio_post'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AudioTranslationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/translate/file:
+    post:
+      tags:
+      - translation
+      summary: Translate File
+      description: 'Translate text file to target language.
+
+
+        Supports:
+
+        - .txt files
+
+        - .md (Markdown) files
+
+
+        Returns translated text with detected source language.'
+      operationId: translate_file_api_translate_file_post
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_translate_file_api_translate_file_post'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileTranslationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/translate/detect:
+    post:
+      tags:
+      - translation
+      summary: Detect Language
+      description: 'Detect the language of given text.
+
+
+        Uses langdetect library for fast, accurate language detection.
+
+        Supports 50+ languages.'
+      operationId: detect_language_api_translate_detect_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TextTranslationRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LanguageDetectionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/translate/languages:
+    get:
+      tags:
+      - translation
+      summary: Get Supported Languages
+      description: 'Get list of supported languages.
+
+
+        Returns language codes and names for all supported languages.
+
+        Use these codes for the target_language and source_language parameters.'
+      operationId: get_supported_languages_api_translate_languages_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportedLanguagesResponse'
+  /api/kb/add:
+    post:
+      tags:
+      - knowledge-base
+      summary: Add Content
+      description: 'Add content to the knowledge base.
+
+
+        Content can be:
+
+        - Notes
+
+        - Document summaries
+
+        - Transcriptions
+
+        - Any text you want to remember
+
+
+        The content will be:
+
+        1. Chunked for optimal search
+
+        2. Indexed for semantic search
+
+        3. Available for RAG chat'
+      operationId: add_content_api_kb_add_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KBAddRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KBAddResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/kb/search:
+    post:
+      tags:
+      - knowledge-base
+      summary: Search Knowledge Base
+      description: 'Search the knowledge base.
+
+
+        Uses semantic search (TF-IDF + cosine similarity) to find
+
+        relevant content chunks.
+
+
+        Features:
+
+        - Semantic similarity matching
+
+        - Adjustable result count
+
+        - Minimum score filtering
+
+        - Source type filtering'
+      operationId: search_knowledge_base_api_kb_search_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KBSearchRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KBSearchResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/kb/chat:
+    post:
+      tags:
+      - knowledge-base
+      summary: Chat With Knowledge Base
+      description: 'Chat with your knowledge base using RAG.
+
+
+        This is OrganAIzer''s memory - ask questions and get answers
+
+        based on everything you''ve stored.
+
+
+        Process:
+
+        1. Search for relevant content
+
+        2. Use as context for LLM
+
+        3. Generate accurate, sourced answer
+
+
+        Supports conversation history for follow-up questions.'
+      operationId: chat_with_knowledge_base_api_kb_chat_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KBChatRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KBChatResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/kb/list:
+    get:
+      tags:
+      - knowledge-base
+      summary: List Knowledge Base Contents
+      description: 'List all content in the knowledge base.
+
+
+        Returns summary information for each content item including:
+
+        - Content ID and title
+
+        - Content preview
+
+        - Source type
+
+        - Number of chunks
+
+        - Metadata'
+      operationId: list_knowledge_base_contents_api_kb_list_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KBListResponse'
+  /api/kb/{content_id}:
+    delete:
+      tags:
+      - knowledge-base
+      summary: Delete Knowledge Base Content
+      description: 'Delete content from the knowledge base.
+
+
+        This will:
+
+        1. Remove the content
+
+        2. Rebuild the search index'
+      operationId: delete_knowledge_base_content_api_kb__content_id__delete
+      parameters:
+      - name: content_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Content Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KBDeleteResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/kb/reindex:
+    post:
+      tags:
+      - knowledge-base
+      summary: Reindex Knowledge Base
+      description: 'Rebuild the knowledge base search index.
+
+
+        Use this to:
+
+        - Recover from index corruption
+
+        - Optimize search performance
+
+        - Apply index updates
+
+
+        This may take a while for large knowledge bases.'
+      operationId: reindex_knowledge_base_api_kb_reindex_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KBReindexResponse'
+  /api/kb/stats:
+    get:
+      tags:
+      - knowledge-base
+      summary: Get Knowledge Base Stats
+      description: 'Get knowledge base statistics.
+
+
+        Returns:
+
+        - Total content items
+
+        - Total chunks indexed
+
+        - Index size
+
+        - Breakdown by source type
+
+        - Last update timestamp'
+      operationId: get_knowledge_base_stats_api_kb_stats_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KBStats'
+  /api/integrations/google/auth/start:
+    get:
+      tags:
+      - Integrations
+      summary: Google Auth Start
+      description: 'Start Google OAuth authentication flow.
+
+
+        **Status: BETA/PLANNED**
+
+
+        Returns OAuth URL to redirect user for Google account authorization.
+
+        This will grant access to Google Calendar and Gmail.'
+      operationId: google_auth_start_api_integrations_google_auth_start_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthStartResponse'
+  /api/integrations/google/auth/callback:
+    post:
+      tags:
+      - Integrations
+      summary: Google Auth Callback
+      description: 'Handle Google OAuth callback.
+
+
+        **Status: BETA/PLANNED**
+
+
+        Processes the OAuth callback from Google and stores access tokens.'
+      operationId: google_auth_callback_api_integrations_google_auth_callback_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthCallbackRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthCallbackResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/integrations/google/calendar/events:
+    get:
+      tags:
+      - Integrations
+      summary: Google Calendar List Events
+      description: 'List Google Calendar events.
+
+
+        **Status: BETA/PLANNED**
+
+
+        Retrieves events from the user''s primary Google Calendar.
+
+        Requires prior authentication via /google/auth/start.'
+      operationId: google_calendar_list_events_api_integrations_google_calendar_events_get
+      parameters:
+      - name: max_results
+        in: query
+        required: false
+        schema:
+          type: integer
+          description: Maximum number of events to return
+          default: 10
+          title: Max Results
+        description: Maximum number of events to return
+      - name: time_min
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Lower bound for event start time (ISO 8601)
+          title: Time Min
+        description: Lower bound for event start time (ISO 8601)
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEventsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    post:
+      tags:
+      - Integrations
+      summary: Google Calendar Create Event
+      description: 'Create a new Google Calendar event.
+
+
+        **Status: BETA/PLANNED**
+
+
+        Creates an event in the user''s primary Google Calendar.
+
+        Requires prior authentication via /google/auth/start.'
+      operationId: google_calendar_create_event_api_integrations_google_calendar_events_post
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required:
-                - prompt
-              properties:
-                prompt:
-                  type: string
-                  description: User's message/prompt
-                  example: What is the capital of France?
-                model:
-                  type: string
-                  description: Model to use (defaults to .env MODEL setting)
-                  example: google/gemini-2.5-flash
-                conversation_history:
-                  type: array
-                  description: Previous conversation messages for context
-                  items:
-                    type: object
-                    properties:
-                      role:
-                        type: string
-                        enum: [user, assistant, system]
-                      content:
-                        type: string
-                temperature:
-                  type: number
-                  description: Sampling temperature (0.0 to 2.0)
-                  default: 0.7
-                  minimum: 0.0
-                  maximum: 2.0
-                max_tokens:
-                  type: integer
-                  description: Maximum tokens to generate
-                  default: 1000
-                  minimum: 1
+              $ref: '#/components/schemas/CalendarEventCreateRequest'
       responses:
         '200':
-          description: Chat completion successful
+          description: Successful Response
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  response:
-                    type: string
-                    description: AI's response
-                  model:
-                    type: string
-                    description: Model that generated the response
-                  usage:
-                    type: object
-                    description: Token usage information
-                    properties:
-                      prompt_tokens:
-                        type: integer
-                      completion_tokens:
-                        type: integer
-                      total_tokens:
-                        type: integer
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '500':
-          $ref: '#/components/responses/InternalError'
-
-  /api/chat/models:
-    get:
-      summary: Get available AI models
-      description: Returns list of available LLM models from OpenRouter
+                $ref: '#/components/schemas/CalendarEvent'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/integrations/google/gmail/send:
+    post:
       tags:
-        - Chat
+      - Integrations
+      summary: Google Gmail Send
+      description: 'Send an email via Gmail.
+
+
+        **Status: BETA/PLANNED**
+
+
+        Sends an email using the authenticated user''s Gmail account.
+
+        Requires prior authentication via /google/auth/start.'
+      operationId: google_gmail_send_api_integrations_google_gmail_send_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MailSendRequest'
+        required: true
       responses:
         '200':
-          description: Models retrieved successfully
+          description: Successful Response
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  current_model:
-                    type: string
-                    description: Currently configured default model
-                    example: google/gemini-2.5-flash
-                  models:
-                    type: array
-                    description: List of available models
-                    items:
-                      type: object
-                      properties:
-                        id:
-                          type: string
-                          description: Model identifier
-                        name:
-                          type: string
-                          description: Display name
-                        description:
-                          type: string
-                          description: Model description
-        '500':
-          $ref: '#/components/responses/InternalError'
+                $ref: '#/components/schemas/MailSendResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/integrations/outlook/auth/start:
+    get:
+      tags:
+      - Integrations
+      summary: Outlook Auth Start
+      description: 'Start Outlook/Microsoft OAuth authentication flow.
 
+
+        **Status: BETA/PLANNED**
+
+
+        Returns OAuth URL to redirect user for Microsoft account authorization.
+
+        This will grant access to Outlook Calendar and Mail.'
+      operationId: outlook_auth_start_api_integrations_outlook_auth_start_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthStartResponse'
+  /api/integrations/outlook/auth/callback:
+    post:
+      tags:
+      - Integrations
+      summary: Outlook Auth Callback
+      description: 'Handle Outlook/Microsoft OAuth callback.
+
+
+        **Status: BETA/PLANNED**
+
+
+        Processes the OAuth callback from Microsoft and stores access tokens.'
+      operationId: outlook_auth_callback_api_integrations_outlook_auth_callback_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthCallbackRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthCallbackResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/integrations/outlook/calendar/events:
+    get:
+      tags:
+      - Integrations
+      summary: Outlook Calendar List Events
+      description: 'List Outlook Calendar events.
+
+
+        **Status: BETA/PLANNED**
+
+
+        Retrieves events from the user''s Outlook Calendar.
+
+        Requires prior authentication via /outlook/auth/start.'
+      operationId: outlook_calendar_list_events_api_integrations_outlook_calendar_events_get
+      parameters:
+      - name: max_results
+        in: query
+        required: false
+        schema:
+          type: integer
+          description: Maximum number of events to return
+          default: 10
+          title: Max Results
+        description: Maximum number of events to return
+      - name: time_min
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Lower bound for event start time (ISO 8601)
+          title: Time Min
+        description: Lower bound for event start time (ISO 8601)
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEventsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    post:
+      tags:
+      - Integrations
+      summary: Outlook Calendar Create Event
+      description: 'Create a new Outlook Calendar event.
+
+
+        **Status: BETA/PLANNED**
+
+
+        Creates an event in the user''s Outlook Calendar.
+
+        Requires prior authentication via /outlook/auth/start.'
+      operationId: outlook_calendar_create_event_api_integrations_outlook_calendar_events_post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarEventCreateRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarEvent'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/integrations/outlook/mail/send:
+    post:
+      tags:
+      - Integrations
+      summary: Outlook Mail Send
+      description: 'Send an email via Outlook.
+
+
+        **Status: BETA/PLANNED**
+
+
+        Sends an email using the authenticated user''s Outlook account.
+
+        Requires prior authentication via /outlook/auth/start.'
+      operationId: outlook_mail_send_api_integrations_outlook_mail_send_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MailSendRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MailSendResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /health:
+    get:
+      summary: Health Check
+      description: 'Health check endpoint.
+
+        Returns a simple status indicating the API is running.
+
+        Used for monitoring and load balancer health checks.'
+      operationId: health_check_health_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /:
+    get:
+      summary: Root
+      description: 'Root endpoint.
+
+        Provides basic API information and links to documentation.'
+      operationId: root__get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
 components:
-  responses:
-    BadRequest:
-      description: Bad request - invalid input
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
-    
-    NotFound:
-      description: Resource not found
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
-    
-    InternalError:
-      description: Internal server error
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
-
   schemas:
-    Error:
+    AudioTranslationResponse:
+      properties:
+        transcript:
+          type: string
+          title: Transcript
+          description: Transcribed text from audio
+        translated_text:
+          type: string
+          title: Translated Text
+          description: Translated text
+        source_language:
+          type: string
+          title: Source Language
+          description: Detected source language
+        target_language:
+          type: string
+          title: Target Language
+          description: Target language
+        audio_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Audio Url
+          description: URL to translated audio (if generated)
       type: object
+      required:
+      - transcript
+      - translated_text
+      - source_language
+      - target_language
+      title: AudioTranslationResponse
+      description: Response from audio translation.
+    AuthCallbackRequest:
+      properties:
+        code:
+          type: string
+          title: Code
+          description: Authorization code from OAuth provider
+        state:
+          type: string
+          title: State
+          description: OAuth state parameter
+      type: object
+      required:
+      - code
+      - state
+      title: AuthCallbackRequest
+      description: OAuth callback request.
+    AuthCallbackResponse:
+      properties:
+        success:
+          type: boolean
+          title: Success
+          description: Whether authentication was successful
+        message:
+          type: string
+          title: Message
+          description: Success or error message
+        user_info:
+          anyOf:
+          - type: object
+          - type: 'null'
+          title: User Info
+          description: User information if available
+      type: object
+      required:
+      - success
+      - message
+      title: AuthCallbackResponse
+      description: OAuth callback response.
+    AuthStartResponse:
+      properties:
+        auth_url:
+          type: string
+          title: Auth Url
+          description: URL to redirect user for OAuth authorization
+        state:
+          type: string
+          title: State
+          description: OAuth state parameter for security
+      type: object
+      required:
+      - auth_url
+      - state
+      title: AuthStartResponse
+      description: Response when starting OAuth flow.
+    AvailableModelsResponse:
+      properties:
+        current_model:
+          type: string
+          title: Current Model
+          description: Currently configured default model
+        models:
+          items:
+            $ref: '#/components/schemas/ModelInfo'
+          type: array
+          title: Models
+          description: List of available models
+      type: object
+      required:
+      - current_model
+      - models
+      title: AvailableModelsResponse
+      description: Response model for available models list.
+    Body_transcribe_speech_api_stt_transcribe_post:
+      properties:
+        file:
+          type: string
+          format: binary
+          title: File
+          description: Audio file to transcribe (MP3, WAV, M4A, OGG, FLAC)
+        language:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Language
+          description: Language hint (e.g., 'en' for English, 'de' for German)
+      type: object
+      required:
+      - file
+      title: Body_transcribe_speech_api_stt_transcribe_post
+    Body_transcribe_video_endpoint_api_video_transcribe_post:
+      properties:
+        source_type:
+          type: string
+          title: Source Type
+          description: 'Type of video source: ''youtube'', ''url'', or ''upload'''
+        video_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Video Url
+          description: Video URL (required for 'youtube' and 'url' source types)
+        language_preference:
+          type: string
+          title: Language Preference
+          description: Language preference for transcription
+          default: auto
+        quality_mode:
+          type: string
+          title: Quality Mode
+          description: 'Quality mode: ''fast'' or ''accurate'''
+          default: accurate
+        file:
+          anyOf:
+          - type: string
+            format: binary
+          - type: 'null'
+          title: File
+          description: Video file (required for 'upload' source type)
+      type: object
+      required:
+      - source_type
+      title: Body_transcribe_video_endpoint_api_video_transcribe_post
+    Body_translate_audio_api_translate_audio_post:
+      properties:
+        file:
+          type: string
+          format: binary
+          title: File
+          description: Audio file to translate
+        target_language:
+          type: string
+          title: Target Language
+          description: Target language code (e.g., 'en', 'de')
+        generate_audio:
+          type: boolean
+          title: Generate Audio
+          description: Generate TTS audio of translation
+          default: false
+      type: object
+      required:
+      - file
+      - target_language
+      title: Body_translate_audio_api_translate_audio_post
+    Body_translate_file_api_translate_file_post:
+      properties:
+        file:
+          type: string
+          format: binary
+          title: File
+          description: Text file to translate (.txt, .md)
+        target_language:
+          type: string
+          title: Target Language
+          description: Target language code
+      type: object
+      required:
+      - file
+      - target_language
+      title: Body_translate_file_api_translate_file_post
+    Body_upload_document_api_documents_upload_post:
+      properties:
+        file:
+          type: string
+          format: binary
+          title: File
+          description: Document file (PDF, DOCX, TXT, MD)
+      type: object
+      required:
+      - file
+      title: Body_upload_document_api_documents_upload_post
+    CalendarEvent:
+      properties:
+        id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Id
+          description: Event ID
+        summary:
+          type: string
+          title: Summary
+          description: Event title/summary
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+          description: Event description
+        start:
+          type: string
+          title: Start
+          description: Event start time (ISO 8601)
+        end:
+          type: string
+          title: End
+          description: Event end time (ISO 8601)
+        location:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Location
+          description: Event location
+        attendees:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Attendees
+          description: List of attendee email addresses
+      type: object
+      required:
+      - summary
+      - start
+      - end
+      title: CalendarEvent
+      description: Calendar event model.
+    CalendarEventCreateRequest:
+      properties:
+        summary:
+          type: string
+          title: Summary
+          description: Event title/summary
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+          description: Event description
+        start:
+          type: string
+          title: Start
+          description: Event start time (ISO 8601)
+        end:
+          type: string
+          title: End
+          description: Event end time (ISO 8601)
+        location:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Location
+          description: Event location
+        attendees:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Attendees
+          description: List of attendee email addresses
+      type: object
+      required:
+      - summary
+      - start
+      - end
+      title: CalendarEventCreateRequest
+      description: Request to create a calendar event.
+    CalendarEventsResponse:
+      properties:
+        events:
+          items:
+            $ref: '#/components/schemas/CalendarEvent'
+          type: array
+          title: Events
+          description: List of calendar events
+        total:
+          type: integer
+          title: Total
+          description: Total number of events
+      type: object
+      required:
+      - events
+      - total
+      title: CalendarEventsResponse
+      description: Response for listing calendar events.
+    ChatMessage:
+      properties:
+        role:
+          type: string
+          title: Role
+          description: Role of the message sender (user, assistant, system)
+        content:
+          type: string
+          title: Content
+          description: Content of the message
+      type: object
+      required:
+      - role
+      - content
+      title: ChatMessage
+      description: A single message in a chat conversation.
+    ChatRequest:
+      properties:
+        prompt:
+          type: string
+          title: Prompt
+          description: User's prompt/message
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model
+          description: Model to use (defaults to .env MODEL)
+        conversation_history:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/ChatMessage'
+            type: array
+          - type: 'null'
+          title: Conversation History
+          description: Previous conversation messages for context
+          default: []
+        temperature:
+          anyOf:
+          - type: number
+            maximum: 2.0
+            minimum: 0.0
+          - type: 'null'
+          title: Temperature
+          description: Sampling temperature (0.0 to 2.0)
+          default: 0.7
+        max_tokens:
+          anyOf:
+          - type: integer
+            exclusiveMinimum: 0.0
+          - type: 'null'
+          title: Max Tokens
+          description: Maximum tokens to generate
+          default: 1000
+      type: object
+      required:
+      - prompt
+      title: ChatRequest
+      description: Request model for chat completion.
+    ChatResponse:
+      properties:
+        response:
+          type: string
+          title: Response
+          description: AI model's response
+        model:
+          type: string
+          title: Model
+          description: Model that generated the response
+        usage:
+          anyOf:
+          - type: object
+          - type: 'null'
+          title: Usage
+          description: Token usage information
+      type: object
+      required:
+      - response
+      - model
+      title: ChatResponse
+      description: Response model for chat completion.
+    DocumentChatRequest:
+      properties:
+        document_id:
+          type: string
+          title: Document Id
+          description: Document ID
+        question:
+          type: string
+          title: Question
+          description: Question about the document
+        conversation_history:
+          anyOf:
+          - items:
+              additionalProperties:
+                type: string
+              type: object
+            type: array
+          - type: 'null'
+          title: Conversation History
+          description: Previous conversation messages
+          default: []
+      type: object
+      required:
+      - document_id
+      - question
+      title: DocumentChatRequest
+      description: Request for chatting with a document.
+    DocumentChatResponse:
+      properties:
+        document_id:
+          type: string
+          title: Document Id
+          description: Document ID
+        question:
+          type: string
+          title: Question
+          description: User's question
+        answer:
+          type: string
+          title: Answer
+          description: AI's answer
+        relevant_chunks:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Relevant Chunks
+          description: Relevant text chunks used for answering
+      type: object
+      required:
+      - document_id
+      - question
+      - answer
+      title: DocumentChatResponse
+      description: Response from document chat.
+    DocumentDeleteResponse:
+      properties:
+        document_id:
+          type: string
+          title: Document Id
+          description: Deleted document ID
+        message:
+          type: string
+          title: Message
+          default: Document deleted successfully
+      type: object
+      required:
+      - document_id
+      title: DocumentDeleteResponse
+      description: Response after deleting a document.
+    DocumentInfo:
+      properties:
+        document_id:
+          type: string
+          title: Document Id
+          description: Unique document ID
+        filename:
+          type: string
+          title: Filename
+          description: Original filename
+        text_preview:
+          type: string
+          title: Text Preview
+          description: Preview of document text
+        metadata:
+          $ref: '#/components/schemas/DocumentMetadata'
+          description: Document metadata
+        summary:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Summary
+          description: Cached summary if available
+        key_points:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Key Points
+          description: Cached key points
+      type: object
+      required:
+      - document_id
+      - filename
+      - text_preview
+      - metadata
+      title: DocumentInfo
+      description: Full document information.
+    DocumentListResponse:
+      properties:
+        documents:
+          items:
+            $ref: '#/components/schemas/DocumentInfo'
+          type: array
+          title: Documents
+          description: List of documents
+        total:
+          type: integer
+          title: Total
+          description: Total number of documents
+      type: object
+      required:
+      - documents
+      - total
+      title: DocumentListResponse
+      description: Response with list of documents.
+    DocumentMetadata:
+      properties:
+        uploaded_at:
+          type: string
+          title: Uploaded At
+          description: Upload timestamp (ISO format)
+        file_size:
+          type: integer
+          title: File Size
+          description: File size in bytes
+        language:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Language
+          description: Detected language code
+        num_pages:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Num Pages
+          description: Number of pages (for PDFs)
+        num_chunks:
+          type: integer
+          title: Num Chunks
+          description: Number of text chunks
+      type: object
+      required:
+      - uploaded_at
+      - file_size
+      - num_chunks
+      title: DocumentMetadata
+      description: Metadata for a document.
+    DocumentSummaryRequest:
+      properties:
+        document_id:
+          type: string
+          title: Document Id
+          description: Document ID to summarize
+        summary_length:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Summary Length
+          description: 'Summary length: short, medium, or long'
+          default: medium
+        include_key_points:
+          type: boolean
+          title: Include Key Points
+          description: Whether to include key points
+          default: true
+      type: object
+      required:
+      - document_id
+      title: DocumentSummaryRequest
+      description: Request for document summarization.
+    DocumentSummaryResponse:
+      properties:
+        document_id:
+          type: string
+          title: Document Id
+          description: Document ID
+        summary:
+          type: string
+          title: Summary
+          description: Generated summary
+        key_points:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Key Points
+          description: Key points extracted
+        language:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Language
+          description: Document language
+      type: object
+      required:
+      - document_id
+      - summary
+      title: DocumentSummaryResponse
+      description: Response with document summary.
+    DocumentUploadResponse:
+      properties:
+        document_id:
+          type: string
+          title: Document Id
+          description: Unique document ID
+        filename:
+          type: string
+          title: Filename
+          description: Original filename
+        text_length:
+          type: integer
+          title: Text Length
+          description: Length of extracted text
+        metadata:
+          $ref: '#/components/schemas/DocumentMetadata'
+          description: Document metadata
+        message:
+          type: string
+          title: Message
+          default: Document uploaded successfully
+      type: object
+      required:
+      - document_id
+      - filename
+      - text_length
+      - metadata
+      title: DocumentUploadResponse
+      description: Response after uploading a document.
+    FileTranslationResponse:
+      properties:
+        translated_text:
+          type: string
+          title: Translated Text
+          description: Translated text
+        source_language:
+          type: string
+          title: Source Language
+          description: Detected source language
+        target_language:
+          type: string
+          title: Target Language
+          description: Target language
+        filename:
+          type: string
+          title: Filename
+          description: Original filename
+      type: object
+      required:
+      - translated_text
+      - source_language
+      - target_language
+      - filename
+      title: FileTranslationResponse
+      description: Response from file translation.
+    HTTPValidationError:
       properties:
         detail:
-          type: object
-          properties:
-            code:
-              type: string
-              description: Error code
-            message:
-              type: string
-              description: Error message
-            details:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    ImageGenerateRequest:
+      properties:
+        prompt:
+          type: string
+          maxLength: 1000
+          minLength: 1
+          title: Prompt
+          description: Text description of the image to generate
+        num_images:
+          anyOf:
+          - type: integer
+            maximum: 4.0
+            minimum: 1.0
+          - type: 'null'
+          title: Num Images
+          description: Number of images to generate (1-4)
+          default: 1
+        aspect_ratio:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Aspect Ratio
+          description: Aspect ratio (1:1, 16:9, 9:16, 4:3, 3:4)
+          default: '1:1'
+      type: object
+      required:
+      - prompt
+      title: ImageGenerateRequest
+      description: "Request model for generating images from text prompts.\n\nAttributes:\n\
+        \    prompt (str): The text description of the image to generate\n    num_images\
+        \ (int): Number of images to generate (1-4)\n    aspect_ratio (str): Aspect\
+        \ ratio for the generated image"
+    ImageGenerateResponse:
+      properties:
+        prompt:
+          type: string
+          title: Prompt
+        images:
+          items:
+            type: string
+          type: array
+          title: Images
+        num_images:
+          type: integer
+          title: Num Images
+      type: object
+      required:
+      - prompt
+      - images
+      - num_images
+      title: ImageGenerateResponse
+      description: "Response model for image generation.\n\nAttributes:\n    prompt\
+        \ (str): The original prompt used\n    images (list): List of generated image\
+        \ URLs\n    num_images (int): Number of images generated"
+    KBAddRequest:
+      properties:
+        content:
+          type: string
+          title: Content
+          description: Text content to add
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Title
+          description: Content title
+        source_type:
+          type: string
+          title: Source Type
+          description: 'Type of content: note, document, transcript, etc.'
+          default: note
+        source_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Id
+          description: ID of source (if from document/transcript)
+        metadata:
+          anyOf:
+          - type: object
+          - type: 'null'
+          title: Metadata
+          description: Additional metadata
+          default: {}
+      type: object
+      required:
+      - content
+      title: KBAddRequest
+      description: Request to add content to knowledge base.
+    KBAddResponse:
+      properties:
+        content_id:
+          type: string
+          title: Content Id
+          description: Unique content ID
+        num_chunks:
+          type: integer
+          title: Num Chunks
+          description: Number of chunks created
+        message:
+          type: string
+          title: Message
+          default: Content added to knowledge base
+      type: object
+      required:
+      - content_id
+      - num_chunks
+      title: KBAddResponse
+      description: Response after adding content.
+    KBChatRequest:
+      properties:
+        question:
+          type: string
+          title: Question
+          description: User's question
+        conversation_history:
+          anyOf:
+          - items:
+              additionalProperties:
+                type: string
               type: object
-              description: Additional error details
+            type: array
+          - type: 'null'
+          title: Conversation History
+          description: Previous conversation messages
+          default: []
+        top_k:
+          type: integer
+          maximum: 10.0
+          minimum: 1.0
+          title: Top K
+          description: Number of context chunks to use
+          default: 3
+      type: object
+      required:
+      - question
+      title: KBChatRequest
+      description: Request for RAG-based chat.
+    KBChatResponse:
+      properties:
+        question:
+          type: string
+          title: Question
+          description: User's question
+        answer:
+          type: string
+          title: Answer
+          description: AI's answer
+        sources:
+          items:
+            $ref: '#/components/schemas/KBSearchResult'
+          type: array
+          title: Sources
+          description: Source chunks used for answer
+      type: object
+      required:
+      - question
+      - answer
+      - sources
+      title: KBChatResponse
+      description: Response from RAG chat.
+    KBContentInfo:
+      properties:
+        content_id:
+          type: string
+          title: Content Id
+          description: Content ID
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Title
+          description: Content title
+        content_preview:
+          type: string
+          title: Content Preview
+          description: Content preview
+        source_type:
+          type: string
+          title: Source Type
+          description: Source type
+        num_chunks:
+          type: integer
+          title: Num Chunks
+          description: Number of chunks
+        added_at:
+          type: string
+          title: Added At
+          description: Timestamp when added
+        metadata:
+          type: object
+          title: Metadata
+          description: Metadata
+          default: {}
+      type: object
+      required:
+      - content_id
+      - content_preview
+      - source_type
+      - num_chunks
+      - added_at
+      title: KBContentInfo
+      description: Information about a knowledge base content item.
+    KBDeleteResponse:
+      properties:
+        content_id:
+          type: string
+          title: Content Id
+          description: Deleted content ID
+        message:
+          type: string
+          title: Message
+          default: Content removed from knowledge base
+      type: object
+      required:
+      - content_id
+      title: KBDeleteResponse
+      description: Response after deleting content.
+    KBListResponse:
+      properties:
+        contents:
+          items:
+            $ref: '#/components/schemas/KBContentInfo'
+          type: array
+          title: Contents
+          description: List of content items
+        total:
+          type: integer
+          title: Total
+          description: Total number of items
+      type: object
+      required:
+      - contents
+      - total
+      title: KBListResponse
+      description: Response with list of KB content.
+    KBReindexResponse:
+      properties:
+        message:
+          type: string
+          title: Message
+          description: Reindex result message
+        total_chunks:
+          type: integer
+          title: Total Chunks
+          description: Total chunks reindexed
+        duration_seconds:
+          type: number
+          title: Duration Seconds
+          description: Reindex duration
+      type: object
+      required:
+      - message
+      - total_chunks
+      - duration_seconds
+      title: KBReindexResponse
+      description: Response from reindex operation.
+    KBSearchRequest:
+      properties:
+        query:
+          type: string
+          title: Query
+          description: Search query
+        top_k:
+          type: integer
+          maximum: 20.0
+          minimum: 1.0
+          title: Top K
+          description: Number of results to return
+          default: 5
+        min_score:
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          title: Min Score
+          description: Minimum similarity score (0-1)
+          default: 0.1
+        source_type_filter:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Type Filter
+          description: Filter by source type
+      type: object
+      required:
+      - query
+      title: KBSearchRequest
+      description: Request to search knowledge base.
+    KBSearchResponse:
+      properties:
+        query:
+          type: string
+          title: Query
+          description: Original query
+        results:
+          items:
+            $ref: '#/components/schemas/KBSearchResult'
+          type: array
+          title: Results
+          description: Search results
+        total_results:
+          type: integer
+          title: Total Results
+          description: Total number of results
+      type: object
+      required:
+      - query
+      - results
+      - total_results
+      title: KBSearchResponse
+      description: Response from search.
+    KBSearchResult:
+      properties:
+        content_id:
+          type: string
+          title: Content Id
+          description: Content ID
+        chunk_text:
+          type: string
+          title: Chunk Text
+          description: Relevant text chunk
+        score:
+          type: number
+          title: Score
+          description: Similarity score (0-1)
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Title
+          description: Content title
+        source_type:
+          type: string
+          title: Source Type
+          description: Source type
+        metadata:
+          type: object
+          title: Metadata
+          description: Content metadata
+          default: {}
+      type: object
+      required:
+      - content_id
+      - chunk_text
+      - score
+      - source_type
+      title: KBSearchResult
+      description: Single search result.
+    KBStats:
+      properties:
+        total_contents:
+          type: integer
+          title: Total Contents
+          description: Total number of content items
+        total_chunks:
+          type: integer
+          title: Total Chunks
+          description: Total number of chunks
+        index_size_mb:
+          type: number
+          title: Index Size Mb
+          description: Index size in MB
+        last_updated:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Updated
+          description: Last update timestamp
+        by_source_type:
+          additionalProperties:
+            type: integer
+          type: object
+          title: By Source Type
+          description: Content count by source type
+          default: {}
+      type: object
+      required:
+      - total_contents
+      - total_chunks
+      - index_size_mb
+      title: KBStats
+      description: Knowledge base statistics.
+    LanguageDetectionResponse:
+      properties:
+        detected_language:
+          type: string
+          title: Detected Language
+          description: Detected language code
+        confidence:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Confidence
+          description: Detection confidence (0-1)
+        text_preview:
+          type: string
+          title: Text Preview
+          description: Preview of analyzed text
+      type: object
+      required:
+      - detected_language
+      - text_preview
+      title: LanguageDetectionResponse
+      description: Response for language detection.
+    LanguageInfo:
+      properties:
+        code:
+          type: string
+          title: Code
+          description: Language code (e.g., 'en', 'de', 'fr')
+        name:
+          type: string
+          title: Name
+          description: Language name (e.g., 'English', 'German')
+      type: object
+      required:
+      - code
+      - name
+      title: LanguageInfo
+      description: Information about a supported language.
+    MailSendRequest:
+      properties:
+        to:
+          items:
+            type: string
+          type: array
+          title: To
+          description: Recipient email addresses
+        subject:
+          type: string
+          title: Subject
+          description: Email subject
+        body:
+          type: string
+          title: Body
+          description: Email body (HTML or plain text)
+        cc:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Cc
+          description: CC recipients
+        bcc:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Bcc
+          description: BCC recipients
+      type: object
+      required:
+      - to
+      - subject
+      - body
+      title: MailSendRequest
+      description: Request to send email.
+    MailSendResponse:
+      properties:
+        success:
+          type: boolean
+          title: Success
+          description: Whether email was sent successfully
+        message:
+          type: string
+          title: Message
+          description: Success or error message
+        message_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Message Id
+          description: Sent message ID if available
+      type: object
+      required:
+      - success
+      - message
+      title: MailSendResponse
+      description: Response after sending email.
+    ModelInfo:
+      properties:
+        id:
+          type: string
+          title: Id
+          description: Model ID
+        name:
+          type: string
+          title: Name
+          description: Display name of the model
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+          description: Model description
+      type: object
+      required:
+      - id
+      - name
+      title: ModelInfo
+      description: Information about an available model.
+    NanoBananaRequest:
+      properties:
+        prompt:
+          type: string
+          title: Prompt
+        num_images:
+          type: integer
+          title: Num Images
+          default: 1
+      type: object
+      required:
+      - prompt
+      title: NanoBananaRequest
+      description: Request model for nano banana image generation.
+    NanoBananaResponse:
+      properties:
+        success:
+          type: boolean
+          title: Success
+        model:
+          type: string
+          title: Model
+        prompt:
+          type: string
+          title: Prompt
+        images:
+          items: {}
+          type: array
+          title: Images
+      type: object
+      required:
+      - success
+      - model
+      - prompt
+      - images
+      title: NanoBananaResponse
+      description: Response model for nano banana image generation.
+    STTTranscribeResponse:
+      properties:
+        transcript:
+          type: string
+          title: Transcript
+          description: Transcribed text from the audio file
+        language:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Language
+          description: Detected language code (e.g., 'en', 'de', 'es')
+        duration_seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Duration Seconds
+          description: Duration of the audio file in seconds
+      type: object
+      required:
+      - transcript
+      title: STTTranscribeResponse
+      description: 'Response model for POST /api/stt/transcribe endpoint.
+
+        Returns the transcribed text and optional metadata.'
+    SupportedLanguagesResponse:
+      properties:
+        languages:
+          items:
+            $ref: '#/components/schemas/LanguageInfo'
+          type: array
+          title: Languages
+          description: List of supported languages
+        total:
+          type: integer
+          title: Total
+          description: Total number of supported languages
+      type: object
+      required:
+      - languages
+      - total
+      title: SupportedLanguagesResponse
+      description: Response with supported languages.
+    TTSGenerateRequest:
+      properties:
+        text_md:
+          type: string
+          minLength: 1
+          title: Text Md
+          description: Markdown-formatted text to convert to speech
+      type: object
+      required:
+      - text_md
+      title: TTSGenerateRequest
+      description: 'Request model for POST /api/tts/generate endpoint.
+
+        Accepts markdown-formatted text to be converted to speech.'
+    TTSGenerateResponse:
+      properties:
+        text_normalized:
+          type: string
+          title: Text Normalized
+          description: Plain text extracted from markdown, used for speech synthesis
+        language:
+          type: string
+          title: Language
+          description: Detected language code (e.g., 'en', 'de', 'es')
+        audio_url:
+          type: string
+          title: Audio Url
+          description: URL to download the generated MP3 audio file
+      type: object
+      required:
+      - text_normalized
+      - language
+      - audio_url
+      title: TTSGenerateResponse
+      description: 'Response model for POST /api/tts/generate endpoint.
+
+        Returns normalized text, detected language, and URL to download the generated
+        audio.'
+    TextTranslationRequest:
+      properties:
+        text:
+          type: string
+          title: Text
+          description: Text to translate
+        target_language:
+          type: string
+          title: Target Language
+          description: Target language code (e.g., 'en', 'de')
+        source_language:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Language
+          description: Source language code (auto-detected if not provided)
+      type: object
+      required:
+      - text
+      - target_language
+      title: TextTranslationRequest
+      description: Request for text translation.
+    TextTranslationResponse:
+      properties:
+        translated_text:
+          type: string
+          title: Translated Text
+          description: Translated text
+        source_language:
+          type: string
+          title: Source Language
+          description: Detected/specified source language
+        target_language:
+          type: string
+          title: Target Language
+          description: Target language
+        original_text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Original Text
+          description: Original text (if requested)
+      type: object
+      required:
+      - translated_text
+      - source_language
+      - target_language
+      title: TextTranslationResponse
+      description: Response from text translation.
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError
+    VideoTranscribeResponse:
+      properties:
+        source_type:
+          type: string
+          title: Source Type
+          description: Type of video source used
+        source_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Url
+          description: Original video URL (if applicable)
+        transcript:
+          type: string
+          title: Transcript
+          description: Transcribed text from the video
+        detected_language:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Detected Language
+          description: Detected language code
+      type: object
+      required:
+      - source_type
+      - transcript
+      title: VideoTranscribeResponse
+      description: Response model for unified video transcription.
+    YoutubeTranscribeRequest:
+      properties:
+        url:
+          type: string
+          maxLength: 2083
+          minLength: 1
+          format: uri
+          title: Url
+          description: YouTube video URL to transcribe
+          examples:
+          - https://www.youtube.com/watch?v=dQw4w9WgXcQ
+        quality_mode:
+          type: string
+          enum:
+          - fast
+          - accurate
+          title: Quality Mode
+          description: 'Quality mode: ''fast'' (lower quality, faster) or ''accurate''
+            (higher quality, slower)'
+          default: accurate
+      type: object
+      required:
+      - url
+      title: YoutubeTranscribeRequest
+      description: Request model for YouTube video transcription.
+    YoutubeTranscribeResponse:
+      properties:
+        url:
+          type: string
+          title: Url
+          description: Original YouTube URL
+        transcript:
+          type: string
+          title: Transcript
+          description: Transcribed text from the video
+      type: object
+      required:
+      - url
+      - transcript
+      title: YoutubeTranscribeResponse
+      description: Response model for YouTube video transcription.
+tags:
+- name: Health
+  description: API health and status endpoints
+- name: TTS
+  description: Text-to-Speech generation using Google TTS
+- name: STT
+  description: Speech-to-Text transcription using Google STT
+- name: Image Generation
+  description: Text-to-Image generation (Vertex AI Imagen & Gemini 2.5 Flash Image)
+- name: Video Transcription
+  description: Video transcription from YouTube, URLs, or file uploads
+- name: chat
+  description: LLM chat completions via OpenRouter
+- name: documents
+  description: Document upload, summarization, and Q&A
+- name: translation
+  description: Multi-language translation for text, audio, and files
+- name: knowledge-base
+  description: Knowledge base (RAG) for semantic search and Q&A
+- name: Integrations
+  description: External service integrations (Google, Outlook) - BETA/PLANNED
