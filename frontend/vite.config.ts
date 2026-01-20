@@ -25,10 +25,13 @@ export default defineConfig({
       },
     },
   },
-  // Production API configuration
+  // Environment configuration
   define: {
     'import.meta.env.VITE_API_URL': process.env.NODE_ENV === 'production'
-      ? '"/api"'
+      ? '"https://organaizer_backend.com2u.selfhost.eu"'
       : '"http://localhost:8000/api"',
+    'import.meta.env.VITE_API_KEY': process.env.VITE_API_KEY
+      ? `"${process.env.VITE_API_KEY}"`
+      : '""',
   },
 })

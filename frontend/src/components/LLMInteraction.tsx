@@ -16,7 +16,7 @@ const LLMInteraction: React.FC = () => {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'X-API-Key': 'l5hhroDITUp5zCFEGSaMk43HdVDFlK85'
+                    'X-API-Key': import.meta.env.VITE_API_KEY
                 },
                 body: JSON.stringify({ prompt, model }),
             });
@@ -35,14 +35,58 @@ const LLMInteraction: React.FC = () => {
         }
     };
 
+    const handleRemoveEmptyLines = () => {
+        const textarea = document.getElementById('prompt') as HTMLTextAreaElement;
+        if (!textarea) return;
+
+        const start = textarea.selectionStart;
+        const end = textarea.selectionEnd;
+        const text = textarea.value;
+
+        if (start !== end) {
+            // Process selected text
+            const selectedText = text.substring(start, end);
+            const processedText = selectedText
+                .split('\n')
+                .filter(line => line.trim() !== '')
+                .join('\n');
+            
+            const newText = text.substring(0, start) + processedText + text.substring(end);
+            setPrompt(newText);
+            
+            // Optional: Reset selection or focus
+            setTimeout(() => {
+                textarea.focus();
+                textarea.setSelectionRange(start, start + processedText.length);
+            }, 0);
+        } else {
+            // Process entire text if nothing is selected
+            const processedText = text
+                .split('\n')
+                .filter(line => line.trim() !== '')
+                .join('\n');
+            setPrompt(processedText);
+        }
+    };
+
     return (
         <div className="p-4">
             <h2 className="text-2xl font-bold mb-4">LLM Interaction</h2>
             <form onSubmit={handleSubmit}>
                 <div className="mb-4">
-                    <label htmlFor="prompt" className="block text-gray-700 font-bold mb-2">
-                        Prompt
-                    </label>
+                    <div className="flex justify-between items-center mb-2">
+                        <label htmlFor="prompt" className="block text-gray-700 font-bold">
+                            Prompt
+                        </label>
+                        <button
+                            type="button"
+                            onClick={handleRemoveEmptyLines}
+                            className="px-3 py-1 text-sm font-medium text-blue-600 bg-blue-100 rounded-md hover:bg-blue-200 focus:outline-none"
+                            title="Remove empty lines from selection or entire text"
+                        >
+                            Remove Empty Lines
+                        </button>
+                    </div>
                     <textarea
                         id="prompt"
                         value={prompt}

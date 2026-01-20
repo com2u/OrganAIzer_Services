@@ -41,6 +41,14 @@ chrome.runtime.onInstalled.addListener(() => {
     title: '🖼️ Generate Image',
     contexts: ['selection']
   });
+
+  // Remove Empty Lines
+  chrome.contextMenus.create({
+    id: 'removeEmptyLines',
+    parentId: 'organAIzer',
+    title: '🧹 Remove Empty Lines',
+    contexts: ['selection']
+  });
   
   // Separator
   chrome.contextMenus.create({
@@ -65,6 +73,17 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   
   if (action !== 'organAIzer' && action !== 'separator') {
     chrome.tabs.sendMessage(tab.id, { action });
+  }
+});
+
+// Handle keyboard shortcuts
+chrome.commands.onCommand.addListener((command) => {
+  if (command === 'removeEmptyLines') {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs[0]) {
+        chrome.tabs.sendMessage(tabs[0].id, { action: 'removeEmptyLines' });
+      }
+    });
   }
 });
 

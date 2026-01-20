@@ -41,6 +41,12 @@
         "default": "Ctrl+Shift+Period"
       },
       "description": "Open OrganAIzer menu"
+    },
+    "removeEmptyLines": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+L"
+      },
+      "description": "Remove empty lines from selection"
     }
   }
 }

@@ -8,7 +8,7 @@ const GoogleIntegration = () => {
   const [success, setSuccess] = useState('');
   const [sendForm, setSendForm] = useState({ to: '', subject: '', body: '' });
 
-  const apiKey = 'l5hhroDITUp5zCFEGSaMk43HdVDFlK85';
+  const apiKey = import.meta.env.VITE_API_KEY;
 
   const handleReadEmails = async () => {
     setLoading(true);
@@ -53,7 +53,7 @@ const GoogleIntegration = () => {
       if (!response.ok) {
         throw new Error('Failed to send email');
       }
-      const data = await response.json();
+      await response.json();
       setSuccess('Email sent successfully');
       setSendForm({ to: '', subject: '', body: '' });
     } catch (err: any) {

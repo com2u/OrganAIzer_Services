@@ -24,7 +24,7 @@ const VideoToText = () => {
       const response = await fetch('/api/video-text/transcribe', {
         method: 'POST',
         headers: {
-            'X-API-Key': 'l5hhroDITUp5zCFEGSaMk43HdVDFlK85'
+            'X-API-Key': import.meta.env.VITE_API_KEY
         },
         body: formData,
       });

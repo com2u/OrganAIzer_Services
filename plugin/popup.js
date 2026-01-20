@@ -195,6 +195,10 @@ document.getElementById('translate').addEventListener('click', () => {
   executeAction('translate');
 });
 
+document.getElementById('removeEmptyLines').addEventListener('click', () => {
+  executeAction('removeEmptyLines');
+});
+
 // Execute action in active tab
 async function executeAction(action) {
   try {

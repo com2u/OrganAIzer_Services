@@ -43,14 +43,14 @@ const TextToImage = () => {
       formData.append('aspect_ratio', aspectRatio);
 
       // Add uploaded images if any
-      uploadedImages.forEach((file, index) => {
+      uploadedImages.forEach((file) => {
         formData.append('images', file);
       });
 
       const response = await fetch('/api/text-image/generate', {
         method: 'POST',
         headers: {
-            'X-API-Key': 'l5hhroDITUp5zCFEGSaMk43HdVDFlK85'
+            'X-API-Key': import.meta.env.VITE_API_KEY
         },
         body: formData,
       });

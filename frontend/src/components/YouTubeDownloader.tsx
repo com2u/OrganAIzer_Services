@@ -19,7 +19,7 @@ const YouTubeDownloader = () => {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
-            'X-API-Key': 'l5hhroDITUp5zCFEGSaMk43HdVDFlK85'
+            'X-API-Key': import.meta.env.VITE_API_KEY
         },
         body: JSON.stringify({ url }),
       });

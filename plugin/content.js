@@ -34,6 +34,9 @@ async function handleAction(action) {
     case 'translate':
       await handleTranslate();
       break;
+    case 'removeEmptyLines':
+      await handleRemoveEmptyLines();
+      break;
   }
 }
 
@@ -611,6 +614,29 @@ async function handleTranslate() {
     console.error('Translation error:', error);
     showNotification(`Failed to translate: ${error.message}`, 'error');
   }
+}
+
+// Remove Empty Lines
+async function handleRemoveEmptyLines() {
+  const text = getSelectedText();
+  
+  if (!text) {
+    showNotification('Please select some text first', 'error');
+    return;
+  }
+  
+  const processedText = text
+    .split('\n')
+    .filter(line => line.trim() !== '')
+    .join('\n');
+  
+  if (processedText === text) {
+    showNotification('No empty lines found', 'info');
+    return;
+  }
+  
+  replaceSelectedText(processedText);
+  showNotification('🧹 Empty lines removed!', 'success');
 }
 
 // Show notification

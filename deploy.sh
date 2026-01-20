@@ -3,10 +3,31 @@
 # Organizer Service Deployment Script
 # This script builds and deploys the Organizer Service using Docker Compose
 # Works with existing nginx reverse proxy
+#
+# Usage:
+#   ./deploy.sh              # Fast build (uses cache, minimal cleanup)
+#   ./deploy.sh --clean      # Full cleanup and rebuild (slower, fixes corruption)
+#   ./deploy.sh --help       # Show this help
 
 set -e
 
-echo "🚀 Starting Organizer Service Deployment..."
+# Parse command line arguments
+CLEAN_BUILD=false
+if [ "$1" = "--clean" ]; then
+    CLEAN_BUILD=true
+    echo "🚀 Starting Organizer Service Deployment (Clean Build Mode)..."
+elif [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
+    echo "Usage: $0 [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  --clean    Full cleanup and rebuild (slower, fixes image corruption)"
+    echo "  --help     Show this help message"
+    echo ""
+    echo "Without --clean: Fast build using Docker cache (recommended for development)"
+    exit 0
+else
+    echo "🚀 Starting Organizer Service Deployment (Fast Mode)..."
+fi
 
 # Colors for output
 RED='\033[0;31m'
@@ -79,19 +100,19 @@ if grep -q "your_google_api_key_here" .env 2>/dev/null; then
     exit 1
 fi
 
-# Verify required environment variables are set
-print_status "Checking environment variables..."
+# Verify required environment variables are set in .env file
+print_status "Checking environment variables in .env file..."
 REQUIRED_VARS=("GOOGLE_API_KEY" "OPENROUTER_API_KEY" "AZURE_CLIENT_ID" "AZURE_TENANT_ID" "AZURE_CLIENT_SECRET")
 MISSING_VARS=()
 
 for var in "${REQUIRED_VARS[@]}"; do
-    if [ -z "${!var}" ]; then
+    if ! grep -q "^${var}=" .env 2>/dev/null || grep "^${var}=" .env | grep -q "your_.*_here\|placeholder\|empty"; then
         MISSING_VARS+=("$var")
     fi
 done
 
 if [ ${#MISSING_VARS[@]} -ne 0 ]; then
-    print_warning "Missing environment variables:"
+    print_warning "Missing or placeholder environment variables in .env:"
     for var in "${MISSING_VARS[@]}"; do
         echo "  - $var"
     done
@@ -125,13 +146,43 @@ mkdir -p nginx/ssl nginx/logs
 # Build and start services
 print_status "Building and starting Docker containers..."
 
+if [ "$CLEAN_BUILD" = true ]; then
+    # Full cleanup for clean builds (fixes corruption issues)
+    print_status "Performing full cleanup (this may take a moment)..."
+
+    # Stop any running services
+    print_status "Stopping existing services..."
+    $DOCKER_COMPOSE down || true
+
+    # Remove existing containers and images to ensure clean build
+    print_status "Removing existing containers and images..."
+    $DOCKER_COMPOSE rm -f || true
+    docker rmi organizer-backend organizer-frontend 2>/dev/null || true
+
+    # Clean up dangling resources
+    print_status "Cleaning up Docker system..."
+    docker system prune -f
+
+    # Build flag for clean build
+    BUILD_FLAG="--no-cache"
+else
+    # Fast build - minimal cleanup, use cache
+    print_status "Performing quick cleanup..."
+    $DOCKER_COMPOSE down || true
+    BUILD_FLAG=""
+fi
+
 # Pull latest images (optional)
 print_status "Pulling latest base images..."
 $DOCKER_COMPOSE pull
 
 # Build the services
-print_status "Building services..."
-$DOCKER_COMPOSE build --no-cache
+if [ "$CLEAN_BUILD" = true ]; then
+    print_status "Building services (clean build, no cache)..."
+else
+    print_status "Building services (fast build, using cache)..."
+fi
+$DOCKER_COMPOSE build $BUILD_FLAG
 
 # Start services
 print_status "Starting services..."
@@ -183,6 +234,11 @@ echo
 print_status "To view logs: $DOCKER_COMPOSE logs -f"
 print_status "To stop: $DOCKER_COMPOSE down"
 print_status "To restart: $DOCKER_COMPOSE restart"
+if [ "$CLEAN_BUILD" = false ]; then
+    echo
+    print_status "For faster rebuilds: ./deploy.sh"
+    print_status "For fixing corruption issues: ./deploy.sh --clean"
+fi
 echo
 print_success "Deployment completed successfully! 🎉"
 echo

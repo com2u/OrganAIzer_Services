@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # Backend FastAPI service
   backend:
@@ -26,7 +24,10 @@ services:
 
   # Frontend service
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        - VITE_API_KEY=${VITE_API_KEY}
     container_name: organizer-frontend
     ports:
       - "5264:80"
