@@ -1,14 +1,23 @@
-# Environment
+# Secrets
 .env
 .env.*
+backend/credentials.json
+backend/keys.csv
+backend/config/
+
+# Logs
+*.log
+backend.log
+backend/backend.log
+
+# OS/editor junk
+* --abort
 
 # Python
 __pycache__/
 *.pyc
 
-# Runtime data
-backend/cache/
-backend/data/
-
 # Node
 node_modules/
+frontend/node_modules/
+
