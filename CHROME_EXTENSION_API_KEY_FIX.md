@@ -148,7 +148,7 @@ Returns:
 {
   "openrouter_configured": true,
   "api_key_length": 89,
-  "api_key_prefix": "sk-or-v1-c",
+  "api_key_prefix": "redacted",
   "api_key_suffix": "2865",
   "model_configured": true,
   "model": "google/gemini-2.5-flash",
@@ -172,7 +172,7 @@ python main.py
 
 Look for:
 ```
-[LLM Service] ✓ OpenRouter API key loaded: sk-or-v1-c...2865 (length: 89)
+[LLM Service] ✓ OpenRouter API key loaded: ...2865 (length: 89)
 [LLM Service] ✓ Model configured: google/gemini-2.5-flash
 ```
 
