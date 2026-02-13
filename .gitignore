@@ -21,3 +21,7 @@ __pycache__/
 node_modules/
 frontend/node_modules/
 
+backend/data/
+backend/data/tokens/
+*.enc
+
