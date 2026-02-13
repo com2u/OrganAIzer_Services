@@ -18,7 +18,7 @@ from core.error_handling import (
     validation_error_handler,
     generic_error_handler
 )
-from api import tts, stt, image_gen, youtube, video, chat, document, translation, knowledge_base, integrations
+from api import tts, stt, image_gen, youtube, video, chat, document, translation, knowledge_base, integrations, executive_agent
 
 # Set up logging
 setup_logging()
@@ -137,6 +137,7 @@ app.include_router(document.router, prefix="/api")  # Document analysis endpoint
 app.include_router(translation.router, prefix="/api")  # Translation endpoints
 app.include_router(knowledge_base.router, prefix="/api")  # Knowledge base (RAG) endpoints
 app.include_router(integrations.router, prefix="/api")  # External integrations (Google, Outlook) - BETA
+app.include_router(executive_agent.router, prefix="/api/agent", tags=["executive-agent"])  # Executive Agent endpoints
 
 
 @app.get("/health")

@@ -35,8 +35,8 @@ function VoiceExecutiveAgent() {
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
-  const API_KEY = 'test-key-123';
-  const API_BASE_URL = '/api';
+  const API_KEY = import.meta.env.VITE_API_KEY || 'test-key-123';
+  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
 
   // Cleanup on unmount
   useEffect(() => {
