@@ -10,8 +10,7 @@ backend/config/
 backend.log
 backend/backend.log
 
-# OS/editor junk
-* --abort
+
 
 # Python
 __pycache__/
