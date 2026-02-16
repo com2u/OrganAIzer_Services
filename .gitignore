@@ -24,3 +24,7 @@ backend/data/
 backend/data/tokens/
 *.enc
 
+
+# Frontend build output
+frontend/dist/
+
