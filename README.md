@@ -1,388 +1,154 @@
-# OrganAIzer Services - AI-Powered Utilities Platform
+# OrganAIzer Services
+
+> **AI-powered productivity backend** — Executive AI, Email & Calendar Management, Voice, Document Analysis, and more.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+---
+
+## What is OrganAIzer?
+
+OrganAIzer Services is a comprehensive AI backend platform built with **Python FastAPI**. It powers an intelligent productivity assistant that connects to your email (Gmail, Outlook), calendar (Google Calendar, Outlook), and provides AI-driven automation through a conversational interface.
+
+The platform is consumed by:
+- A **React web application** (frontend)
+- The **OrganAIzer Chrome Extension**
+- Any REST-capable client
+
+---
+
+## What Does the Executive AI Do?
+
+The **Executive AI** is the heart of OrganAIzer. It is a single, unified conversational agent that:
+
+- 📧 **Reads, summarizes, drafts, and sends emails** via Gmail and Outlook
+- 📅 **Creates and lists calendar events** via Google Calendar and Outlook Calendar
+- 🎤 **Understands voice input** (Speech-to-Text) and **speaks responses** (Text-to-Speech)
+- 🧠 **Answers knowledge questions** with session memory for contextual follow-ups
+- 🖼️ **Generates images** from natural language prompts
+- 📋 **Produces daily digests** combining emails and calendar
+
+All high-stakes actions (sending emails, creating events) require **explicit user confirmation** before execution.
+
+---
+
+## Key Features
+
+| Feature | Description |
+|---|---|
+| **Executive AI** | Single stateful conversational agent with session memory |
+| **Email Management** | Gmail + Outlook: read, summarize, draft, send |
+| **Calendar Management** | Google + Outlook: list events, create events |
+| **Voice Mode** | Full voice loop: STT → Executive AI → TTS |
+| **Intent Router** | Deterministic pre-LLM intent classification (confirmations, cancellations, slots) |
+| **Multi-Account** | Connect both Google and Microsoft simultaneously |
+| **Chrome Extension** | Summarize, translate, and generate content on any webpage |
+| **Document Analysis** | Upload PDFs/DOCX and chat with them |
+| **Translation** | 30+ language translation for text and files |
+| **Knowledge Base (RAG)** | Semantic search and Q&A over your own content |
+| **Image Generation** | Text-to-image via Gemini/Vertex AI |
+| **Video Transcription** | YouTube + file upload transcription |
+
+---
 
 ## Quick Start
 
-### Running the Services
+### Prerequisites
+- Python 3.10+
+- Node.js 18+
+- [OpenRouter API key](https://openrouter.ai/) (for LLM access)
 
-**Option 1: Run Both Services (Recommended)**
+### 1. Clone and configure
+
+```bash
+git clone https://github.com/com2u/OrganAIzer_Services.git
+cd OrganAIzer_Services
+
+# Configure backend environment
+copy backend\.env.example backend\.env
+# Edit backend/.env with your OPENROUTER_API_KEY and other keys
+```
+
+### 2. Start services (Windows)
+
 ```bash
 start_services.bat
 ```
 
-**Option 2: Run Services Individually**
-```bash
-# Backend only
-start_backend.bat
-
-# Frontend only
-start_frontend.bat
-```
-
-**Option 3: Manual Commands**
+Or manually:
 ```bash
 # Backend
-cd backend && python main.py
+cd backend
+python -m venv venv && venv\Scripts\activate
+pip install -r requirements.txt
+python main.py
 
-# Frontend
-cd frontend && npm run dev
+# Frontend (new terminal)
+cd frontend
+npm install && npm run dev
 ```
 
-**Service URLs:**
-- Backend API: http://localhost:8000
-- API Docs: http://localhost:8000/docs
-- Frontend App: http://localhost:5173
+### 3. Open the app
 
-📖 **For detailed setup and commands, see [QUICK_START.md](QUICK_START.md)**
+| URL | Description |
+|---|---|
+| http://localhost:5173 | Frontend application |
+| http://localhost:8000/docs | Interactive API documentation |
+| http://localhost:8000/health | API health check |
 
 ---
 
-## Project Overview
+## Documentation
 
-This is a comprehensive AI-powered utilities platform offering multiple services including Text-to-Speech, Speech-to-Text, Image Generation, Video Transcription, and AI Chat capabilities.
+| Document | Description |
+|---|---|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | System architecture, Executive AI, Intent Router, OAuth model, state machines |
+| [DEPLOYMENT.md](DEPLOYMENT.md) | Environment variables, OAuth setup, production checklist, CORS configuration |
+| [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md) | Running locally, project structure, extending the AI, adding endpoints |
+| [API_OVERVIEW.md](API_OVERVIEW.md) | All API endpoints with request/response examples |
 
-## Available Services
+---
 
-### 🗣️ Text-to-Speech (TTS)
-- Converts markdown-formatted text to natural-sounding speech
-- Automatic language detection
-- Markdown normalization to plain text
-- Downloadable MP3 audio files
-- In-browser playback
-
-### 🎤 Speech-to-Text (STT)
-- Transcribes audio files to text
-- Supports multiple formats (MP3, WAV, M4A, OGG, FLAC)
-- Optional language hints for better accuracy
-- Powered by Google Speech-to-Text
-
-### 🎨 Image Generation
-- Creates images from text prompts
-- Multiple aspect ratios supported
-- Batch generation (1-4 images)
-- Powered by OpenRouter API
-
-### 🎥 Video Transcription
-- YouTube video transcription
-- Generic video URL support
-- Direct file upload capability
-- Fast and accurate quality modes
-- Cached transcripts for efficiency
-
-### 💬 AI Chat
-- Interactive chat with various LLM models
-- Model switching capability
-- Conversation history support
-- Powered by OpenRouter with multiple model options
-- Default: Google Gemini 2.5 Flash
-
-## API Documentation
-
-**Complete OpenAPI Specification**: See [`openapi.yaml`](openapi.yaml) or [`openapi.json`](openapi.json) for the full API documentation.
-
-**Interactive API Docs**: 
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
-
-All services are accessible through a RESTful API with consistent error handling and response formats.
-
-### Regenerating OpenAPI Specification
-
-To regenerate the OpenAPI specification files (e.g., after adding new endpoints or modifying existing ones):
-
-```bash
-# Make sure you're in the repository root directory
-python backend/export_openapi.py
-```
-
-This will:
-1. Load the FastAPI application and all registered routes
-2. Generate the complete OpenAPI 3.1.0 specification
-3. Export both `openapi.yaml` and `openapi.json` to the repository root
-
-**When to regenerate:**
-- After adding new API endpoints
-- After modifying endpoint parameters or response models
-- After updating API metadata (title, description, version)
-- Before creating a new release
-
-**Note:** The OpenAPI spec is automatically generated from your FastAPI app code, including:
-- All route definitions and HTTP methods
-- Request/response models (Pydantic schemas)
-- Endpoint descriptions and summaries
-- Tags and security schemes
-- Example values and validation rules
-
-## Architecture
-
-### Frontend
-- **Technology Stack**: React + Vite + Tailwind CSS
-- **Location**: `frontend/` directory
-- **Type**: Single-page application (SPA)
-- **Features**: 
-  - Responsive UI with Tailwind CSS
-  - Real-time error handling
-  - Audio playback and download capabilities
+## Technology Stack
 
 ### Backend
-- **Technology Stack**: Python + FastAPI
-- **Location**: `backend/` directory
-- **Type**: REST API
-- **Features**:
-  - Structured logging with JSON output
-  - Centralized error handling
-  - Request/response logging middleware
-  - Environment-based configuration
+- **Python 3.10+** with **FastAPI**
+- **OpenRouter** — multi-model LLM access (Gemini, Claude, GPT-4, etc.)
+- **Google AI** — STT, TTS, Calendar API, Gmail API, Image Generation (Gemini)
+- **Microsoft Graph API** — Outlook Calendar and Mail
+- **MSAL** — Microsoft OAuth 2.0
+- **google-auth-oauthlib** — Google OAuth 2.0
+- **TF-IDF vectorization** — Knowledge base semantic search
 
-## Developer Setup
+### Frontend
+- **React 18** + **Vite**
+- **Tailwind CSS**
+- **TypeScript**
 
-### Prerequisites
-- Python 3.8 or higher
-- Node.js 16 or higher
-- npm or pnpm
-
-### Backend Setup
-
- 
-```
-
-2. Create and activate a virtual environment:
-
-**Windows:**
-```bash
-python -m venv venv
-venv\Scripts\activate
-```
-
-**macOS/Linux:**
-```bash
-python -m venv venv
-source venv/bin/activate
-```
-
-3. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-4. Configure environment variables:
-```bash
-# Copy the example environment file
-copy .env.example .env  # Windows
-# or
-cp .env.example .env    # macOS/Linux
-
-# Edit .env and configure:
-# - TTS_TEMP_DIR: Directory for temporary audio files (e.g., ./data/tts)
-# - LOG_LEVEL: Logging level (default: INFO)
-# - LOG_FILE_PATH: Optional path to log file
-```
-
-5. Create the temporary directory for audio files:
-```bash
-mkdir -p data/tts  # macOS/Linux
-# or
-md data\tts        # Windows
-```
-
-6. Run the development server:
-```bash
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
-```
-
-The API will be available at `http://localhost:8000`
-
-
-### Frontend Setup
-
-1. Navigate to the frontend directory:
-```bash
-cd frontend
-```
-
-2. Install dependencies:
-```bash
-npm install
-# or
-pnpm install
-```
-
-3. Configure environment variables:
-```bash
-# Copy the example environment file
-copy .env.example .env  # Windows
-# or
-cp .env.example .env    # macOS/Linux
-
-# Edit .env and set:
-# VITE_API_BASE_URL
-```
-
-4. Run the development server:
-```bash
-npm run dev
-# or
-pnpm dev
-```
-
-The frontend will be available at `http://localhost:5173`
-
-5. Build for production:
-```bash
-npm run build
-# or
-pnpm build
-```
-
-## API Overview (TTS)
-
-### Generate Speech
-
-**Endpoint**: `POST /api/tts/generate`
-
-**Request**:
-```json
-{
-  "text_md": "# Hello World\n\nThis is **markdown** text with a list:\n- Item 1\n- Item 2"
-}
-```
-
-**Response**:
-```json
-{
-  "text_normalized": "Hello World. This is markdown text with a list: Item 1. Item 2.",
-  "language": "en",
-  "audio_url": "/api/tts/audio/123e4567-e89b-12d3-a456-426614174000"
-}
-```
-
-**Error Response**:
-```json
-{
-  "error": {
-    "code": "INVALID_INPUT",
-    "message": "Text input is required and cannot be empty",
-    "details": {}
-  }
-}
-```
-
-### Download Audio
-
-**Endpoint**: `GET /api/tts/audio/{id}`
-
-**Response**: Binary MP3 file with appropriate headers
-- Content-Type: `audio/mpeg`
-- Content-Disposition: `attachment; filename="tts-{id}.mp3"`
-
-**Error Response** (404):
-```json
-{
-  "error": {
-    "code": "AUDIO_NOT_FOUND",
-    "message": "Audio file not found",
-    "details": {}
-  }
-}
-```
-
-### Health Check
-
-**Endpoint**: `GET /health`
-
-**Response**:
-```json
-{
-  "status": "ok"
-}
-```
+---
 
 ## Project Structure
 
 ```
 OrganAIzer_Services/
-├── backend/
-│   ├── api/
-│   │   ├── __init__.py
-│   │   └── tts.py
-│   ├── core/
-│   │   ├── config.py
-│   │   ├── error_handling.py
-│   │   ├── logging_config.py
-│   │   └── middleware.py
-│   ├── models/
-│   │   ├── __init__.py
-│   │   ├── common.py
-│   │   └── tts.py
-│   ├── services/
-│   │   ├── __init__.py
-│   │   └── tts_service.py
-│   ├── main.py
-│   ├── requirements.txt
-│   └── .env.example
-├── frontend/
-│   ├── src/
-│   │   ├── components/
-│   │   │   ├── AudioPlayer.tsx
-│   │   │   ├── ErrorBanner.tsx
-│   │   │   └── TopNav.tsx
-│   │   ├── lib/
-│   │   │   └── api.ts
-│   │   ├── pages/
-│   │   │   └── TTSPage.tsx
-│   │   ├── App.tsx
-│   │   └── main.tsx
-│   ├── index.html
-│   ├── package.json
-│   ├── vite.config.ts
-│   ├── tailwind.config.js
-│   ├── postcss.config.js
-│   └── .env.example
-├── README.md
+├── backend/           # FastAPI backend
+│   ├── api/           # Route handlers
+│   ├── services/      # Business logic (Executive AI, integrations)
+│   ├── utils/         # Intent router, slot extraction, token storage
+│   ├── models/        # Pydantic schemas
+│   └── core/          # Config, logging, error handling
+├── frontend/          # React/Vite SPA
+├── docs/              # Additional documentation assets
+├── scripts/           # Utility and test scripts
+├── ARCHITECTURE.md
+├── DEPLOYMENT.md
+├── DEVELOPER_GUIDE.md
+├── API_OVERVIEW.md
 └── LICENSE
 ```
 
-## Licensing
+---
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+## License
 
-### Third-Party Dependencies
-
-The Text-to-Speech functionality relies on external libraries that may have their own licenses:
-- **gTTS (Google Text-to-Speech)**: Licensed under MIT License
-- **FastAPI**: Licensed under MIT License
-- **React**: Licensed under MIT License
-- Other dependencies as listed in `requirements.txt` and `package.json`
-
-## Limitations and Legal Notes
-
-- **Audio Quality**: Generated audio depends on the capabilities of the underlying TTS engine (gTTS)
-- **Language Support**: Language detection and TTS support depends on the libraries used
-- **Usage Terms**: Generated audio should comply with the usage terms of the TTS provider (Google TTS)
-- **No Authentication**: This is a demo application with no user authentication or access control
-- **Temporary Storage**: Generated audio files are stored temporarily and may be cleaned up periodically
-- **Rate Limiting**: Consider implementing rate limiting for production use to prevent abuse
-
-## Future Enhancements
-
-The project structure is designed to easily accommodate additional AI tools:
-- Speech-to-Text (STT)
-- Translation
-- Summarization
-- Other AI-powered utilities
-
-Each tool will follow the same architectural pattern with dedicated API endpoints, services, and UI components.
-
-## Contributing
-
-This is a demonstration project. For production use, consider:
-- Adding authentication and authorization
-- Implementing rate limiting
-- Adding persistent storage
-- Implementing audio file cleanup mechanisms
-- Adding comprehensive error tracking and monitoring
-- Setting up CI/CD pipelines
-- Adding comprehensive test coverage
-
-## Support
-
-For issues or questions, please refer to the project repository or documentation.
+MIT License — see [LICENSE](LICENSE) for details.

@@ -222,7 +222,7 @@ function VoiceExecutiveAgent() {
    * Send transcribed text to Executive AI
    */
   const sendToExecutiveAI = async (message: string): Promise<string> => {
-    const response = await fetch(`${API_BASE_URL}/agent/chat`, {
+    const response = await fetch(`${API_BASE_URL}/api/agent/chat`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

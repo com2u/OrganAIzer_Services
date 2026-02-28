@@ -3,7 +3,7 @@ Models for external integrations (Google, Outlook).
 """
 
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from datetime import datetime
 
 
@@ -55,11 +55,26 @@ class CalendarEventCreateRequest(BaseModel):
 
 class MailSendRequest(BaseModel):
     """Request to send email."""
-    to: List[str] = Field(..., description="Recipient email addresses")
+    to: Union[str, List[str]] = Field(..., description="Recipient email address(es) - string or list")
     subject: str = Field(..., description="Email subject")
-    body: str = Field(..., description="Email body (HTML or plain text)")
-    cc: Optional[List[str]] = Field(None, description="CC recipients")
-    bcc: Optional[List[str]] = Field(None, description="BCC recipients")
+    body: str = Field(..., description="Email plain-text body")
+    html: Optional[str] = Field(None, description="Optional HTML body (overrides plain-text rendering)")
+    cc: Optional[Union[str, List[str]]] = Field(None, description="CC recipients")
+    bcc: Optional[Union[str, List[str]]] = Field(None, description="BCC recipients")
+
+    def to_list(self) -> List[str]:
+        """Normalize `to` to a list."""
+        return [self.to] if isinstance(self.to, str) else list(self.to)
+
+    def cc_list(self) -> List[str]:
+        if self.cc is None:
+            return []
+        return [self.cc] if isinstance(self.cc, str) else list(self.cc)
+
+    def bcc_list(self) -> List[str]:
+        if self.bcc is None:
+            return []
+        return [self.bcc] if isinstance(self.bcc, str) else list(self.bcc)
 
 
 class MailSendResponse(BaseModel):

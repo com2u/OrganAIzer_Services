@@ -40,5 +40,9 @@ google-api-python-client==2.116.0
 # Token encryption
 cryptography==41.0.7
 
+# Microsoft OAuth (MSAL)
+msal==1.25.0
+msal-extensions==1.1.0
+
 # CORS middleware (included with FastAPI/Starlette)
 # starlette is a dependency of FastAPI

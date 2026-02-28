@@ -18,7 +18,7 @@ from core.error_handling import (
     validation_error_handler,
     generic_error_handler
 )
-from api import tts, stt, image_gen, youtube, video, chat, document, translation, knowledge_base, integrations, executive_agent
+from api import tts, stt, image_gen, youtube, video, chat, document, translation, knowledge_base, integrations, executive_agent, voice_mode
 
 # Set up logging
 setup_logging()
@@ -133,11 +133,13 @@ app.include_router(image_gen.router, prefix="/api")  # Includes both /image-gen 
 app.include_router(youtube.router, prefix="/api")  # YouTube transcription endpoints (backwards compatible)
 app.include_router(video.router, prefix="/api")  # Unified video transcription endpoints
 app.include_router(chat.router, prefix="/api")  # LLM chat endpoints
+app.include_router(chat.llm_router, prefix="/api")  # Legacy /llm endpoint for Chrome Extension compatibility
 app.include_router(document.router, prefix="/api")  # Document analysis endpoints
 app.include_router(translation.router, prefix="/api")  # Translation endpoints
 app.include_router(knowledge_base.router, prefix="/api")  # Knowledge base (RAG) endpoints
 app.include_router(integrations.router, prefix="/api")  # External integrations (Google, Outlook) - BETA
 app.include_router(executive_agent.router, prefix="/api/agent", tags=["executive-agent"])  # Executive Agent endpoints
+app.include_router(voice_mode.router, prefix="/api/voice")  # Realtime Voice Mode WebSocket
 
 
 @app.get("/health")

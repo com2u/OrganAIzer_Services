@@ -10,7 +10,12 @@ import os
 from pathlib import Path
 from fastapi import UploadFile
 from typing import Tuple, Optional, List
-import whisper
+try:
+    import whisper
+    _whisper_available = True
+except ImportError:
+    whisper = None  # type: ignore
+    _whisper_available = False
 import time
 from core.config import config
 from core.error_handling import AppError
@@ -67,13 +72,15 @@ def validate_audio_file(file: UploadFile, max_size_mb: int = 25) -> None:
         )
     
     # Check file extension
-    allowed_extensions = {'.mp3', '.wav', '.m4a', '.ogg', '.flac'}
+    # .webm is added because browsers record MediaRecorder output as audio/webm (Opus codec),
+    # which Whisper handles natively.
+    allowed_extensions = {'.mp3', '.wav', '.m4a', '.ogg', '.flac', '.webm'}
     file_ext = Path(file.filename).suffix.lower()
     
     if file_ext not in allowed_extensions:
         raise AppError(
             code="INVALID_FILE_FORMAT",
-            message=f"Unsupported file format: {file_ext}. Allowed formats: {', '.join(allowed_extensions)}",
+            message=f"Unsupported file format: {file_ext}. Allowed formats: {', '.join(sorted(allowed_extensions))}",
             http_status=400
         )
     

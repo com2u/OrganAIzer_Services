@@ -9,12 +9,13 @@ import TTSPage from './pages/TTSPage';
 import STTPage from './pages/STTPage';
 import ImageGenPage from './pages/ImageGenPage';
 import YouTubePage from './pages/YouTubePage';
-import ChatPage from './pages/ChatPage';
+import IntegrationsPage from './pages/IntegrationsPage';
+import ExecutiveAgent from './components/ExecutiveAgent';
 
-type PageType = 'tts' | 'stt' | 'image-gen' | 'youtube' | 'chat';
+type PageType = 'tts' | 'stt' | 'image-gen' | 'youtube' | 'executive' | 'integrations';
 
 export default function App() {
-  const [currentPage, setCurrentPage] = useState<PageType>('tts');
+  const [currentPage, setCurrentPage] = useState<PageType>('executive');
 
   return (
     <div className="min-h-screen bg-gray-100">
@@ -65,25 +66,36 @@ export default function App() {
               Video → Text
             </button>
             <button
-              onClick={() => setCurrentPage('chat')}
+              onClick={() => setCurrentPage('executive')}
               className={`py-4 px-6 font-medium text-sm border-b-2 transition-colors ${
-                currentPage === 'chat'
-                  ? 'border-green-600 text-green-600'
+                currentPage === 'executive'
+                  ? 'border-indigo-600 text-indigo-600'
                   : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
               }`}
             >
-              AI Chat
+              🤖 Executive AI
+            </button>
+            <button
+              onClick={() => setCurrentPage('integrations')}
+              className={`py-4 px-6 font-medium text-sm border-b-2 transition-colors ${
+                currentPage === 'integrations'
+                  ? 'border-orange-600 text-orange-600'
+                  : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+              }`}
+            >
+              🔗 Integrations
             </button>
           </nav>
         </div>
       </div>
 
       <main>
+        {currentPage === 'executive' && <ExecutiveAgent />}
         {currentPage === 'tts' && <TTSPage />}
         {currentPage === 'stt' && <STTPage />}
         {currentPage === 'image-gen' && <ImageGenPage />}
         {currentPage === 'youtube' && <YouTubePage />}
-        {currentPage === 'chat' && <ChatPage />}
+        {currentPage === 'integrations' && <IntegrationsPage />}
       </main>
     </div>
   );

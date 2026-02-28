@@ -25,7 +25,12 @@ class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = "default"
     user_id: Optional[str] = "default_user"
-    provider: Optional[str] = "gmail"
+    # Legacy single-provider field – kept for backward compat but ignored
+    # when the specific fields below are provided.
+    provider: Optional[str] = None
+    # Separate provider fields – preferred over legacy `provider`
+    mail_provider: Optional[str] = "gmail"       # gmail | outlook
+    calendar_provider: Optional[str] = "google"  # google | outlook
 
 
 class ChatResponse(BaseModel):
@@ -93,11 +98,13 @@ async def chat_with_agent(request: ChatRequest):
         # Initialize Executive Agent with session
         agent = ExecutiveAgent(session_id=request.session_id)
         
-        # Process message
+        # Process message – use dedicated provider fields; fall back to legacy `provider`
         response = await agent.process_message(
             user_message=request.message,
             user_id=request.user_id,
-            provider=request.provider
+            provider=request.provider or "google",
+            mail_provider=request.mail_provider or "gmail",
+            calendar_provider=request.calendar_provider or "google",
         )
         
         # CRITICAL: Add state machine information to response

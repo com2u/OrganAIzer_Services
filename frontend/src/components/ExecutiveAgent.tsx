@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 
 // Type definitions
 interface Message {
@@ -56,6 +56,24 @@ function ExecutiveAgent() {
   const [pendingAction, setPendingAction] = useState<any>(null);
   const [lastAction, setLastAction] = useState<any>(null);
 
+  // ── Push-to-talk state (for simple voice messages) ─────────────────────────
+  const [isRecording, setIsRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const streamRef = useRef<MediaStream | null>(null);
+
+  // ── Realtime Voice Mode state ───────────────────────────────────────────────
+  type VoiceState = 'idle' | 'listening' | 'thinking' | 'speaking';
+  const [voiceMode, setVoiceMode] = useState(false);
+  const [voiceState, setVoiceState] = useState<VoiceState>('idle');
+  const [partialTranscript, setPartialTranscript] = useState('');
+  const voiceModeRef = useRef(false);   // avoids stale-closure in WS callbacks
+  const wsRef = useRef<WebSocket | null>(null);
+  const voiceAudioRef = useRef<HTMLAudioElement | null>(null);
+  // ──────────────────────────────────────────────────────────────────────────
+
   const API_KEY = import.meta.env.VITE_API_KEY || 'test-key-123';
   const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
 
@@ -76,7 +94,7 @@ function ExecutiveAgent() {
   const fetchCapabilities = async () => {
     setLoadingCapabilities(true);
     try {
-      const response = await fetch(`${API_BASE_URL}/agent/capabilities`, {
+      const response = await fetch(`${API_BASE_URL}/api/agent/capabilities`, {
         headers: {
           'X-API-Key': API_KEY,
         },
@@ -111,7 +129,7 @@ function ExecutiveAgent() {
     setError(null);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/agent/chat`, {
+      const response = await fetch(`${API_BASE_URL}/api/agent/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -182,7 +200,7 @@ function ExecutiveAgent() {
   const updateDebugInfo = async (userInput: string, responseData: any) => {
     // Fetch current system time from backend
     try {
-      const timeResponse = await fetch(`${API_BASE_URL}/agent/debug/time`, {
+      const timeResponse = await fetch(`${API_BASE_URL}/api/agent/debug/time`, {
         headers: {
           'X-API-Key': API_KEY,
         },
@@ -209,6 +227,216 @@ function ExecutiveAgent() {
     }
   };
 
+  // ── Voice recording logic ──────────────────────────────────────────────────
+  const stopStream = useCallback(() => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+  }, []);
+
+  const toggleRecording = useCallback(async () => {
+    if (isRecording) {
+      // Stop recording
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+        mediaRecorderRef.current.stop();
+      }
+      return;
+    }
+
+    // Start recording
+    setVoiceError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+      streamRef.current = stream;
+      audioChunksRef.current = [];
+
+      const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      mediaRecorderRef.current = mediaRecorder;
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+
+      mediaRecorder.onstop = async () => {
+        setIsRecording(false);
+        stopStream();
+
+        if (audioChunksRef.current.length === 0) return;
+
+        setIsTranscribing(true);
+        try {
+          const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+          const formData = new FormData();
+          formData.append('file', audioBlob, 'recording.webm');
+
+          const res = await fetch(`${API_BASE_URL}/api/stt/transcribe`, {
+            method: 'POST',
+            headers: { 'X-API-Key': API_KEY },
+            body: formData,
+          });
+
+          if (!res.ok) throw new Error(`STT failed: ${res.statusText}`);
+          const result = await res.json();
+          // Backend STTTranscribeResponse uses field name 'transcript'
+          const text: string = result.transcript || result.text || '';
+
+          if (text.trim()) {
+            // Put transcript in the input box so user can review / send
+            setInput(text.trim());
+          } else {
+            setVoiceError('No speech detected. Please try again.');
+          }
+        } catch (err: any) {
+          setVoiceError(`Transcription error: ${err.message}`);
+        } finally {
+          setIsTranscribing(false);
+        }
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+    } catch (err: any) {
+      setVoiceError('Microphone access denied. Please allow microphone permission.');
+    }
+  }, [isRecording, API_BASE_URL, API_KEY, stopStream]);
+  // ──────────────────────────────────────────────────────────────────────────
+
+  // ── Realtime Voice Mode WS logic ──────────────────────────────────────────
+  const connectVoiceWS = useCallback(() => {
+    const wsBase = API_BASE_URL.replace(/^http/, 'ws');
+    const url = `${wsBase}/api/voice/stream?session_id=default&user_id=default_user&provider=gmail`;
+    const ws = new WebSocket(url);
+    wsRef.current = ws;
+
+    ws.onopen = () => console.log('[VoiceMode] WS connected');
+
+    ws.onmessage = (ev) => {
+      try {
+        const data = JSON.parse(ev.data as string);
+        switch (data.type) {
+          case 'state':
+            setVoiceState(data.state as VoiceState);
+            break;
+          case 'stt.partial':
+            setPartialTranscript(data.text || '');
+            break;
+          case 'stt.final':
+            setPartialTranscript('');
+            if (data.text) {
+              setMessages((prev) => [
+                ...prev,
+                { role: 'user', content: data.text, timestamp: new Date() },
+              ]);
+            }
+            break;
+          case 'ai.response.text':
+            if (data.text) {
+              setMessages((prev) => [
+                ...prev,
+                { role: 'agent', content: data.text, timestamp: new Date() },
+              ]);
+            }
+            break;
+          case 'tts.audio': {
+            // Stop any current playback first (barge-in)
+            if (voiceAudioRef.current) {
+              voiceAudioRef.current.pause();
+            }
+            const audio = new Audio(`${API_BASE_URL}${data.audio_url}`);
+            voiceAudioRef.current = audio;
+            audio.play().catch((e) => console.warn('[VoiceMode] audio play failed:', e));
+            break;
+          }
+          case 'error':
+            setVoiceError(data.message || 'Voice mode error');
+            break;
+        }
+      } catch (e) {
+        console.error('[VoiceMode] WS parse error:', e);
+      }
+    };
+
+    ws.onclose = () => {
+      console.log('[VoiceMode] WS closed');
+      // Auto-reconnect if voice mode is still on
+      if (voiceModeRef.current) {
+        setTimeout(connectVoiceWS, 2000);
+      }
+    };
+
+    ws.onerror = (e) => console.error('[VoiceMode] WS error:', e);
+  }, [API_BASE_URL]);
+
+  // Connect/disconnect WS when voiceMode toggles
+  useEffect(() => {
+    voiceModeRef.current = voiceMode;
+    if (voiceMode) {
+      connectVoiceWS();
+    } else {
+      // Clean up
+      wsRef.current?.close();
+      wsRef.current = null;
+      voiceAudioRef.current?.pause();
+      voiceAudioRef.current = null;
+      setVoiceState('idle');
+      setPartialTranscript('');
+      stopStream();
+      if (mediaRecorderRef.current?.state === 'recording') {
+        mediaRecorderRef.current.stop();
+      }
+      setIsRecording(false);
+    }
+  }, [voiceMode, connectVoiceWS, stopStream]);
+
+  /** Start streaming audio to the backend WS (push-to-talk press) */
+  const startVoiceSpeaking = useCallback(async () => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    // Stop AI speech (barge-in)
+    if (voiceAudioRef.current) {
+      voiceAudioRef.current.pause();
+      voiceAudioRef.current = null;
+    }
+    setVoiceError(null);
+    wsRef.current.send(JSON.stringify({ type: 'audio_start' }));
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+      streamRef.current = stream;
+
+      const mr = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      mediaRecorderRef.current = mr;
+
+      mr.ondataavailable = (e) => {
+        if (e.data.size > 0 && wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(e.data);
+        }
+      };
+
+      mr.start(500); // emit chunks every 500 ms
+      setIsRecording(true);
+    } catch {
+      setVoiceError('Microphone access denied.');
+    }
+  }, []);
+
+  /** Stop streaming audio (push-to-talk release) */
+  const stopVoiceSpeaking = useCallback(() => {
+    if (mediaRecorderRef.current?.state === 'recording') {
+      mediaRecorderRef.current.stop();
+    }
+    stopStream();
+    setIsRecording(false);
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'audio_end' }));
+    }
+  }, [stopStream]);
+  // ──────────────────────────────────────────────────────────────────────────
+
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -216,20 +444,121 @@ function ExecutiveAgent() {
     }
   };
 
+  // Voice state helpers
+  const voiceStateLabel: Record<string, string> = {
+    idle: 'Ready — hold mic to speak',
+    listening: 'Listening…',
+    thinking: 'Thinking…',
+    speaking: 'Speaking…',
+  };
+  const voiceStateColor: Record<string, string> = {
+    idle: 'text-gray-300',
+    listening: 'text-red-400',
+    thinking: 'text-yellow-400',
+    speaking: 'text-green-400',
+  };
+  const voiceStateEmoji: Record<string, string> = {
+    idle: '🎤',
+    listening: '🎙️',
+    thinking: '🤔',
+    speaking: '🔊',
+  };
+
   return (
     <div className="max-w-6xl mx-auto p-6">
+
+      {/* ── Voice Mode fullscreen overlay ─────────────────────────────────── */}
+      {voiceMode && (
+        <div className="fixed inset-0 z-50 bg-black bg-opacity-90 flex flex-col items-center justify-center select-none">
+          {/* Status icon */}
+          <div className={`text-7xl mb-4 ${voiceState === 'listening' || voiceState === 'speaking' ? 'animate-pulse' : ''}`}>
+            {voiceStateEmoji[voiceState]}
+          </div>
+
+          {/* State label */}
+          <p className={`text-2xl font-semibold mb-6 ${voiceStateColor[voiceState]}`}>
+            {voiceStateLabel[voiceState]}
+          </p>
+
+          {/* Partial transcript */}
+          {partialTranscript && (
+            <p className="text-gray-300 text-lg mb-6 max-w-xl text-center italic">
+              "{partialTranscript}"
+            </p>
+          )}
+
+          {/* Hold-to-speak mic button */}
+          <button
+            onMouseDown={startVoiceSpeaking}
+            onMouseUp={stopVoiceSpeaking}
+            onTouchStart={(e) => { e.preventDefault(); startVoiceSpeaking(); }}
+            onTouchEnd={(e) => { e.preventDefault(); stopVoiceSpeaking(); }}
+            disabled={voiceState === 'thinking' || voiceState === 'speaking'}
+            className={`w-28 h-28 rounded-full flex items-center justify-center text-5xl shadow-2xl transition-all
+              ${isRecording ? 'bg-red-600 scale-110 ring-4 ring-red-400' : 'bg-blue-600 hover:bg-blue-500'}
+              disabled:opacity-40 disabled:cursor-not-allowed`}
+          >
+            🎤
+          </button>
+
+          <p className="text-gray-500 text-sm mt-3">
+            {isRecording ? 'Release to send' : 'Hold to speak'}
+          </p>
+
+          {/* Voice error */}
+          {voiceError && (
+            <div className="mt-4 px-4 py-2 bg-red-900 text-red-200 rounded-lg text-sm max-w-sm text-center">
+              ⚠️ {voiceError}
+              <button onClick={() => setVoiceError(null)} className="ml-2 text-red-300 hover:text-white">✕</button>
+            </div>
+          )}
+
+          {/* Chat transcript (last 4 messages) */}
+          <div className="mt-8 w-full max-w-lg space-y-2 px-4 max-h-40 overflow-y-auto">
+            {messages.slice(-4).map((m, i) => (
+              <div key={i} className={`text-sm rounded px-3 py-1 ${m.role === 'user' ? 'bg-blue-900 text-blue-100 text-right' : 'bg-gray-800 text-gray-200 text-left'}`}>
+                {m.content.substring(0, 120)}{m.content.length > 120 ? '…' : ''}
+              </div>
+            ))}
+          </div>
+
+          {/* Exit button */}
+          <button
+            onClick={() => setVoiceMode(false)}
+            className="mt-8 px-8 py-3 bg-gray-700 text-white rounded-full hover:bg-gray-600 text-sm font-medium"
+          >
+            ✕ Exit Voice Mode
+          </button>
+        </div>
+      )}
+      {/* ─────────────────────────────────────────────────────────────────── */}
+
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-3xl font-bold text-gray-800">🤖 OrganAIzer Executive Agent</h1>
-        <button
-          onClick={() => setDebugMode(!debugMode)}
-          className={`px-4 py-2 rounded-lg transition-colors ${
-            debugMode 
-              ? 'bg-orange-600 text-white hover:bg-orange-700' 
-              : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-          }`}
-        >
-          🐛 Debug {debugMode ? 'ON' : 'OFF'}
-        </button>
+        <div className="flex gap-2">
+          {/* Voice Mode toggle */}
+          <button
+            onClick={() => setVoiceMode((v) => !v)}
+            title="Toggle realtime voice conversation mode"
+            className={`px-4 py-2 rounded-lg transition-colors font-medium ${
+              voiceMode
+                ? 'bg-purple-600 text-white hover:bg-purple-700'
+                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+            }`}
+          >
+            {voiceMode ? '🔴 Voice ON' : '🗣️ Voice Mode'}
+          </button>
+          <button
+            onClick={() => setDebugMode(!debugMode)}
+            className={`px-4 py-2 rounded-lg transition-colors ${
+              debugMode
+                ? 'bg-orange-600 text-white hover:bg-orange-700'
+                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+            }`}
+          >
+            🐛 Debug {debugMode ? 'ON' : 'OFF'}
+          </button>
+        </div>
       </div>
 
       {/* Capabilities Section */}
@@ -441,20 +770,63 @@ function ExecutiveAgent() {
           <div ref={messagesEndRef} />
         </div>
 
+        {/* Voice Error */}
+        {voiceError && (
+          <div className="bg-yellow-100 border border-yellow-400 text-yellow-800 px-4 py-2 rounded mb-3 flex items-center justify-between text-sm">
+            <span>🎤 {voiceError}</span>
+            <button onClick={() => setVoiceError(null)} className="ml-2 text-yellow-900 hover:text-yellow-950">✕</button>
+          </div>
+        )}
+
+        {/* Voice status bar */}
+        {(isRecording || isTranscribing) && (
+          <div className="mb-3 flex items-center gap-3">
+            {isRecording && (
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-red-100 rounded-lg text-sm text-red-700 font-medium">
+                <span className="inline-block w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+                Recording… click 🎤 to stop
+              </div>
+            )}
+            {isTranscribing && (
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-blue-100 rounded-lg text-sm text-blue-700 font-medium">
+                <span className="animate-spin inline-block w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full" />
+                Transcribing…
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Input Section */}
         <div className="flex gap-2">
+          {/* Microphone button */}
+          <button
+            onClick={toggleRecording}
+            disabled={isTranscribing || loading}
+            title={isRecording ? 'Stop recording' : 'Record voice message (transcript will appear in input)'}
+            className={`flex-shrink-0 w-10 h-10 rounded-lg flex items-center justify-center transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+              isRecording
+                ? 'bg-red-500 hover:bg-red-600 text-white animate-pulse'
+                : 'bg-gray-200 hover:bg-gray-300 text-gray-700'
+            }`}
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+            </svg>
+          </button>
+
           <input
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyPress={handleKeyPress}
-            placeholder="Type your message..."
-            disabled={loading}
+            placeholder={isRecording ? '🔴 Recording… click mic to stop' : isTranscribing ? 'Transcribing…' : 'Type or record your message…'}
+            disabled={loading || isRecording || isTranscribing}
             className="flex-1 border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
           />
           <button
             onClick={sendMessage}
-            disabled={loading || !input.trim()}
+            disabled={loading || !input.trim() || isRecording || isTranscribing}
             className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
           >
             {loading ? (

@@ -39,6 +39,9 @@ class IntentType:
     PROVIDE_SLOT_VALUE = "PROVIDE_SLOT_VALUE"
     SWITCH_TOPIC = "SWITCH_TOPIC"
     GENERAL_MESSAGE = "GENERAL_MESSAGE"
+    # New dedicated calendar intents
+    CALENDAR_CREATE = "CALENDAR_CREATE"
+    CALENDAR_LIST = "CALENDAR_LIST"
 
 
 class IntentRouter:
@@ -79,7 +82,58 @@ class IntentRouter:
         "google": ["google calendar", "google", "gmail"],
         "outlook": ["outlook calendar", "outlook", "microsoft"]
     }
-    
+
+    # ── Calendar intent detection patterns ────────────────────────────────────
+    CALENDAR_CREATE_PATTERNS = [
+        # Exact phrase fragments (order: longer first to avoid prefix issues)
+        "create an event", "add an event", "create a calendar event",
+        "add a calendar event", "create calendar event", "calendar event",
+        "create event", "add event",
+        "schedule an event", "schedule a meeting", "schedule meeting",
+        "schedule event", "create meeting", "add meeting",
+        "add to calendar", "put on my calendar", "put on the calendar",
+        "meeting with", "appointment with",
+        "book time", "block time", "new event", "new meeting",
+        # Time-range patterns like "11:25 till 11:40" indicate event creation
+        "till ", "until ",           # "X till Y" / "X until Y" with time context
+    ]
+
+    CALENDAR_LIST_PATTERNS = [
+        "what events", "what's on my calendar", "what is on my calendar",
+        "show my calendar", "show calendar", "list events", "list my events",
+        "events tomorrow", "events today", "events for tomorrow", "events for today",
+        "take a look at google calendar", "google calendar events",
+        "check my calendar", "what do i have tomorrow", "what do i have today",
+        "what meetings", "show events", "upcoming events",
+        "what's happening", "what is happening",
+        "look at calendar", "view calendar", "see my calendar",
+    ]
+
+    @staticmethod
+    def _detect_calendar_intent(message: str) -> Optional[str]:
+        """
+        Detect calendar-specific intents from free text.
+
+        Returns IntentType.CALENDAR_CREATE, IntentType.CALENDAR_LIST, or None.
+        The create patterns are checked first.
+        """
+        # Check create patterns
+        for pattern in IntentRouter.CALENDAR_CREATE_PATTERNS:
+            if pattern in message:
+                # Extra guard: "till"/"until" only triggers CREATE when a time is present
+                if pattern in ("till ", "until "):
+                    # Must have at least one digit near it (time context)
+                    if not re.search(r'\d{1,2}[:\.]?\d{0,2}\s*(till|until)', message):
+                        continue
+                return IntentType.CALENDAR_CREATE
+
+        # Check list patterns
+        for pattern in IntentRouter.CALENDAR_LIST_PATTERNS:
+            if pattern in message:
+                return IntentType.CALENDAR_LIST
+
+        return None
+
     @staticmethod
     def route_message(
         message: str,
@@ -260,16 +314,25 @@ class IntentRouter:
             elif task_type == "calendar_event":
                 extracted_slots = SlotExtractor.extract_calendar_slots(message, task_data)
             
-            # If we extracted any slots OR task is in collecting state, route as slot value
-            if extracted_slots or task_data.get("state") in ["EMAIL_COLLECTING", "CAL_COLLECTING", "collecting"]:
-                logger.info(f"[INTENT_ROUTER] ✓ PROVIDE_SLOT_VALUE (extracted: {list(extracted_slots.keys())})")
-                return {
-                    "intent_type": IntentType.PROVIDE_SLOT_VALUE,
-                    "extracted_slots": extracted_slots,
-                    "normalized_message": message,
-                    "confidence": 0.9,
-                    "reasoning": f"Providing slot values for active {task_type} task"
-                }
+            # FIX: _is_task_locked() already confirmed task is locked (collecting / awaiting_confirmation).
+            # Always route as PROVIDE_SLOT_VALUE so free-text body/description messages are not
+            # dropped into general chat.  The check on task_data["state"] was wrong – status is
+            # stored at active_task["status"] level, not inside the data dict.
+            logger.info(
+                f"[INTENT_ROUTER] ✓ PROVIDE_SLOT_VALUE "
+                f"(task locked, status={active_task.get('status')!r}, "
+                f"extracted={list(extracted_slots.keys())})"
+            )
+            return {
+                "intent_type": IntentType.PROVIDE_SLOT_VALUE,
+                "extracted_slots": extracted_slots,
+                "normalized_message": message,
+                "confidence": 0.9,
+                "reasoning": (
+                    f"Task '{task_type}' is locked "
+                    f"(status={active_task.get('status')!r}) – treating input as slot value"
+                ),
+            }
         
         # =================================================================
         # PRIORITY 5: TOPIC SWITCH DETECTION
@@ -287,7 +350,24 @@ class IntentRouter:
                     "confidence": 0.85,
                     "reasoning": f"Topic switch detected: {topic_switch}"
                 }
-        
+
+        # =================================================================
+        # PRIORITY 6: CALENDAR INTENT DETECTION (when no locked task)
+        # Runs before GENERAL_MESSAGE so calendar phrases are never dropped
+        # into LLM reasoning.
+        # =================================================================
+
+        cal_intent = IntentRouter._detect_calendar_intent(message_lower)
+        if cal_intent:
+            logger.info(f"[INTENT_ROUTER] ✓ {cal_intent} detected")
+            return {
+                "intent_type": cal_intent,
+                "extracted_slots": {},
+                "normalized_message": message,
+                "confidence": 0.95,
+                "reasoning": f"Calendar intent detected via keyword patterns: {cal_intent}"
+            }
+
         # =================================================================
         # DEFAULT: GENERAL_MESSAGE
         # =================================================================
