@@ -1,197 +1,154 @@
-# OrganAIzer Service
+# OrganAIzer Services
 
-A browser-based AI media utility suite with multiple tools for working with audio, video, text, and images. The project consists of three integrated components: a Python backend, a React frontend for testing, and a Chrome browser plugin for seamless integration into web workflows.
+> **AI-powered productivity backend** — Executive AI, Email & Calendar Management, Voice, Document Analysis, and more.
 
-## Project Structure
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-```
-OrganAIzer_Service/
-├── backend/          # Python FastAPI REST API
-├── frontend/         # React/Vite web frontend for testing
-├── plugin/           # Chrome browser extension
-├── setup.sh          # Installation script
-├── start.sh          # Start script for backend and frontend
-├── test_api.sh       # API test script
-├── openapi.json      # OpenAPI specification
-└── README.md         # This file
-```
+---
 
-## Features
+## What is OrganAIzer?
 
-- **YouTube Downloader**: Download videos from YouTube URLs (may be limited by YouTube's anti-bot measures).
-- **Text to Speech**: Convert markdown-formatted text into speech with language auto-detection.
-- **Speech to Text**: Transcribe audio files or URLs into text using OpenAI Whisper.
-- **Video to Text**: Extract spoken content from videos or YouTube links as text.
-- **Text to Image**: Generate AI-powered image descriptions using Google Gemini API with visual output.
-- **LLM Interaction**: Interact with different language models to get responses from a prompt.
+OrganAIzer Services is a comprehensive AI backend platform built with **Python FastAPI**. It powers an intelligent productivity assistant that connects to your email (Gmail, Outlook), calendar (Google Calendar, Outlook), and provides AI-driven automation through a conversational interface.
 
-## Architecture
+The platform is consumed by:
+- A **React web application** (frontend)
+- The **OrganAIzer Chrome Extension**
+- Any REST-capable client
 
-### Backend (`/backend`)
-- Python FastAPI REST API
-- Modular services for each AI tool
-- API key authentication via `X-API-Key` header
-- Structured logging and error handling
+---
 
-### Frontend (`/frontend`)
-- React SPA with Vite build tool
-- Tailwind CSS for styling
-- Single-page layout with persistent top navigation
-- Used for manual testing and demonstration of backend capabilities
+## What Does the Executive AI Do?
 
-### Browser Plugin (`/plugin`)
-- Chrome extension for in-document AI processing
-- Integrates with Confluence, Google Docs, Word Online, and more
-- Features: Text-to-Speech, Summarization, Dictation, Image Generation, Translation
-- Keyboard shortcuts and context menu integration
-- See [plugin/README.md](plugin/README.md) for detailed plugin documentation
+The **Executive AI** is the heart of OrganAIzer. It is a single, unified conversational agent that:
+
+- 📧 **Reads, summarizes, drafts, and sends emails** via Gmail and Outlook
+- 📅 **Creates and lists calendar events** via Google Calendar and Outlook Calendar
+- 🎤 **Understands voice input** (Speech-to-Text) and **speaks responses** (Text-to-Speech)
+- 🧠 **Answers knowledge questions** with session memory for contextual follow-ups
+- 🖼️ **Generates images** from natural language prompts
+- 📋 **Produces daily digests** combining emails and calendar
+
+All high-stakes actions (sending emails, creating events) require **explicit user confirmation** before execution.
+
+---
+
+## Key Features
+
+| Feature | Description |
+|---|---|
+| **Executive AI** | Single stateful conversational agent with session memory |
+| **Email Management** | Gmail + Outlook: read, summarize, draft, send |
+| **Calendar Management** | Google + Outlook: list events, create events |
+| **Voice Mode** | Full voice loop: STT → Executive AI → TTS |
+| **Intent Router** | Deterministic pre-LLM intent classification (confirmations, cancellations, slots) |
+| **Multi-Account** | Connect both Google and Microsoft simultaneously |
+| **Chrome Extension** | Summarize, translate, and generate content on any webpage |
+| **Document Analysis** | Upload PDFs/DOCX and chat with them |
+| **Translation** | 30+ language translation for text and files |
+| **Knowledge Base (RAG)** | Semantic search and Q&A over your own content |
+| **Image Generation** | Text-to-image via Gemini/Vertex AI |
+| **Video Transcription** | YouTube + file upload transcription |
+
+---
 
 ## Quick Start
 
-### First Time Setup
-Run the setup script to install all dependencies:
-
-```bash
-# Make sure you're in the project root directory
-./setup.sh
-```
-
-This will:
-- Create a Python virtual environment
-- Install Python dependencies
-- Install Node.js dependencies
-
-### Start the Application
-After setup, start both servers with:
-
-```bash
-./start.sh
-```
-
-This will automatically start both the backend and frontend servers. Open your browser and visit `http://localhost:5173`.
-
-## Developer Setup
-
 ### Prerequisites
-- Python 3.8+ with venv support
-- Node.js 16+ and npm
-- ffmpeg (for video processing)
+- Python 3.10+
+- Node.js 18+
+- [OpenRouter API key](https://openrouter.ai/) (for LLM access)
 
-### Manual Setup
-
-#### Backend
-1. Navigate to the backend directory:
-   ```bash
-   cd backend
-   ```
-2. Create a virtual environment:
-   ```bash
-   python3 -m venv venv
-   ```
-3. Activate the virtual environment:
-   - On Windows: `venv\Scripts\activate`
-   - On macOS/Linux: `source venv/bin/activate`
-4. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-5. Run the development server:
-   ```bash
-   python main.py
-   ```
-   Or with uvicorn:
-   ```bash
-   uvicorn main:app --reload
-   ```
-
-#### Frontend
-1. Navigate to the frontend directory:
-   ```bash
-   cd frontend
-   ```
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
-3. Run the development server:
-   ```bash
-   npm run dev
-   ```
-
-### Running Both Services
-After setup, you can run both services simultaneously:
+### 1. Clone and configure
 
 ```bash
-# From the project root
-./start.sh
+git clone https://github.com/com2u/OrganAIzer_Services.git
+cd OrganAIzer_Services
+
+# Configure backend environment
+copy backend\.env.example backend\.env
+# Edit backend/.env with your OPENROUTER_API_KEY and other keys
+```
+
+### 2. Start services (Windows)
+
+```bash
+start_services.bat
 ```
 
 Or manually:
 ```bash
-# Terminal 1 - Backend
-cd backend && source venv/bin/activate && python main.py
+# Backend
+cd backend
+python -m venv venv && venv\Scripts\activate
+pip install -r requirements.txt
+python main.py
 
-# Terminal 2 - Frontend
-cd frontend && npm run dev
+# Frontend (new terminal)
+cd frontend
+npm install && npm run dev
 ```
 
-### Testing the API
-Run the comprehensive API test suite to verify all endpoints:
+### 3. Open the app
 
-```bash
-# Make sure the backend is running first
-./test_api.sh
+| URL | Description |
+|---|---|
+| http://localhost:5173 | Frontend application |
+| http://localhost:8000/docs | Interactive API documentation |
+| http://localhost:8000/health | API health check |
+
+---
+
+## Documentation
+
+| Document | Description |
+|---|---|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | System architecture, Executive AI, Intent Router, OAuth model, state machines |
+| [DEPLOYMENT.md](DEPLOYMENT.md) | Environment variables, OAuth setup, production checklist, CORS configuration |
+| [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md) | Running locally, project structure, extending the AI, adding endpoints |
+| [API_OVERVIEW.md](API_OVERVIEW.md) | All API endpoints with request/response examples |
+
+---
+
+## Technology Stack
+
+### Backend
+- **Python 3.10+** with **FastAPI**
+- **OpenRouter** — multi-model LLM access (Gemini, Claude, GPT-4, etc.)
+- **Google AI** — STT, TTS, Calendar API, Gmail API, Image Generation (Gemini)
+- **Microsoft Graph API** — Outlook Calendar and Mail
+- **MSAL** — Microsoft OAuth 2.0
+- **google-auth-oauthlib** — Google OAuth 2.0
+- **TF-IDF vectorization** — Knowledge base semantic search
+
+### Frontend
+- **React 18** + **Vite**
+- **Tailwind CSS**
+- **TypeScript**
+
+---
+
+## Project Structure
+
+```
+OrganAIzer_Services/
+├── backend/           # FastAPI backend
+│   ├── api/           # Route handlers
+│   ├── services/      # Business logic (Executive AI, integrations)
+│   ├── utils/         # Intent router, slot extraction, token storage
+│   ├── models/        # Pydantic schemas
+│   └── core/          # Config, logging, error handling
+├── frontend/          # React/Vite SPA
+├── docs/              # Additional documentation assets
+├── scripts/           # Utility and test scripts
+├── ARCHITECTURE.md
+├── DEPLOYMENT.md
+├── DEVELOPER_GUIDE.md
+├── API_OVERVIEW.md
+└── LICENSE
 ```
 
-This will test all API endpoints including:
-- Root endpoint health check
-- Text-to-Speech generation and audio download
-- Speech-to-Text transcription
-- Text-to-Image generation
-- YouTube video download
-- Video-to-Text transcription
-- LLM prompt interaction
+---
 
-## Authentication
+## License
 
-All `/api/*` endpoints require an API key sent via the `X-API-Key` header. Valid API keys are stored in `backend/keys.csv`.
-
-Example authenticated request:
-```bash
-curl -X POST "http://localhost:8000/api/llm" \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: your-api-key-here" \
-  -d '{"prompt": "Hello, world!"}'
-```
-
-## API Overview
-
-### YouTube Downloader
-- `POST /api/youtube/download` - Download video from URL
-
-### Text to Speech
-- `POST /api/tts/generate` - Generate speech from markdown text
-- `GET /api/tts/audio/{id}` - Download generated audio
-
-### Speech to Text
-- `POST /api/stt/transcribe` - Transcribe audio file or URL
-
-### Video to Text
-- `POST /api/video-text/transcribe` - Transcribe video file or YouTube URL
-
-### Text to Image
-- `POST /api/text-image/generate` - Generate images from prompt
-
-### LLM Interaction
-- `POST /api/llm` - Get a response from a language model
-
-## Licensing
-
-This project code is licensed under the MIT License.
-
-Note: youtube-dl is licensed under the Unlicense. Whisper and other AI models have their respective licenses.
-
-## Limitations and Legal Notes
-
-- YouTube download must comply with YouTube's Terms of Service.
-- Usage constraints for external AI APIs apply.
+MIT License — see [LICENSE](LICENSE) for details.
