@@ -49,51 +49,59 @@ def _reload_auth(monkeypatch, api_keys_value: str | None):
 # Tests
 # ---------------------------------------------------------------------------
 
+def _load_auth_module(monkeypatch, api_keys=None, api_key=None):
+    """Helper: reload auth with controlled env vars."""
+    monkeypatch.delenv("API_KEYS", raising=False)
+    monkeypatch.delenv("API_KEY", raising=False)
+    if api_keys is not None:
+        monkeypatch.setenv("API_KEYS", api_keys)
+    if api_key is not None:
+        monkeypatch.setenv("API_KEY", api_key)
+    sys.modules.pop("auth", None)
+    import importlib.util, pathlib
+    spec = importlib.util.spec_from_file_location(
+        "auth", pathlib.Path(__file__).parent / "auth.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 class TestMissingApiKeys:
-    """Module startup raises RuntimeError when API_KEYS is missing."""
+    """Module startup raises RuntimeError when neither API_KEYS nor API_KEY is set."""
 
-    def test_env_var_absent(self, monkeypatch):
-        monkeypatch.delenv("API_KEYS", raising=False)
-        sys.modules.pop("auth", None)
+    def test_both_absent_raises(self, monkeypatch):
+        with pytest.raises(RuntimeError):
+            _load_auth_module(monkeypatch)
 
-        import importlib.util, pathlib
-        spec = importlib.util.spec_from_file_location(
-            "auth",
-            pathlib.Path(__file__).parent / "auth.py",
-        )
-        module = importlib.util.module_from_spec(spec)
+    def test_api_keys_empty_string_raises(self, monkeypatch):
+        with pytest.raises(RuntimeError):
+            _load_auth_module(monkeypatch, api_keys="")
 
-        with pytest.raises(RuntimeError, match="API_KEYS"):
-            spec.loader.exec_module(module)
+    def test_api_keys_only_commas_raises(self, monkeypatch):
+        with pytest.raises(RuntimeError):
+            _load_auth_module(monkeypatch, api_keys=",,,")
 
-    def test_env_var_empty_string(self, monkeypatch):
-        monkeypatch.setenv("API_KEYS", "")
-        sys.modules.pop("auth", None)
 
-        import importlib.util, pathlib
-        spec = importlib.util.spec_from_file_location(
-            "auth",
-            pathlib.Path(__file__).parent / "auth.py",
-        )
-        module = importlib.util.module_from_spec(spec)
+class TestApiKeyFallback:
+    """API_KEY (singular, legacy) is accepted as a fallback."""
 
-        with pytest.raises(RuntimeError, match="API_KEYS"):
-            spec.loader.exec_module(module)
+    @pytest.mark.asyncio
+    async def test_legacy_api_key_is_accepted(self, monkeypatch):
+        """Existing .env files using API_KEY (singular) must still work."""
+        mod = _load_auth_module(monkeypatch, api_key="legacy-key")
+        result = await mod.get_api_key("legacy-key")
+        assert result == "legacy-key"
 
-    def test_env_var_only_commas(self, monkeypatch):
-        """Commas with no actual keys → second RuntimeError."""
-        monkeypatch.setenv("API_KEYS", ",,,")
-        sys.modules.pop("auth", None)
-
-        import importlib.util, pathlib
-        spec = importlib.util.spec_from_file_location(
-            "auth",
-            pathlib.Path(__file__).parent / "auth.py",
-        )
-        module = importlib.util.module_from_spec(spec)
-
-        with pytest.raises(RuntimeError, match="API_KEYS"):
-            spec.loader.exec_module(module)
+    @pytest.mark.asyncio
+    async def test_api_keys_takes_precedence_over_api_key(self, monkeypatch):
+        """When both are set, API_KEYS wins and API_KEY is ignored."""
+        mod = _load_auth_module(monkeypatch, api_keys="new-key", api_key="old-key")
+        result = await mod.get_api_key("new-key")
+        assert result == "new-key"
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException):
+            await mod.get_api_key("old-key")
 
 
 class TestGetApiKey:

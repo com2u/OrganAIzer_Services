@@ -18,20 +18,25 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Load API keys from environment at module import time.
 # Fail fast so the problem is caught on startup, not on first request.
+#
+# Supports two env var forms for backward compatibility:
+#   API_KEYS=key1,key2,key3   (comma-separated list, recommended)
+#   API_KEY=single-key        (single key, legacy — used as fallback)
 # ---------------------------------------------------------------------------
-_raw = os.getenv("API_KEYS", "").strip()
+_raw = os.getenv("API_KEYS", "").strip() or os.getenv("API_KEY", "").strip()
 if not _raw:
     raise RuntimeError(
-        "API_KEYS environment variable is not set or is empty. "
-        "Set it to a comma-separated list of valid API keys before starting the server. "
-        "Example: API_KEYS=key-abc123,key-def456"
+        "No API keys configured. Set either:\n"
+        "  API_KEYS=key1,key2   (comma-separated, for multiple keys)\n"
+        "  API_KEY=key1         (single key, backward-compatible)\n"
+        "in your backend/.env file before starting the server."
     )
 
 API_KEYS: set[str] = {k.strip() for k in _raw.split(",") if k.strip()}
 
 if not API_KEYS:
     raise RuntimeError(
-        "API_KEYS environment variable was set but contained no usable keys "
+        "API_KEYS / API_KEY environment variable was set but contained no usable keys "
         "(check for stray commas or whitespace-only values)."
     )
 

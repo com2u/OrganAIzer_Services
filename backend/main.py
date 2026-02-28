@@ -1,12 +1,15 @@
+# Load .env FIRST — before any module whose top-level code calls os.getenv().
+# Use an explicit path so this works whether the process is started from the
+# repo root ("python backend/main.py") or from inside backend/ ("python main.py").
+from pathlib import Path as _Path
+from dotenv import load_dotenv as _load_dotenv
+_load_dotenv(_Path(__file__).parent / ".env")
+
 from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 import os
-from dotenv import load_dotenv
 from auth import get_api_key
-
-# Load environment variables
-load_dotenv()
 
 from middleware import log_middleware
 
