@@ -17,6 +17,7 @@ google-genai>=1.0.0
 google-api-python-client==2.110.0
 google-auth-oauthlib==1.2.0
 google-auth-httplib2==0.1.1
-msgraph-sdk==1.0.0
-azure-identity==1.15.0
-msal==1.25.0
+# Microsoft Graph REST API — accessed directly via requests + msal.
+# msgraph-sdk removed: its generated file tree exceeds Windows 260-char path
+# limit and cannot be installed without enabling Long Path support.
+msal>=1.25.0

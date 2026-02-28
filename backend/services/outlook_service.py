@@ -1,192 +1,259 @@
+"""
+Outlook / Microsoft Graph integration.
+
+Uses MSAL (msal) for device-code-flow authentication and
+the Microsoft Graph REST API directly via `requests`.
+
+Replaces the previous msgraph-sdk implementation which could not be installed
+on Windows without Long Path support enabled (260-char path limit exceeded
+by the generated SDK file tree).
+
+Dependencies: msal, requests  — both already in requirements.txt.
+"""
+
 import os
+import json
 import logging
-from msgraph import GraphServiceClient
-from azure.identity import DeviceCodeCredential, ClientSecretCredential
-from msgraph.generated.models.message import Message
-from msgraph.generated.models.item_body import ItemBody
-from msgraph.generated.models.body_type import BodyType
-from msgraph.generated.models.recipient import Recipient
-from msgraph.generated.models.email_address import EmailAddress
-from msgraph.generated.users.item.send_mail.send_mail_post_request_body import SendMailPostRequestBody
-from typing import List, Dict, Any
 import asyncio
+from typing import List, Dict, Any, Optional
+
+import requests
+from msal import PublicClientApplication, SerializableTokenCache
 
 logger = logging.getLogger(__name__)
 
-# Scopes for Microsoft Graph
-SCOPES_DEVICE = [
-    'https://graph.microsoft.com/Mail.ReadWrite',
-    'https://graph.microsoft.com/Mail.Send',
-    'https://graph.microsoft.com/Calendars.Read'
+GRAPH_BASE = "https://graph.microsoft.com/v1.0"
+
+SCOPES = [
+    "https://graph.microsoft.com/Mail.ReadWrite",
+    "https://graph.microsoft.com/Mail.Send",
+    "https://graph.microsoft.com/Calendars.Read",
 ]
 
-SCOPES_CLIENT = [
-    'https://graph.microsoft.com/.default'
-]
+# ---------------------------------------------------------------------------
+# Token cache (persistent)
+# ---------------------------------------------------------------------------
+_cache: Optional[SerializableTokenCache] = None
+_msal_app: Optional[PublicClientApplication] = None
+_device_code_info: Optional[dict] = None
+_cached_token: Optional[str] = None
 
-# Global client to persist authentication
-_graph_client = None
-_cache = None
-_device_code_info = None
+
+def _get_cache_file() -> str:
+    return os.path.join(os.path.dirname(__file__), "..", "..", "token_cache.json")
+
+
+def _load_cache() -> SerializableTokenCache:
+    global _cache
+    if _cache is not None:
+        return _cache
+
+    cache = SerializableTokenCache()
+    cache_file = _get_cache_file()
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, "r") as f:
+                cache.deserialize(json.load(f))
+            logger.info(f"Token cache loaded from {cache_file}")
+        except Exception as e:
+            logger.warning(f"Failed to load token cache: {e}")
+    else:
+        logger.info("No existing token cache found")
+
+    _cache = cache
+    return _cache
+
+
+def _save_cache() -> None:
+    if _cache is None or not _cache.has_state_changed:
+        return
+    cache_file = _get_cache_file()
+    try:
+        with open(cache_file, "w") as f:
+            json.dump(_cache.serialize(), f)
+        logger.info(f"Token cache saved to {cache_file}")
+    except Exception as e:
+        logger.error(f"Failed to save token cache: {e}")
+
+
+def _get_msal_app() -> PublicClientApplication:
+    global _msal_app
+    if _msal_app is not None:
+        return _msal_app
+
+    client_id = os.getenv("AZURE_CLIENT_ID")
+    tenant_id = os.getenv("AZURE_TENANT_ID", "common")
+    if not client_id:
+        raise RuntimeError(
+            "AZURE_CLIENT_ID environment variable must be set for Outlook integration"
+        )
+
+    cache = _load_cache()
+    _msal_app = PublicClientApplication(
+        client_id=client_id,
+        authority=f"https://login.microsoftonline.com/{tenant_id}",
+        token_cache=cache,
+    )
+    return _msal_app
+
+
+def _acquire_token() -> str:
+    """
+    Acquire an access token via MSAL.
+
+    Tries silent auth first (uses cached refresh token).
+    Falls back to device-code flow if no valid cached token exists.
+    """
+    global _device_code_info, _cached_token
+
+    app = _get_msal_app()
+
+    # Try silent acquisition first (cached token / refresh token)
+    accounts = app.get_accounts()
+    if accounts:
+        result = app.acquire_token_silent(SCOPES, account=accounts[0])
+        if result and "access_token" in result:
+            _save_cache()
+            return result["access_token"]
+
+    # Initiate device code flow
+    flow = app.initiate_device_flow(scopes=SCOPES)
+    if "user_code" not in flow:
+        raise RuntimeError(f"Failed to initiate device flow: {flow.get('error_description')}")
+
+    _device_code_info = flow
+    logger.info(
+        f"Device code flow initiated. "
+        f"User code: {flow['user_code']}  "
+        f"URL: {flow['verification_uri']}"
+    )
+
+    # Wait for user to authenticate (blocking; runs in a thread in practice)
+    result = app.acquire_token_by_device_flow(flow)
+    if "access_token" not in result:
+        raise RuntimeError(
+            f"Device code authentication failed: {result.get('error_description')}"
+        )
+
+    _save_cache()
+    logger.info("Device code authentication successful")
+    return result["access_token"]
+
+
+def _graph_get(path: str) -> dict:
+    """Send authenticated GET to Microsoft Graph."""
+    token = _acquire_token()
+    response = requests.get(
+        f"{GRAPH_BASE}{path}",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        timeout=30,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def _graph_post(path: str, body: dict) -> Optional[dict]:
+    """Send authenticated POST to Microsoft Graph."""
+    token = _acquire_token()
+    response = requests.post(
+        f"{GRAPH_BASE}{path}",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json=body,
+        timeout=30,
+    )
+    response.raise_for_status()
+    # 202 Accepted (sendMail) returns no body
+    if response.status_code == 202 or not response.content:
+        return None
+    return response.json()
+
+
+# ---------------------------------------------------------------------------
+# Public API — same signatures as before
+# ---------------------------------------------------------------------------
 
 def get_graph_client():
-    """Gets authenticated Microsoft Graph client."""
-    global _graph_client, _cache
-    if _graph_client is not None:
-        return _graph_client
+    """
+    Compatibility shim.  Previously returned a GraphServiceClient.
+    Now just warms up the MSAL app and returns None; callers should
+    use the read_emails / send_email / read_calendar_events helpers directly.
+    """
+    _get_msal_app()
+    return None
 
-    client_id = os.getenv('AZURE_CLIENT_ID')
-    tenant_id = os.getenv('AZURE_TENANT_ID')
-
-    if not client_id or not tenant_id:
-        raise Exception("AZURE_CLIENT_ID and AZURE_TENANT_ID environment variables must be set")
-
-    # Use persistent cache for token storage
-    from azure.identity import DeviceCodeCredential
-    import atexit
-    from msal import SerializableTokenCache
-    import json
-
-    cache_file = os.path.join(os.path.dirname(__file__), '..', '..', 'token_cache.json')
-
-    class PersistentTokenCache(SerializableTokenCache):
-        def __init__(self, cache_file):
-            super().__init__()
-            self.cache_file = cache_file
-            if os.path.exists(cache_file):
-                try:
-                    with open(cache_file, 'r') as f:
-                        self.deserialize(json.load(f))
-                    logger.info(f"Token cache loaded from {cache_file}")
-                except Exception as e:
-                    logger.warning(f"Failed to load token cache: {e}")
-            else:
-                logger.info("No existing token cache found")
-
-        def add(self, event, **kwargs):
-            super().add(event, **kwargs)
-            self._save()
-
-        def _save(self):
-            try:
-                with open(self.cache_file, 'w') as f:
-                    json.dump(self.serialize(), f)
-                logger.info(f"Token cache saved to {self.cache_file}")
-            except Exception as e:
-                logger.error(f"Failed to save token cache: {e}")
-
-    _cache = PersistentTokenCache(cache_file)
-
-    def device_code_callback(info):
-        global _device_code_info
-        _device_code_info = info
-        logger.info(f"Device code: {info['user_code']}, URL: {info['verification_uri']}")
-
-    credential = DeviceCodeCredential(
-        client_id=client_id,
-        tenant_id=tenant_id,
-        cache=_cache,
-        device_code_callback=device_code_callback
-    )
-    scopes = SCOPES_DEVICE
-
-    _graph_client = GraphServiceClient(credentials=credential, scopes=scopes)
-    return _graph_client
 
 async def read_emails(max_results: int = 10) -> List[Dict[str, Any]]:
-    """Reads the latest emails from Outlook."""
+    """Read the latest emails from the connected Outlook account."""
     try:
-        client = get_graph_client()
-        messages = await client.me.messages.get()
-        if messages and messages.value:
-            emails = []
-            for msg in messages.value[:max_results]:
-                email = {
-                    'id': msg.id,
-                    'subject': msg.subject,
-                    'from': msg.from_.email_address.address if msg.from_ else None,
-                    'to': [recipient.email_address.address for recipient in msg.to_recipients] if msg.to_recipients else [],
-                    'received_date_time': msg.received_date_time.isoformat() if msg.received_date_time else None,
-                    'body_preview': msg.body_preview,
-                    'is_read': msg.is_read
-                }
-                emails.append(email)
-            logger.info(f"Retrieved {len(emails)} emails")
-            # Force save cache if updated
-            global _cache
-            if _cache and _cache.has_state_changed:
-                _cache._save()
-            return emails
-        return []
+        data = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: _graph_get(f"/me/messages?$top={max_results}&$orderby=receivedDateTime desc")
+        )
+        emails = []
+        for msg in data.get("value", []):
+            from_addr = msg.get("from", {}).get("emailAddress", {})
+            emails.append({
+                "id": msg.get("id"),
+                "subject": msg.get("subject"),
+                "from": from_addr.get("address"),
+                "to": [r["emailAddress"]["address"] for r in msg.get("toRecipients", [])],
+                "received_date_time": msg.get("receivedDateTime"),
+                "body_preview": msg.get("bodyPreview"),
+                "is_read": msg.get("isRead"),
+            })
+        logger.info(f"Retrieved {len(emails)} emails")
+        _save_cache()
+        return emails
     except Exception as e:
-        logger.error(f'An error occurred: {e}')
-        raise Exception(f'Failed to read emails: {e}')
+        logger.error(f"Failed to read emails: {e}")
+        raise RuntimeError(f"Failed to read emails: {e}") from e
+
 
 async def send_email(to: str, subject: str, body: str) -> Dict[str, Any]:
-    """Sends an email via Outlook."""
+    """Send an email via the connected Outlook account."""
     try:
-        client = get_graph_client()
-
-        # Create message
-        message = Message()
-        message.subject = subject
-
-        # Set body
-        message.body = ItemBody()
-        message.body.content_type = BodyType.Text
-        message.body.content = body
-
-        # Set recipient
-        recipient = Recipient()
-        recipient.email_address = EmailAddress()
-        recipient.email_address.address = to
-        message.to_recipients = [recipient]
-
-        # Send the message
-        request_body = SendMailPostRequestBody()
-        request_body.message = message
-        request_body.save_to_sent_items = True
-        sent_message = await client.me.send_mail.post(request_body)
-
-        logger.info('Email sent successfully')
-        # Force save cache if updated
-        global _cache
-        if _cache and _cache.has_state_changed:
-            _cache._save()
+        payload = {
+            "message": {
+                "subject": subject,
+                "body": {"contentType": "Text", "content": body},
+                "toRecipients": [{"emailAddress": {"address": to}}],
+            },
+            "saveToSentItems": True,
+        }
+        await asyncio.get_event_loop().run_in_executor(
+            None, lambda: _graph_post("/me/sendMail", payload)
+        )
+        logger.info("Email sent successfully")
+        _save_cache()
         return {"message": "Email sent successfully"}
     except Exception as e:
-        logger.error(f'An error occurred: {e}')
-        raise Exception(f'Failed to send email: {e}')
+        logger.error(f"Failed to send email: {e}")
+        raise RuntimeError(f"Failed to send email: {e}") from e
+
 
 async def read_calendar_events(max_results: int = 10) -> List[Dict[str, Any]]:
-    """Reads upcoming calendar events from Outlook."""
+    """Read upcoming calendar events from the connected Outlook account."""
     try:
-        client = get_graph_client()
-        events = await client.me.events.get()
-        if events and events.value:
-            calendar_events = []
-            for event in events.value[:max_results]:
-                calendar_event = {
-                    'id': event.id,
-                    'subject': event.subject,
-                    'start': event.start.date_time if event.start else None,
-                    'end': event.end.date_time if event.end else None,
-                    'location': event.location.display_name if event.location else None,
-                    'body_preview': event.body_preview
-                }
-                calendar_events.append(calendar_event)
-            logger.info(f"Retrieved {len(calendar_events)} calendar events")
-            # Force save cache if updated
-            global _cache
-            if _cache and _cache.has_state_changed:
-                _cache._save()
-            return calendar_events
-        return []
+        data = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: _graph_get(f"/me/events?$top={max_results}&$orderby=start/dateTime")
+        )
+        events = []
+        for ev in data.get("value", []):
+            events.append({
+                "id": ev.get("id"),
+                "subject": ev.get("subject"),
+                "start": ev.get("start", {}).get("dateTime"),
+                "end": ev.get("end", {}).get("dateTime"),
+                "location": ev.get("location", {}).get("displayName"),
+                "body_preview": ev.get("bodyPreview"),
+            })
+        logger.info(f"Retrieved {len(events)} calendar events")
+        _save_cache()
+        return events
     except Exception as e:
-        logger.error(f'An error occurred: {e}')
-        raise Exception(f'Failed to read calendar events: {e}')
+        logger.error(f"Failed to read calendar events: {e}")
+        raise RuntimeError(f"Failed to read calendar events: {e}") from e
 
-def get_device_code_info():
-    """Get the current device code information."""
-    global _device_code_info
+
+def get_device_code_info() -> Optional[dict]:
+    """Return the current device code authentication info (if active)."""
     return _device_code_info
