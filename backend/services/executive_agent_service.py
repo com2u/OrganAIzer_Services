@@ -23,6 +23,7 @@ Version: 2.0.0 - Intelligence Upgrade
 Date: February 13, 2026
 """
 
+import hashlib
 import logging
 import os
 import json
@@ -158,6 +159,33 @@ class ConversationMemory:
         """Update context variable."""
         self.context[key] = value
         logger.debug(f"[MEMORY] Context updated: {key} = {value}")
+
+
+# ==============================================================================
+# IDEMPOTENCY STORE
+# ==============================================================================
+
+# In-process cache: request_id (SHA-256 hash) → event_id returned by the
+# calendar API.  Prevents duplicate events when the user confirms twice or
+# the client retries after a network hiccup.
+# For multi-instance deployments replace with Redis / a shared DB.
+_CALENDAR_IDEMPOTENCY_STORE: Dict[str, str] = {}
+
+def _compute_calendar_request_id(
+    user_id: str,
+    title: str,
+    start: str,
+    end: str,
+    timezone_name: str = "UTC",
+) -> str:
+    """
+    Compute a deterministic SHA-256 request_id for a calendar create call.
+
+    Two calls with identical (user_id, title, start, end, timezone_name)
+    produce the same request_id, enabling idempotent deduplication.
+    """
+    raw = f"{user_id}|{title}|{start}|{end}|{timezone_name}"
+    return hashlib.sha256(raw.encode()).hexdigest()
 
 
 # ==============================================================================
@@ -627,6 +655,46 @@ Remember: You're not just executing commands - you're an intelligent companion w
                 end_dt = start_dt + timedelta(minutes=duration)
                 end_datetime_str = end_dt.isoformat()
 
+            # ── Idempotency: compute deterministic request_id ─────────────────
+            tz_name = os.getenv("TIMEZONE", "UTC")
+            request_id = _compute_calendar_request_id(
+                user_id=user_id,
+                title=title,
+                start=start_datetime_str,
+                end=end_datetime_str,
+                timezone_name=tz_name,
+            )
+            logger.info("[IDEMPOTENCY] request_id=%s", request_id)
+
+            # Check if we already completed this exact request
+            if request_id in _CALENDAR_IDEMPOTENCY_STORE:
+                cached_event_id = _CALENDAR_IDEMPOTENCY_STORE[request_id]
+                logger.info(
+                    "[IDEMPOTENCY] Duplicate request detected – returning cached "
+                    "event_id=%s (no API call made)", cached_event_id
+                )
+                self.memory.clear_pending_action()
+                self.memory.clear_active_task()
+                return {
+                    "message": (
+                        f"✅ This event was already created!\n\n"
+                        f"**{title}**\n"
+                        f"- 📅 Date: {date}\n"
+                        f"- 🕐 Start: {start_datetime_str}\n"
+                        f"- 🕑 End: {end_datetime_str}\n"
+                        f"- 📆 Calendar: {provider.title()} Calendar\n"
+                        f"- 🆔 Event ID: `{cached_event_id}` (existing)"
+                    ),
+                    "success": True,
+                    "type": "calendar_created",
+                    "data": {
+                        "event_id": cached_event_id,
+                        "start": start_datetime_str,
+                        "end": end_datetime_str,
+                        "idempotent": True,
+                    },
+                }
+
             # Build request payload (omit None fields to keep it clean)
             from models.integrations import CalendarEventCreateRequest
 
@@ -639,6 +707,8 @@ Remember: You're not just executing commands - you're an intelligent companion w
                 attendees=action_data.get("attendees"),
             )
             payload = event_request.dict(exclude_none=True)
+            # Include request_id so providers can do server-side dedup if supported
+            payload["request_id"] = request_id
 
             # Call integration endpoint
             base_url = os.getenv("BACKEND_URL", "http://localhost:8000")
@@ -680,9 +750,43 @@ Remember: You're not just executing commands - you're an intelligent companion w
                 # model; grab it from raw JSON when present
                 html_link = event_data.get("htmlLink")
 
+                # ── TRUTHFULNESS CHECK: 2xx without event_id = unreliable ────
+                # The calendar API must return a real event_id.  Without it we
+                # cannot confirm the event actually exists, so we treat it as a
+                # failure rather than silently claiming success.
+                if not event_id:
+                    logger.error(
+                        "[AUDIT] Calendar create ❌  HTTP %s returned but no "
+                        "event_id found in response body: %s",
+                        response_status, response_body_text[:300]
+                    )
+                    return {
+                        "message": (
+                            "❌ The calendar API returned a success status but did not "
+                            "provide an event ID. The event may or may not have been created.\n\n"
+                            "Please check your calendar directly. "
+                            "If the event is missing, say **yes** to try again."
+                        ),
+                        "success": False,
+                        "type": "error",
+                        "error": "event_id missing from API response",
+                        "data": {
+                            "status_code": response_status,
+                            "raw_response": response_body_text[:300],
+                            "pending_action_preserved": True,
+                        },
+                    }
+
                 logger.info(
                     "[AUDIT] Calendar create ✅  event_id=%s  summary=%s",
                     event_id, event_summary
+                )
+
+                # ── Write idempotency store so duplicate requests return same ID ─
+                _CALENDAR_IDEMPOTENCY_STORE[request_id] = event_id
+                logger.info(
+                    "[IDEMPOTENCY] Stored request_id=%s → event_id=%s",
+                    request_id, event_id
                 )
 
                 # Record in history ONLY after confirmed success
@@ -704,10 +808,9 @@ Remember: You're not just executing commands - you're an intelligent companion w
                     f"- 📅 Date: {date}\n"
                     f"- 🕐 Start: {event_start}\n"
                     f"- 🕑 End: {event_end}\n"
-                    f"- 📆 Calendar: {provider.title()} Calendar"
+                    f"- 📆 Calendar: {provider.title()} Calendar\n"
+                    f"- 🆔 Event ID: `{event_id}`"
                 )
-                if event_id:
-                    success_msg += f"\n- 🆔 Event ID: `{event_id}`"
                 if html_link:
                     success_msg += f"\n- 🔗 [Open in Calendar]({html_link})"
 
