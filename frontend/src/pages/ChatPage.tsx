@@ -1,275 +1,243 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { chatCompletion, getAvailableModels, ChatMessage, ChatRequest, ModelInfo } from '../lib/api';
-import ErrorBanner from '../components/ErrorBanner';
+import { useState, useRef, useEffect, useCallback } from 'react';
+import ChatComposer from '../components/ChatComposer';
+import { agentChat, ttsGenerate } from '../lib/apiClient';
 
-/**
- * ChatPage - LLM Chat Interface
- * Allows users to chat with various AI models via OpenRouter
- */
+interface Message {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: Date;
+  audioUrl?: string;
+}
+
+// Stable session ID for the page lifetime
+const SESSION_ID = `chat-${Date.now()}`;
+
+const SUGGESTIONS = [
+  'Was ist heute auf meinem Kalender?',
+  'Zeige meine letzten E-Mails',
+  'Erstelle einen Termin für morgen 10 Uhr',
+  'Schreibe eine E-Mail an meinen Chef',
+];
+
+function makeId() {
+  return typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : Math.random().toString(36).slice(2);
+}
+
 export default function ChatPage() {
-  const [prompt, setPrompt] = useState('');
-  const [conversationHistory, setConversationHistory] = useState<ChatMessage[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [selectedModel, setSelectedModel] = useState<string | null>(null);
-  const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
-  const [currentModel, setCurrentModel] = useState<string>('');
-  const [showModelSelector, setShowModelSelector] = useState(false);
-  const [modelSearchTerm, setModelSearchTerm] = useState('');
-  
-  const chatContainerRef = useRef<HTMLDivElement>(null);
+  const [autoSpeak, setAutoSpeak] = useState(false);
 
-  // Load available models on mount
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Auto-scroll on new messages / loading changes
   useEffect(() => {
-    loadAvailableModels();
-  }, []);
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, loading]);
 
-  // Auto-scroll to bottom when conversation updates
-  useEffect(() => {
-    if (chatContainerRef.current) {
-      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
-    }
-  }, [conversationHistory]);
-
-  const loadAvailableModels = async () => {
-    try {
-      const response = await getAvailableModels();
-      setAvailableModels(response.models);
-      setCurrentModel(response.current_model);
-      setSelectedModel(response.current_model);
-    } catch (err) {
-      console.error('Failed to load models:', err);
-      // Don't show error banner for this, just use default model
-    }
+  const playAudio = (url: string) => {
+    audioRef.current?.pause();
+    const audio = new Audio(url);
+    audioRef.current = audio;
+    audio.play().catch(() => {});
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    
-    if (!prompt.trim()) {
-      return;
-    }
-
-    setError(null);
-    setIsLoading(true);
-
-    // Add user message to conversation
-    const userMessage: ChatMessage = {
-      role: 'user',
-      content: prompt.trim()
-    };
-    
-    const newHistory = [...conversationHistory, userMessage];
-    setConversationHistory(newHistory);
-    setPrompt('');
-
-    try {
-      const request: ChatRequest = {
-        prompt: userMessage.content,
-        model: selectedModel || undefined,
-        conversation_history: conversationHistory,
-        temperature: 0.7,
-        max_tokens: 2000
+  const handleSend = useCallback(
+    async (text: string) => {
+      const userMsg: Message = {
+        id: makeId(),
+        role: 'user',
+        content: text,
+        timestamp: new Date(),
       };
+      setMessages((prev) => [...prev, userMsg]);
+      setLoading(true);
+      setError(null);
 
-      const response = await chatCompletion(request);
+      try {
+        const data = await agentChat(text, SESSION_ID);
+        const assistantText = data.message || '(keine Antwort)';
 
-      // Add assistant response to conversation
-      const assistantMessage: ChatMessage = {
-        role: 'assistant',
-        content: response.response
-      };
-      
-      setConversationHistory([...newHistory, assistantMessage]);
-      
-      // Update current model if it changed
-      if (response.model !== currentModel) {
-        setCurrentModel(response.model);
+        let audioUrl: string | undefined;
+        if (autoSpeak) {
+          audioUrl = (await ttsGenerate(assistantText)) ?? undefined;
+        }
+
+        const assistantMsg: Message = {
+          id: makeId(),
+          role: 'assistant',
+          content: assistantText,
+          timestamp: new Date(),
+          audioUrl,
+        };
+        setMessages((prev) => [...prev, assistantMsg]);
+
+        if (audioUrl) playAudio(audioUrl);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : 'Unbekannter Fehler';
+        setError(msg);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: makeId(),
+            role: 'assistant',
+            content: `❌ ${msg}`,
+            timestamp: new Date(),
+          },
+        ]);
+      } finally {
+        setLoading(false);
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to get response from AI');
-      // Remove the user message since we failed to get a response
-      setConversationHistory(conversationHistory);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const clearConversation = () => {
-    setConversationHistory([]);
-    setError(null);
-  };
-
-  const filteredModels = availableModels.filter(model =>
-    model.name.toLowerCase().includes(modelSearchTerm.toLowerCase()) ||
-    model.id.toLowerCase().includes(modelSearchTerm.toLowerCase())
+    },
+    [autoSpeak],
   );
 
   return (
-    <div className="min-h-screen bg-gray-50 py-8 px-4">
-      <div className="max-w-4xl mx-auto">
-        {/* Header */}
-        <div className="bg-white rounded-lg shadow-sm p-6 mb-6">
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">AI Chat</h1>
-          <p className="text-gray-600 mb-4">
-            Chat with AI models powered by OpenRouter
-          </p>
-          
-          {/* Model Selection */}
-          <div className="flex items-center gap-4 flex-wrap">
-            <div className="flex-1 min-w-[200px]">
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Current Model
-              </label>
-              <div className="flex gap-2">
+    <div className="flex flex-col" style={{ height: 'calc(100vh - 105px)' }}>
+      {/* ── Message list ─────────────────────────────────────────────────── */}
+      <div className="flex-1 overflow-y-auto px-4 pt-4 pb-36">
+        {/* Empty-state with suggestions */}
+        {messages.length === 0 && !loading && (
+          <div className="flex flex-col items-center justify-center h-full text-center">
+            <div className="text-5xl mb-3 select-none">🤖</div>
+            <p className="text-lg font-semibold text-gray-700">OrganAIzer Executive Agent</p>
+            <p className="text-sm text-gray-400 mt-1">Stell eine Frage oder wähle einen Vorschlag</p>
+            <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-2 max-w-sm w-full">
+              {SUGGESTIONS.map((s) => (
                 <button
-                  onClick={() => setShowModelSelector(!showModelSelector)}
-                  className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-left text-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  key={s}
+                  onClick={() => handleSend(s)}
+                  className="bg-white border border-gray-200 rounded-xl px-3 py-2.5 text-sm
+                             text-gray-600 hover:bg-gray-50 hover:border-gray-300
+                             shadow-sm transition-colors text-left"
                 >
-                  <span className="font-medium">{selectedModel || currentModel}</span>
+                  {s}
                 </button>
-                {conversationHistory.length > 0 && (
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Messages */}
+        {messages.map((msg) => (
+          <div
+            key={msg.id}
+            className={`flex mb-4 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+          >
+            {/* Avatar – assistant */}
+            {msg.role === 'assistant' && (
+              <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center
+                              mr-2 flex-shrink-0 mt-0.5 text-sm select-none">
+                🤖
+              </div>
+            )}
+
+            <div className="max-w-[75%] min-w-0">
+              {/* Bubble */}
+              <div
+                className={`rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap break-words ${
+                  msg.role === 'user'
+                    ? 'bg-blue-600 text-white rounded-br-md'
+                    : 'bg-white text-gray-800 shadow-sm border border-gray-100 rounded-bl-md'
+                }`}
+              >
+                {msg.content}
+              </div>
+
+              {/* Timestamp + play button */}
+              <div className="flex items-center gap-2 mt-1 px-1">
+                <span className="text-xs text-gray-400">
+                  {msg.timestamp.toLocaleTimeString('de-DE', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
+                </span>
+                {msg.audioUrl && (
                   <button
-                    onClick={clearConversation}
-                    className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 text-sm"
+                    onClick={() => playAudio(msg.audioUrl!)}
+                    className="text-xs text-indigo-500 hover:text-indigo-700 flex items-center gap-0.5"
+                    title="Abspielen"
                   >
-                    Clear Chat
+                    <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+                      <path d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" />
+                    </svg>
+                    Abspielen
                   </button>
                 )}
               </div>
             </div>
-          </div>
 
-          {/* Model Selector Dropdown */}
-          {showModelSelector && (
-            <div className="mt-4 border border-gray-300 rounded-lg p-4 bg-gray-50">
-              <input
-                type="text"
-                placeholder="Search models..."
-                value={modelSearchTerm}
-                onChange={(e) => setModelSearchTerm(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg mb-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              <div className="max-h-60 overflow-y-auto space-y-1">
-                {filteredModels.length > 0 ? (
-                  filteredModels.map((model) => (
-                    <button
-                      key={model.id}
-                      onClick={() => {
-                        setSelectedModel(model.id);
-                        setShowModelSelector(false);
-                        setModelSearchTerm('');
-                      }}
-                      className={`w-full text-left px-3 py-2 rounded hover:bg-gray-200 ${
-                        selectedModel === model.id ? 'bg-blue-100 font-medium' : ''
-                      }`}
-                    >
-                      <div className="text-sm font-medium">{model.name}</div>
-                      <div className="text-xs text-gray-500">{model.id}</div>
-                    </button>
-                  ))
-                ) : (
-                  <p className="text-sm text-gray-500 text-center py-4">No models found</p>
-                )}
+            {/* Avatar – user */}
+            {msg.role === 'user' && (
+              <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center
+                              ml-2 flex-shrink-0 mt-0.5 text-sm select-none">
+                👤
+              </div>
+            )}
+          </div>
+        ))}
+
+        {/* Typing indicator */}
+        {loading && (
+          <div className="flex justify-start mb-4">
+            <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center
+                            mr-2 flex-shrink-0 text-sm select-none">
+              🤖
+            </div>
+            <div className="bg-white border border-gray-100 shadow-sm rounded-2xl rounded-bl-md px-4 py-3">
+              <div className="flex gap-1.5 items-center">
+                {[0, 150, 300].map((delay) => (
+                  <span
+                    key={delay}
+                    className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"
+                    style={{ animationDelay: `${delay}ms` }}
+                  />
+                ))}
               </div>
             </div>
-          )}
-        </div>
-
-        {/* Error Banner */}
-        {error && (
-          <div className="mb-6">
-            <ErrorBanner message={error} onDismiss={() => setError(null)} />
           </div>
         )}
 
-        {/* Chat Container */}
-        <div className="bg-white rounded-lg shadow-sm mb-6 flex flex-col h-[500px]">
-          {/* Messages */}
-          <div
-            ref={chatContainerRef}
-            className="flex-1 overflow-y-auto p-6 space-y-4"
-          >
-            {conversationHistory.length === 0 ? (
-              <div className="text-center text-gray-500 mt-20">
-                <p className="text-lg font-medium mb-2">No messages yet</p>
-                <p className="text-sm">Start a conversation by typing a message below</p>
-              </div>
-            ) : (
-              conversationHistory.map((message, index) => (
-                <div
-                  key={index}
-                  className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                >
-                  <div
-                    className={`max-w-[80%] rounded-lg px-4 py-3 ${
-                      message.role === 'user'
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-gray-100 text-gray-900'
-                    }`}
-                  >
-                    <div className="text-xs font-medium mb-1 opacity-75">
-                      {message.role === 'user' ? 'You' : 'AI'}
-                    </div>
-                    <div className="whitespace-pre-wrap break-words">{message.content}</div>
-                  </div>
-                </div>
-              ))
-            )}
-            
-            {/* Loading indicator */}
-            {isLoading && (
-              <div className="flex justify-start">
-                <div className="bg-gray-100 rounded-lg px-4 py-3">
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
-                    <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
-                    <div className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Input Form */}
-          <form onSubmit={handleSubmit} className="border-t border-gray-200 p-4">
-            <div className="flex gap-2">
-              <textarea
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSubmit(e);
-                  }
-                }}
-                placeholder="Type your message... (Shift+Enter for new line, Enter to send)"
-                className="flex-1 px-4 py-3 border border-gray-300 rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
-                rows={3}
-                disabled={isLoading}
-              />
-              <button
-                type="submit"
-                disabled={isLoading || !prompt.trim()}
-                className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-300 disabled:cursor-not-allowed self-end"
-              >
-                {isLoading ? 'Sending...' : 'Send'}
-              </button>
-            </div>
-          </form>
-        </div>
-
-        {/* Info */}
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-          <h3 className="text-sm font-semibold text-blue-900 mb-2">💡 Tips</h3>
-          <ul className="text-sm text-blue-800 space-y-1">
-            <li>• Use Shift+Enter to create a new line, Enter to send</li>
-            <li>• Click "Current Model" to switch between different AI models</li>
-            <li>• Conversation history is maintained across messages</li>
-            <li>• Click "Clear Chat" to start a fresh conversation</li>
-          </ul>
-        </div>
+        <div ref={bottomRef} />
       </div>
+
+      {/* ── Error toast ──────────────────────────────────────────────────── */}
+      {error && (
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50
+                        bg-red-50 border border-red-300 text-red-700 text-sm
+                        px-4 py-2 rounded-lg shadow-md flex items-center gap-2 max-w-sm">
+          <span>⚠️ {error}</span>
+          <button
+            onClick={() => setError(null)}
+            className="ml-auto text-red-400 hover:text-red-600"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* ── TTS auto-speak toggle ─────────────────────────────────────────── */}
+      <div className="fixed bottom-[5.5rem] right-4 z-50">
+        <button
+          onClick={() => setAutoSpeak((v) => !v)}
+          className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full shadow transition-colors ${
+            autoSpeak
+              ? 'bg-indigo-600 text-white'
+              : 'bg-white text-gray-500 border border-gray-200 hover:border-gray-300'
+          }`}
+          title={autoSpeak ? 'TTS deaktivieren' : 'Antworten automatisch vorlesen'}
+        >
+          🔊 {autoSpeak ? 'TTS an' : 'TTS aus'}
+        </button>
+      </div>
+
+      {/* ── Floating composer ────────────────────────────────────────────── */}
+      <ChatComposer onSend={handleSend} disabled={loading} />
     </div>
   );
 }
