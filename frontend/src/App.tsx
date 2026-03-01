@@ -1,45 +1,102 @@
-import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
-import YouTubeDownloader from './components/YouTubeDownloader';
-import TextToSpeech from './components/TextToSpeech';
-import SpeechToText from './components/SpeechToText';
-import VideoToText from './components/VideoToText';
-import TextToImage from './components/TextToImage';
-import LLMInteraction from './components/LLMInteraction';
-import GoogleIntegration from './components/GoogleIntegration';
-import OutlookIntegration from './components/OutlookIntegration';
+/**
+ * Main application component.
+ * Sets up the app layout with top navigation and routes to different pages.
+ */
 
-function App() {
+import { useState } from 'react';
+import TopNav from './components/TopNav';
+import TTSPage from './pages/TTSPage';
+import STTPage from './pages/STTPage';
+import ImageGenPage from './pages/ImageGenPage';
+import YouTubePage from './pages/YouTubePage';
+import IntegrationsPage from './pages/IntegrationsPage';
+import ExecutiveAgent from './components/ExecutiveAgent';
+
+type PageType = 'tts' | 'stt' | 'image-gen' | 'youtube' | 'executive' | 'integrations';
+
+export default function App() {
+  const [currentPage, setCurrentPage] = useState<PageType>('executive');
+
   return (
-    <Router>
-      <div className="min-h-screen bg-gray-100">
-        <nav className="bg-blue-600 text-white p-4">
-          <div className="container mx-auto flex space-x-4">
-            <Link to="/youtube" className="hover:bg-blue-700 px-3 py-2 rounded">YouTube Downloader</Link>
-            <Link to="/tts" className="hover:bg-blue-700 px-3 py-2 rounded">Text to Speech</Link>
-            <Link to="/stt" className="hover:bg-blue-700 px-3 py-2 rounded">Speech to Text</Link>
-            <Link to="/video-text" className="hover:bg-blue-700 px-3 py-2 rounded">Video to Text</Link>
-            <Link to="/text-image" className="hover:bg-blue-700 px-3 py-2 rounded">Text to Image</Link>
-            <Link to="/llm-interaction" className="hover:bg-blue-700 px-3 py-2 rounded">LLM Interaction</Link>
-            <Link to="/google" className="hover:bg-blue-700 px-3 py-2 rounded">Google Integration</Link>
-            <Link to="/outlook" className="hover:bg-blue-700 px-3 py-2 rounded">Outlook Integration</Link>
-          </div>
-        </nav>
-        <main className="container mx-auto p-4">
-          <Routes>
-            <Route path="/youtube" element={<YouTubeDownloader />} />
-            <Route path="/tts" element={<TextToSpeech />} />
-            <Route path="/stt" element={<SpeechToText />} />
-            <Route path="/video-text" element={<VideoToText />} />
-            <Route path="/text-image" element={<TextToImage />} />
-            <Route path="/llm-interaction" element={<LLMInteraction />} />
-            <Route path="/google" element={<GoogleIntegration />} />
-            <Route path="/outlook" element={<OutlookIntegration />} />
-            <Route path="/" element={<div className="text-center mt-8"><h1 className="text-2xl">Welcome to OrganAIzer Service</h1><p>Select a tool from the navigation above.</p></div>} />
-          </Routes>
-        </main>
+    <div className="min-h-screen bg-gray-100">
+      <TopNav />
+      
+      {/* Page Navigation Tabs */}
+      <div className="bg-white shadow-sm border-b border-gray-200">
+        <div className="container mx-auto px-4 max-w-4xl">
+          <nav className="flex space-x-4">
+            <button
+              onClick={() => setCurrentPage('tts')}
+              className={`py-4 px-6 font-medium text-sm border-b-2 transition-colors ${
+                currentPage === 'tts'
+                  ? 'border-blue-600 text-blue-600'
+                  : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+              }`}
+            >
+              Text → Speech
+            </button>
+            <button
+              onClick={() => setCurrentPage('stt')}
+              className={`py-4 px-6 font-medium text-sm border-b-2 transition-colors ${
+                currentPage === 'stt'
+                  ? 'border-blue-600 text-blue-600'
+                  : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+              }`}
+            >
+              Speech → Text
+            </button>
+            <button
+              onClick={() => setCurrentPage('image-gen')}
+              className={`py-4 px-6 font-medium text-sm border-b-2 transition-colors ${
+                currentPage === 'image-gen'
+                  ? 'border-purple-600 text-purple-600'
+                  : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+              }`}
+            >
+              Text → Image
+            </button>
+            <button
+              onClick={() => setCurrentPage('youtube')}
+              className={`py-4 px-6 font-medium text-sm border-b-2 transition-colors ${
+                currentPage === 'youtube'
+                  ? 'border-red-600 text-red-600'
+                  : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+              }`}
+            >
+              Video → Text
+            </button>
+            <button
+              onClick={() => setCurrentPage('executive')}
+              className={`py-4 px-6 font-medium text-sm border-b-2 transition-colors ${
+                currentPage === 'executive'
+                  ? 'border-indigo-600 text-indigo-600'
+                  : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+              }`}
+            >
+              🤖 Executive AI
+            </button>
+            <button
+              onClick={() => setCurrentPage('integrations')}
+              className={`py-4 px-6 font-medium text-sm border-b-2 transition-colors ${
+                currentPage === 'integrations'
+                  ? 'border-orange-600 text-orange-600'
+                  : 'border-transparent text-gray-600 hover:text-gray-800 hover:border-gray-300'
+              }`}
+            >
+              🔗 Integrations
+            </button>
+          </nav>
+        </div>
       </div>
-    </Router>
+
+      <main>
+        {currentPage === 'executive' && <ExecutiveAgent />}
+        {currentPage === 'tts' && <TTSPage />}
+        {currentPage === 'stt' && <STTPage />}
+        {currentPage === 'image-gen' && <ImageGenPage />}
+        {currentPage === 'youtube' && <YouTubePage />}
+        {currentPage === 'integrations' && <IntegrationsPage />}
+      </main>
+    </div>
   );
 }
-
-export default App;
