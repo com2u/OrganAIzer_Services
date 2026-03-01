@@ -36,7 +36,7 @@ function VoiceExecutiveAgent() {
   const streamRef = useRef<MediaStream | null>(null);
 
   const API_KEY = import.meta.env.VITE_API_KEY || 'test-key-123';
-  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
+  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
   // Cleanup on unmount
   useEffect(() => {
@@ -202,7 +202,7 @@ function VoiceExecutiveAgent() {
     const formData = new FormData();
     formData.append('file', audioBlob, 'recording.webm');
 
-    const response = await fetch(`${API_BASE_URL}/stt/transcribe`, {
+    const response = await fetch(`${API_BASE_URL}/api/stt/transcribe`, {
       method: 'POST',
       headers: {
         'X-API-Key': API_KEY
@@ -275,7 +275,7 @@ function VoiceExecutiveAgent() {
         .replace(/[\-•]/g, '')
         .trim();
 
-      const response = await fetch(`${API_BASE_URL}/tts/generate`, {
+      const response = await fetch(`${API_BASE_URL}/api/tts/generate`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

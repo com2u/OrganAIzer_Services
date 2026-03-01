@@ -75,7 +75,7 @@ function ExecutiveAgent() {
   // ──────────────────────────────────────────────────────────────────────────
 
   const API_KEY = import.meta.env.VITE_API_KEY || 'test-key-123';
-  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
+  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
   // Scroll to bottom of messages
   const scrollToBottom = () => {
