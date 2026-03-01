@@ -1,6 +1,11 @@
 # FastAPI and server
 fastapi==0.115.5
 uvicorn[standard]==0.32.1
+# websockets is required for WebSocket support in uvicorn (voice mode WS endpoint).
+# Even though uvicorn[standard] declares it as an optional dependency, pip does not
+# always install extras transitively; list it explicitly so `pip install -r requirements.txt`
+# always pulls it in.
+websockets>=11.0
 pydantic==2.10.3
 python-multipart==0.0.20
 
@@ -14,6 +19,11 @@ gTTS==2.4.0
 langdetect==1.0.9
 
 # Speech-to-Text
+# NOTE: openai-whisper requires torch, which does NOT support Python 3.13 on Windows.
+# Use Python 3.10 or 3.11 for a working STT stack.
+# whisper/torch are imported lazily at request time (not at server startup),
+# so the backend starts fine even when this package is missing or incompatible.
+# If you do not need STT, you can safely comment out this line.
 openai-whisper==20231117
 
 # YouTube audio download

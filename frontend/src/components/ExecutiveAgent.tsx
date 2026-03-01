@@ -162,7 +162,12 @@ export default function ExecutiveAgent() {
     ws.onmessage = ev => {
       try {
         const data = JSON.parse(ev.data as string);
-        switch (data.type) {
+      switch (data.type) {
+          case 'ready':
+            // Backend acknowledged the connection — we are truly ready
+            setWsStatus('open');
+            addDebug('ws:ready');
+            break;
           case 'state':
             setVoiceState(data.state as VoiceState);
             addDebug('state', data.state);

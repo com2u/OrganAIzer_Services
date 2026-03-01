@@ -5,6 +5,91 @@ the event-creation idempotency model, and how to troubleshoot with the debug pan
 
 ---
 
+## 0. Fix applied (2026-03-01) – WS "connecting" / never reaching 101
+
+### Root causes (two bugs)
+
+1. **`websockets` library not installed in venv** — Even though
+   `uvicorn[standard]` is in `requirements.txt`, pip does not always install
+   optional extras transitively; the venv lacked `websockets` entirely.
+   Uvicorn logs `WARNING: No supported WebSocket library detected` and
+   silently treats every WS upgrade as a plain HTTP GET → FastAPI returns 404
+   for `/api/voice/stream` (registered only as `@router.websocket`, not GET).
+   Result: repeated `GET /api/voice/stream → 404` and the frontend reconnect
+   loop every 2 s.
+
+2. **`VITE_API_BASE_URL` not defined** — `apiClient.ts` exports
+   `API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''`.  With an empty
+   string `toWsBase('')` fell back to same-origin `ws://localhost:5173/…`.
+   Even after adding `ws: true` to the Vite proxy, the Vite WS proxy is
+   unreliable under some OS/node versions.  Defining `VITE_API_BASE_URL` to
+   `http://localhost:8000` in dev makes `toWsBase` produce
+   `ws://localhost:8000` — a **direct** connection that bypasses the Vite
+   proxy entirely.
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `backend/requirements.txt` | Added `websockets>=11.0` as an explicit dependency |
+| `frontend/vite.config.ts` | Added `VITE_API_BASE_URL` define (`http://localhost:8000` in dev, `""` in prod); kept `ws:true` in proxy as belt-and-suspenders |
+| `backend/api/voice_mode.py` | Added `{"type":"ready"}` immediately after `websocket.accept()` |
+| `frontend/src/components/ExecutiveAgent.tsx` | Added `case 'ready':` handler that confirms `wsStatus = 'open'` and logs `ws:ready` |
+
+### WS URL strategy (chosen: direct to backend in dev)
+
+| Environment | WS URL built by frontend | How it reaches backend |
+|-------------|--------------------------|------------------------|
+| **Dev** (`npm run dev`) | `ws://localhost:8000/api/voice/stream` | Direct — no Vite proxy involvement |
+| **Prod** (nginx/Docker) | `wss://<origin>/api/voice/stream` | nginx `proxy_pass` with `Upgrade` headers (same-origin, `VITE_API_BASE_URL=""`) |
+
+### How to install the WS library (one-time, per venv)
+
+```bash
+# From the project root, with the venv active:
+venv\Scripts\pip install "websockets>=11.0"
+# OR simply reinstall all requirements:
+venv\Scripts\pip install -r backend\requirements.txt
+```
+
+### How to run locally
+
+```bash
+# Terminal 1 – backend
+cd backend
+..\venv\Scripts\uvicorn.exe main:app --host 0.0.0.0 --port 8000
+# OR use the helper bat:
+# start_backend_venv.bat
+
+# Terminal 2 – frontend
+cd frontend
+npm install   # first time only
+npm run dev   # → http://localhost:5173
+```
+
+Open `http://localhost:5173` → Executive Agent → click 🎤 in the composer.
+
+Expected DevTools → Network → WS:
+```
+Request URL:  ws://localhost:8000/api/voice/stream?…
+Status:       101 Switching Protocols
+```
+
+Expected backend log on connect:
+```
+INFO  [VOICE] ▶ WS connected  ws=<id>  session=…  user=…
+```
+
+Debug panel event sequence on success:
+```
+ws:connecting  {"url":"ws://localhost:8000/api/voice/stream?…"}
+ws:open
+ws:ready        ← backend acknowledged
+state           "idle"
+```
+
+---
+
 ## 1. Running Voice Mode locally
 
 ### Backend
