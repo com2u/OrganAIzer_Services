@@ -32,6 +32,8 @@ export async function agentChat(
   message: string,
   sessionId = 'default',
   userId = 'default_user',
+  calendarProvider = 'google',
+  mailProvider = 'gmail',
 ): Promise<AgentChatResponse> {
   const res = await fetch(`${API_BASE_URL}/api/agent/chat`, {
     method: 'POST',
@@ -40,7 +42,8 @@ export async function agentChat(
       message,
       session_id: sessionId,
       user_id: userId,
-      provider: 'gmail',
+      calendar_provider: calendarProvider,
+      mail_provider: mailProvider,
     }),
   });
   if (!res.ok) {

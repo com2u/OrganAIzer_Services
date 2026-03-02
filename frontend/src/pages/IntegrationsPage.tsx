@@ -58,8 +58,20 @@ export default function IntegrationsPage() {
     } catch {
       setGoogleStatus({ connected: false });
     }
-    // Microsoft not implemented yet
-    setMicrosoftStatus({ connected: false });
+    // Check Microsoft connection status via backend
+    try {
+      const msRes = await fetch(`${API_BASE_URL}/api/integrations/microsoft/status?user_id=default_user`, {
+        headers: { 'X-API-Key': API_KEY },
+      });
+      if (msRes.ok) {
+        const msData = await msRes.json();
+        setMicrosoftStatus({ connected: msData.connected, scopes: msData.scopes });
+      } else {
+        setMicrosoftStatus({ connected: false });
+      }
+    } catch {
+      setMicrosoftStatus({ connected: false });
+    }
   };
 
   const connectGoogle = async () => {
@@ -90,7 +102,7 @@ export default function IntegrationsPage() {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch(`${API_BASE_URL}/api/integrations/outlook/auth/start`, {
+      const response = await fetch(`${API_BASE_URL}/api/integrations/microsoft/auth/start?user_id=default_user`, {
         headers: {
           'X-API-Key': API_KEY,
         },
@@ -110,13 +122,45 @@ export default function IntegrationsPage() {
   };
 
   const disconnectGoogle = async () => {
-    // TODO: Implement disconnect endpoint
-    setError('Disconnect functionality coming soon. For now, revoke access at myaccount.google.com/permissions');
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/integrations/google/disconnect?user_id=default_user`, {
+        method: 'DELETE',
+        headers: { 'X-API-Key': API_KEY },
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.detail?.message || 'Failed to disconnect Google');
+      }
+      setSuccess('Google account disconnected.');
+      await checkTokenStatus();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to disconnect Google');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const disconnectMicrosoft = async () => {
-    // TODO: Implement disconnect endpoint
-    setError('Disconnect functionality coming soon.');
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/integrations/microsoft/disconnect?user_id=default_user`, {
+        method: 'DELETE',
+        headers: { 'X-API-Key': API_KEY },
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.detail?.message || 'Failed to disconnect Microsoft');
+      }
+      setSuccess('Microsoft account disconnected.');
+      await checkTokenStatus();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to disconnect Microsoft');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -275,12 +319,7 @@ export default function IntegrationsPage() {
           {/* Microsoft Features */}
           <div className="mt-4 pt-4 border-t border-gray-200">
             <h3 className="text-sm font-semibold text-gray-700 mb-2">Available Features:</h3>
-            <div className="bg-yellow-50 border border-yellow-200 rounded p-3 mb-2">
-              <p className="text-xs text-yellow-800">
-                <strong>⚠️ Status:</strong> Microsoft integration is in development and not yet available.
-              </p>
-            </div>
-            <ul className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm text-gray-400">
+            <ul className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm text-gray-600">
               <li className="flex items-center">
                 <span className="mr-2">📧</span> Send and receive emails via Outlook
               </li>

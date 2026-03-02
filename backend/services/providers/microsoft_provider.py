@@ -18,6 +18,7 @@ from .base import (
     CalendarEvent, CalendarEventRequest
 )
 from utils.token_storage import get_token_storage
+from utils.ms_token import get_valid_ms_token, _refresh_ms_token, _ms_authority
 
 logger = logging.getLogger(__name__)
 
@@ -40,78 +41,82 @@ class MicrosoftEmailProvider(EmailProvider):
         self.client_secret = os.getenv("MICROSOFT_CLIENT_SECRET")
 
     # ------------------------------------------------------------------
-    # Token management
+    # Token management — delegates to centralized helper
     # ------------------------------------------------------------------
 
     def _get_access_token(self) -> str:
-        """Get a valid access token, refreshing if needed."""
-        tokens = self.token_storage.load_tokens(self.user_id, "microsoft")
-        if not tokens:
-            raise ValueError(f"No Microsoft tokens found for user {self.user_id}. "
-                             "Please connect your Microsoft account first.")
-
-        expires_at = tokens.get("expires_at")
-        if expires_at:
-            try:
-                expiry_time = datetime.fromisoformat(expires_at)
-                if datetime.utcnow() >= expiry_time - timedelta(minutes=5):
-                    logger.info(f"Access token expiring soon for {self.user_id}, refreshing...")
-                    return self._refresh_access_token(tokens)
-            except Exception as e:
-                logger.warning(f"Could not parse token expiry: {e}")
-
-        return tokens.get("access_token")
-
-    def _refresh_access_token(self, tokens: Dict[str, Any]) -> str:
-        """Refresh expired access token using MSAL."""
-        refresh_token = tokens.get("refresh_token")
-        if not refresh_token:
-            raise ValueError("No refresh token available. Please re-authenticate with Microsoft.")
-
-        app = ConfidentialClientApplication(
-            client_id=self.client_id,
-            client_credential=self.client_secret,
-            authority="https://login.microsoftonline.com/consumers"
-        )
-
-        result = app.acquire_token_by_refresh_token(
-            refresh_token=refresh_token,
-            scopes=["https://graph.microsoft.com/.default"]
-        )
-
-        if "error" in result:
-            raise ValueError(
-                f"Microsoft token refresh failed: {result.get('error_description', result['error'])}"
-            )
-
-        updated_tokens = {
-            **tokens,
-            "access_token": result["access_token"],
-            "refresh_token": result.get("refresh_token", refresh_token),
-            "expires_in": result.get("expires_in", 3600),
-            "expires_at": (
-                datetime.utcnow() + timedelta(seconds=result.get("expires_in", 3600))
-            ).isoformat(),
-        }
-        self.token_storage.save_tokens(self.user_id, "microsoft", updated_tokens)
-        logger.info(f"Successfully refreshed Microsoft token for user {self.user_id}")
-        return result["access_token"]
+        """
+        Get a valid access token via the centralized ms_token helper.
+        Handles expiry check, structured logging, and auto-refresh.
+        Raises fastapi.HTTPException on failure (converted to ValueError for
+        callers that don't use FastAPI).
+        """
+        try:
+            return get_valid_ms_token(self.user_id)
+        except Exception as e:
+            # Re-raise as ValueError so non-FastAPI callers get a clean error
+            raise ValueError(str(e)) from e
 
     # ------------------------------------------------------------------
     # Internal HTTP helper
     # ------------------------------------------------------------------
 
     def _make_request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
-        """Make an authenticated request to Microsoft Graph."""
+        """
+        Make an authenticated request to Microsoft Graph.
+
+        Builds headers from scratch on every call (never reuses old header objects).
+        Logs full error diagnostics (status, body, WWW-Authenticate, request-id) on
+        any non-2xx response BEFORE raising, so the body is never lost.
+        """
         access_token = self._get_access_token()
-        headers = {
+        m = method.upper()
+        # Build headers from scratch — never reuse a stale object
+        headers: Dict[str, str] = {
             "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json",
+            "Accept": "application/json",
         }
+        # Only add Content-Type for methods that send a body
+        if m in ("POST", "PATCH", "PUT"):
+            headers["Content-Type"] = "application/json"
+
         url = f"{GRAPH_API_ENDPOINT}{endpoint}"
-        response = requests.request(method=method, url=url, headers=headers, **kwargs)
-        response.raise_for_status()
-        if response.status_code == 204:
+        token_prefix = access_token[:20] + "..." if len(access_token) > 20 else "(short)"
+        logger.debug(
+            "[MS_PROVIDER] → %s %s  token_prefix=%s",
+            m, url, token_prefix,
+        )
+
+        response = requests.request(method=m, url=url, headers=headers, **kwargs)
+
+        logger.debug("[MS_PROVIDER] ← %s %s  status=%s", m, url, response.status_code)
+
+        if not response.ok:
+            # Eagerly capture body + diagnostic headers before raise_for_status()
+            # consumes / discards them.
+            resp_body = response.text
+            www_auth = response.headers.get("WWW-Authenticate", "(not present)")
+            req_id = response.headers.get(
+                "request-id",
+                response.headers.get(
+                    "x-ms-request-id",
+                    response.headers.get("client-request-id", "(not present)")
+                )
+            )
+            logger.error(
+                "[MS_PROVIDER] Graph error.\n"
+                "  method          = %s\n"
+                "  endpoint        = %s\n"
+                "  status          = %s\n"
+                "  body            = %.500s\n"
+                "  WWW-Authenticate= %s\n"
+                "  request-id      = %s",
+                m, url, response.status_code, resp_body, www_auth, req_id,
+            )
+            # Re-raise as HTTPError with the full body in the message
+            response.raise_for_status()
+
+        if response.status_code == 204 or not response.content:
             return {}
         return response.json()
 

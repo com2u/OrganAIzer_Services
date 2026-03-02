@@ -54,6 +54,10 @@ export default function ExecutiveAgent() {
   const [error,           setError]           = useState<string | null>(null);
   const [autoSpeak,       setAutoSpeak]       = useState(false);
 
+  // Integration connection state — determines which calendar/mail provider to use
+  const [googleConnected,    setGoogleConnected]    = useState(false);
+  const [microsoftConnected, setMicrosoftConnected] = useState(false);
+
   // Realtime voice-mode state
   const [voiceMode,       setVoiceMode]       = useState(false);
   const [voiceState,      setVoiceState]      = useState<VoiceState>('idle');
@@ -77,6 +81,32 @@ export default function ExecutiveAgent() {
 
   // Keep voiceStateRef in sync
   useEffect(() => { voiceStateRef.current = voiceState; }, [voiceState]);
+
+  // Query integration status on mount — determines which provider to send per-message
+  useEffect(() => {
+    const apiKey = (import.meta.env.VITE_API_KEY as string) || 'test-key-123';
+    const fetchStatus = async () => {
+      try {
+        const gRes = await fetch(`${API_BASE_URL}/api/integrations/google/status?user_id=default_user`, {
+          headers: { 'X-API-Key': apiKey },
+        });
+        if (gRes.ok) {
+          const gData = await gRes.json();
+          setGoogleConnected(Boolean(gData.connected));
+        }
+      } catch { /* network error → stays false */ }
+      try {
+        const mRes = await fetch(`${API_BASE_URL}/api/integrations/microsoft/status?user_id=default_user`, {
+          headers: { 'X-API-Key': apiKey },
+        });
+        if (mRes.ok) {
+          const mData = await mRes.json();
+          setMicrosoftConnected(Boolean(mData.connected));
+        }
+      } catch { /* network error → stays false */ }
+    };
+    fetchStatus();
+  }, []);
 
   // Auto-scroll
   useEffect(() => {
@@ -105,6 +135,12 @@ export default function ExecutiveAgent() {
   // ── Text-chat send ──────────────────────────────────────────────────────────
 
   const handleSend = useCallback(async (text: string) => {
+    // Derive provider from real connection state:
+    //   Microsoft only  → use outlook for both calendar and mail
+    //   Google only, or both, or neither → use google/gmail (will give 401 if neither connected)
+    const calendarProvider = (!googleConnected && microsoftConnected) ? 'outlook' : 'google';
+    const mailProvider     = (!googleConnected && microsoftConnected) ? 'outlook' : 'gmail';
+
     const userMsg: Message = {
       id: makeId(), role: 'user', content: text, timestamp: new Date(),
     };
@@ -113,7 +149,7 @@ export default function ExecutiveAgent() {
     setError(null);
 
     try {
-      const data = await agentChat(text, SESSION_ID);
+      const data = await agentChat(text, SESSION_ID, 'default_user', calendarProvider, mailProvider);
       const assistantText = data.message || '(keine Antwort)';
 
       let audioUrl: string | undefined;
@@ -137,7 +173,7 @@ export default function ExecutiveAgent() {
     } finally {
       setLoading(false);
     }
-  }, [autoSpeak, playAudio]);
+  }, [autoSpeak, playAudio, googleConnected, microsoftConnected]);
 
   // ── Realtime voice-mode WS ──────────────────────────────────────────────────
 

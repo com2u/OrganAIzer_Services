@@ -61,8 +61,8 @@ class SlotExtractor:
         existing = existing_slots or {}
         extracted = {}
         message_lower = message.lower().strip()
-        
-        logger.info(f"[SLOT_EXTRACT] Parsing: '{message}'")
+
+        logger.info("[CALENDAR_SLOT_EXTRACT] Parsing: '%s'", message[:120])
         
         # ==============================================
         # TITLE EXTRACTION (highest priority)
@@ -117,15 +117,27 @@ class SlotExtractor:
                 logger.info(f"[SLOT_EXTRACT] ✓ location: '{location}'")
         
         # ==============================================
-        # PROVIDER EXTRACTION (Google/Outlook)
+        # PROVIDER EXTRACTION (Google/Outlook) — locked if present
         # ==============================================
         if not existing.get("provider"):
             provider = SlotExtractor._extract_provider(message_lower)
             if provider:
                 extracted["provider"] = provider
-                logger.info(f"[SLOT_EXTRACT] ✓ provider: {provider}")
-        
-        logger.info(f"[SLOT_EXTRACT] Extracted {len(extracted)} slots: {list(extracted.keys())}")
+                logger.info("[CALENDAR_SLOT_EXTRACT] ✓ provider: %s (locked)", provider)
+
+        # ==============================================
+        # TIMEZONE EXTRACTION (optional, default = system TZ)
+        # ==============================================
+        if not existing.get("timezone"):
+            tz = SlotExtractor._extract_timezone(message, message_lower)
+            if tz:
+                extracted["timezone"] = tz
+                logger.info("[CALENDAR_SLOT_EXTRACT] ✓ timezone: %s", tz)
+
+        logger.info(
+            "[CALENDAR_SLOT_EXTRACT] Extracted %d slots: %s",
+            len(extracted), list(extracted.keys()),
+        )
         return extracted
     
     @staticmethod
@@ -261,34 +273,59 @@ class SlotExtractor:
     def _is_garbage_title(title: str) -> bool:
         """
         Detect if a title is garbage/generic and should be rejected.
-        
+
         Returns True if title is garbage, False if valid.
         """
         title_lower = title.lower().strip()
-        
+
         # Empty or too short
         if len(title_lower) <= 1:
             return True
-        
-        # Generic event phrases
-        garbage_phrases = [
+
+        # Generic / single-word titles that are NOT real titles
+        garbage_phrases = {
+            # Determiner + noun phrases
             'an event', 'a meeting', 'the event', 'the meeting',
             'create me', 'add me', 'schedule me',
-            'me an', 'it', 'a', 'an', 'the'
-        ]
-        
+            'me an', 'it', 'a', 'an', 'the', 'me',
+            # Bare nouns — agent should use a default instead
+            'event', 'meeting', 'appointment', 'something', 'anything',
+            'thing', 'stuff',
+            # Date words mistakenly extracted as titles
+            'tomorrow', 'today', 'tonight', 'yesterday',
+            'monday', 'tuesday', 'wednesday', 'thursday',
+            'friday', 'saturday', 'sunday',
+            'morning', 'afternoon', 'evening', 'noon', 'night',
+        }
         if title_lower in garbage_phrases:
             return True
-        
+
         # Just request verbs
-        request_verbs = ['add', 'create', 'schedule', 'make', 'set']
+        request_verbs = {'add', 'create', 'schedule', 'make', 'set', 'put', 'book'}
         if title_lower in request_verbs:
             return True
-        
+
+        # Contains request phrasing that makes it clearly NOT a title
+        # e.g. "can you create an event for me", "please add a meeting"
+        request_indicators = [
+            'can you', 'could you', 'please ', 'would you', 'i need',
+            'i want', 'i would like', 'i\'d like',
+        ]
+        for indicator in request_indicators:
+            if indicator in title_lower:
+                return True
+
+        # Contains creation verbs — would mean we extracted the command, not the title
+        creation_verb_pattern = re.compile(
+            r'\b(create|schedule|add|make|set up|put|book|arrange)\b', re.IGNORECASE
+        )
+        if creation_verb_pattern.search(title_lower):
+            return True
+
         # Single character or number
         if len(title_lower) == 1:
             return True
-        
+
         return False
     
     @staticmethod
@@ -416,45 +453,66 @@ class SlotExtractor:
         Patterns:
         - "today" → today's date
         - "tomorrow" → tomorrow's date
+        - "yesterday" → yesterday's date
         - "next week" → 7 days from now
-        - "next monday" → date of next Monday
+        - "last week" → 7 days ago
+        - "next monday" / "last monday" → date of that weekday
+        - "in X days" → X days from now
         - "2024-12-25" → explicit date
         - "December 25" → parsed date
         """
         today = datetime.now()
-        
+
         # Relative dates
         if "today" in message_lower:
             return today.strftime("%Y-%m-%d")
-        
+
+        if "yesterday" in message_lower:
+            return (today - timedelta(days=1)).strftime("%Y-%m-%d")
+
         if "tomorrow" in message_lower:
             return (today + timedelta(days=1)).strftime("%Y-%m-%d")
-        
+
         if "day after tomorrow" in message_lower:
             return (today + timedelta(days=2)).strftime("%Y-%m-%d")
-        
+
         if "next week" in message_lower:
             return (today + timedelta(days=7)).strftime("%Y-%m-%d")
-        
-        # Weekday patterns
+
+        if "last week" in message_lower:
+            return (today - timedelta(days=7)).strftime("%Y-%m-%d")
+
+        # "in X days" / "in 2 days"
+        in_days_match = re.search(r'\bin\s+(\d+)\s+days?\b', message_lower)
+        if in_days_match:
+            n = int(in_days_match.group(1))
+            return (today + timedelta(days=n)).strftime("%Y-%m-%d")
+
+        # Weekday patterns ("next friday", "last monday", "this wednesday")
         weekdays = {
             'monday': 0, 'tuesday': 1, 'wednesday': 2, 'thursday': 3,
             'friday': 4, 'saturday': 5, 'sunday': 6
         }
-        
+
         for day_name, day_num in weekdays.items():
+            if f"last {day_name}" in message_lower:
+                days_back = (today.weekday() - day_num) % 7
+                if days_back == 0:
+                    days_back = 7
+                return (today - timedelta(days=days_back)).strftime("%Y-%m-%d")
+
             if f"next {day_name}" in message_lower or f"this {day_name}" in message_lower:
                 days_ahead = day_num - today.weekday()
                 if days_ahead <= 0:  # Target day already happened this week
                     days_ahead += 7
                 return (today + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
-        
+
         # Explicit date formats
         # YYYY-MM-DD
         match = re.search(r'\b(\d{4})-(\d{2})-(\d{2})\b', message)
         if match:
             return match.group(0)
-        
+
         # MM/DD/YYYY or DD/MM/YYYY
         match = re.search(r'\b(\d{1,2})/(\d{1,2})/(\d{4})\b', message)
         if match:
@@ -465,7 +523,7 @@ class SlotExtractor:
                 return date_obj.strftime("%Y-%m-%d")
             except ValueError:
                 pass
-        
+
         return None
     
     @staticmethod
@@ -548,19 +606,79 @@ class SlotExtractor:
     @staticmethod
     def _extract_provider(message_lower: str) -> Optional[str]:
         """
-        Extract calendar provider preference.
-        
-        Patterns:
-        - "use google" → "google"
-        - "outlook calendar" → "outlook"
-        - "gmail" → "google"
+        Extract calendar / mail provider preference and lock it.
+
+        CRITICAL (task spec): If the user mentions a provider, lock it —
+        never fall back to a different default.
+
+        Supported aliases
+        -----------------
+        Microsoft / Outlook: outlook, microsoft, office 365, office365, o365,
+                             ms calendar, ms cal
+        Google:              google, gmail, gcal, google calendar (and typo
+                             "google calender")
+
+        Note: Outlook-family keywords are checked FIRST because "outlook" is
+        more specific than "google" (no overlap).
         """
-        if "google" in message_lower or "gmail" in message_lower:
-            return "google"
-        
-        if "outlook" in message_lower or "microsoft" in message_lower:
+        # ── Microsoft / Outlook (check first – more specific) ─────────────
+        ms_keywords = [
+            "outlook", "microsoft", "office 365", "office365", "o365",
+            "ms calendar", "ms cal",
+        ]
+        if any(kw in message_lower for kw in ms_keywords):
+            logger.debug("[CALENDAR_SLOT_EXTRACT] Provider detected: outlook")
             return "outlook"
-        
+
+        # ── Google ────────────────────────────────────────────────────────
+        google_keywords = [
+            "google", "gmail", "gcal",
+        ]
+        if any(kw in message_lower for kw in google_keywords):
+            logger.debug("[CALENDAR_SLOT_EXTRACT] Provider detected: google")
+            return "google"
+
+        return None
+
+    @staticmethod
+    def _extract_timezone(message: str, message_lower: str) -> Optional[str]:
+        """
+        Extract timezone hint from message.
+
+        Supports:
+        - Common abbreviations: UTC, GMT, CET, CEST, EST, EDT, PST, PDT, CST, MST, IST
+        - IANA format embedded in text: "Europe/Berlin", "America/New_York"
+
+        Returns:
+            IANA timezone string or None if not found.
+        """
+        # ── IANA timezone: "Europe/Berlin", "America/New_York" ────────────
+        iana_match = re.search(r'\b([A-Z][a-z]+/[A-Za-z_]+)\b', message)
+        if iana_match:
+            tz_candidate = iana_match.group(1)
+            logger.debug("[CALENDAR_SLOT_EXTRACT] IANA timezone candidate: %s", tz_candidate)
+            return tz_candidate
+
+        # ── Common abbreviations (word-boundary aware) ────────────────────
+        tz_abbr_map = {
+            "utc": "UTC",
+            "gmt": "UTC",
+            "cet": "Europe/Berlin",
+            "cest": "Europe/Berlin",
+            "est": "America/New_York",
+            "edt": "America/New_York",
+            "pst": "America/Los_Angeles",
+            "pdt": "America/Los_Angeles",
+            "mst": "America/Denver",
+            "cst": "America/Chicago",
+            "ist": "Asia/Kolkata",
+        }
+        for abbr, iana in tz_abbr_map.items():
+            # Match as standalone word (avoid matching "best" → "est")
+            if re.search(r'\b' + abbr + r'\b', message_lower):
+                logger.debug("[CALENDAR_SLOT_EXTRACT] Timezone abbreviation matched: %s → %s", abbr, iana)
+                return iana
+
         return None
     
     @staticmethod
@@ -698,3 +816,177 @@ class SlotExtractor:
             return "\n".join(lines)
         
         return ""
+
+    # =========================================================================
+    # EMAIL READ SLOT EXTRACTION
+    # =========================================================================
+
+    @staticmethod
+    def extract_email_read_slots(message: str) -> Dict[str, Any]:
+        """
+        Extract slots for EMAIL_READ intent.
+
+        Extracts:
+          - count        (int)   : how many emails to fetch, default 5
+          - unread_only  (bool)  : filter to unread only
+          - sender_filter(str)   : sender name or email to filter by
+          - date_filter  (str)   : "today" | "yesterday" | "this_week" | "last_week" | None
+          - start_date   (str)   : ISO date for date range start
+          - end_date     (str)   : ISO date for date range end
+
+        Args:
+            message: Raw user message
+
+        Returns:
+            Dict with extracted read-email slots
+        """
+        msg = message.lower().strip()
+        today = datetime.now()
+        slots: Dict[str, Any] = {}
+
+        # ── Count extraction ─────────────────────────────────────────────────
+        # "last 3 emails", "show me 5 emails", "last 10"
+        count_match = re.search(r'\b(?:last|show|get|fetch|read)?\s*(\d+)\s+(?:emails?|messages?|mails?)\b', msg)
+        if count_match:
+            slots["count"] = int(count_match.group(1))
+        else:
+            # "my last emails" without explicit number
+            slots["count"] = 5  # safe default
+
+        # ── Unread filter ────────────────────────────────────────────────────
+        unread_kws = ["unread", "new email", "new message", "new emails", "any new"]
+        slots["unread_only"] = any(kw in msg for kw in unread_kws)
+
+        # ── Sender filter ────────────────────────────────────────────────────
+        # "from John", "emails from sarah", "what did john email me"
+        sender_match = re.search(
+            r'(?:from|emails?\s+from|mail\s+from|what\s+did\s+)([A-Za-z][A-Za-z\s]{1,40})(?:\s+email|\s+send|\s+write|@|\s*$)',
+            msg
+        )
+        if sender_match:
+            sender_raw = sender_match.group(1).strip()
+            # filter out generic words
+            generic = {"me", "my", "i", "the", "a", "any", "do", "have", "give"}
+            if sender_raw not in generic:
+                slots["sender_filter"] = sender_raw
+
+        # Also check for email address in sender position
+        email_match = re.search(r'\bfrom\s+([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[a-zA-Z]{2,})', msg)
+        if email_match:
+            slots["sender_filter"] = email_match.group(1)
+
+        # ── Date filter ───────────────────────────────────────────────────────
+        if "yesterday" in msg:
+            d = today - timedelta(days=1)
+            slots["date_filter"] = "yesterday"
+            slots["start_date"] = d.strftime("%Y-%m-%d")
+            slots["end_date"] = d.strftime("%Y-%m-%d")
+        elif "today" in msg:
+            slots["date_filter"] = "today"
+            slots["start_date"] = today.strftime("%Y-%m-%d")
+            slots["end_date"] = today.strftime("%Y-%m-%d")
+        elif "this week" in msg:
+            # Monday of current week
+            monday = today - timedelta(days=today.weekday())
+            slots["date_filter"] = "this_week"
+            slots["start_date"] = monday.strftime("%Y-%m-%d")
+            slots["end_date"] = today.strftime("%Y-%m-%d")
+        elif "last week" in msg:
+            monday = today - timedelta(days=today.weekday() + 7)
+            sunday = monday + timedelta(days=6)
+            slots["date_filter"] = "last_week"
+            slots["start_date"] = monday.strftime("%Y-%m-%d")
+            slots["end_date"] = sunday.strftime("%Y-%m-%d")
+
+        logger.info("[EMAIL_READ_SLOTS] Extracted: %s", slots)
+        return slots
+
+    # =========================================================================
+    # CALENDAR READ SLOT EXTRACTION
+    # =========================================================================
+
+    @staticmethod
+    def extract_calendar_read_slots(message: str) -> Dict[str, Any]:
+        """
+        Extract slots for CALENDAR_READ intent.
+
+        Extracts:
+          - date         (str)  : single target date (ISO)
+          - start_date   (str)  : range start (ISO)
+          - end_date     (str)  : range end (ISO)
+          - time_filter  (str)  : specific time to look for, e.g. "15:00"
+          - next_event   (bool) : user wants the very next upcoming event
+          - date_label   (str)  : human-readable label ("today", "tomorrow", …)
+
+        Args:
+            message: Raw user message
+
+        Returns:
+            Dict with extracted calendar-read slots
+        """
+        msg = message.lower().strip()
+        today = datetime.now()
+        slots: Dict[str, Any] = {}
+
+        # ── Next event flag ───────────────────────────────────────────────────
+        next_kws = ["next meeting", "when is my next", "next event", "what's next", "what is next"]
+        if any(kw in msg for kw in next_kws):
+            slots["next_event"] = True
+            slots["start_date"] = today.strftime("%Y-%m-%d")
+            slots["date_label"] = "upcoming"
+            logger.info("[CAL_READ_SLOTS] next_event=True")
+            return slots
+
+        # ── Time filter ───────────────────────────────────────────────────────
+        time_result = SlotExtractor._extract_time_range(message, msg)
+        if time_result and time_result.get("start_time"):
+            slots["time_filter"] = time_result["start_time"]
+
+        # ── Date range detection ──────────────────────────────────────────────
+        if "this week" in msg:
+            monday = today - timedelta(days=today.weekday())
+            sunday = monday + timedelta(days=6)
+            slots["start_date"] = monday.strftime("%Y-%m-%d")
+            slots["end_date"] = sunday.strftime("%Y-%m-%d")
+            slots["date_label"] = "this week"
+        elif "next week" in msg:
+            next_monday = today + timedelta(days=7 - today.weekday())
+            next_sunday = next_monday + timedelta(days=6)
+            slots["start_date"] = next_monday.strftime("%Y-%m-%d")
+            slots["end_date"] = next_sunday.strftime("%Y-%m-%d")
+            slots["date_label"] = "next week"
+        elif "last week" in msg or "yesterday" in msg and "week" in msg:
+            monday = today - timedelta(days=today.weekday() + 7)
+            sunday = monday + timedelta(days=6)
+            slots["start_date"] = monday.strftime("%Y-%m-%d")
+            slots["end_date"] = sunday.strftime("%Y-%m-%d")
+            slots["date_label"] = "last week"
+        else:
+            # single date resolution
+            single = SlotExtractor._extract_date(message, msg)
+            if single:
+                slots["date"] = single
+                slots["start_date"] = single
+                slots["end_date"] = single
+                # Human-readable label
+                try:
+                    d = datetime.strptime(single, "%Y-%m-%d").date()
+                    if d == today.date():
+                        slots["date_label"] = "today"
+                    elif d == (today + timedelta(days=1)).date():
+                        slots["date_label"] = "tomorrow"
+                    elif d == (today - timedelta(days=1)).date():
+                        slots["date_label"] = "yesterday"
+                    else:
+                        slots["date_label"] = d.strftime("%A, %B %d")
+                except Exception:
+                    slots["date_label"] = single
+            else:
+                # Default: today
+                slots["date"] = today.strftime("%Y-%m-%d")
+                slots["start_date"] = today.strftime("%Y-%m-%d")
+                slots["end_date"] = today.strftime("%Y-%m-%d")
+                slots["date_label"] = "today"
+
+        logger.info("[CAL_READ_SLOTS] Extracted: %s", slots)
+        return slots

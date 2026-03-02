@@ -3,10 +3,13 @@ Unit tests for calendar event creation truthfulness + idempotency.
 
 Tests:
   1. success_when_event_id_exists        – 2xx + event_id → success
-  2. failure_when_event_id_missing       – 2xx but no event_id → failure  
+  2. failure_when_event_id_missing       – 2xx but no event_id → failure
   3. failure_on_http_error               – 4xx/5xx → failure, pending preserved
   4. idempotent_duplicate_returns_same   – second identical request → same event_id
   5. idempotent_no_extra_api_call        – cached result, HTTP not called again
+  6. microsoft_calendar_create_endpoint_not_404 – route exists, returns non-404
+  7. microsoft_calendar_list_endpoint_not_404   – route exists, returns non-404
+  8. microsoft_mail_send_endpoint_not_404       – route exists, returns non-404
 
 Run with:
   cd backend
@@ -280,6 +283,96 @@ class TestComputeCalendarRequestId:
         h = _compute_calendar_request_id("u1", "M", "s", "e", "UTC")
         assert len(h) == 64
         assert all(c in "0123456789abcdef" for c in h)
+
+
+class TestMicrosoftRouteExists:
+    """
+    Assert that the canonical Microsoft integration routes are registered
+    on the integrations router.  Inspects router.routes directly so there
+    is no dependency on TestClient or a running server.
+    """
+
+    @classmethod
+    def _get_routes(cls):
+        """Import the integrations router and return its (METHOD, path) pairs."""
+        import importlib
+
+        # Stub deps that api/integrations.py imports at module level
+        for mod in (
+            "google_auth_oauthlib", "google_auth_oauthlib.flow",
+            "google.oauth2.credentials", "googleapiclient",
+            "googleapiclient.discovery", "googleapiclient.errors",
+            "msal",
+        ):
+            sys.modules.setdefault(mod, MagicMock())
+
+        # Force reimport so stubs are active
+        for key in list(sys.modules.keys()):
+            if "api.integrations" in key or key == "api.integrations":
+                del sys.modules[key]
+
+        integrations_mod = importlib.import_module("api.integrations")
+        router = integrations_mod.router
+
+        routes = []
+        for route in router.routes:
+            methods = getattr(route, "methods", None) or set()
+            path = getattr(route, "path", "")
+            for method in methods:
+                routes.append((method.upper(), path))
+        return routes
+
+    def test_microsoft_calendar_create_route_registered(self):
+        """POST /integrations/microsoft/calendar/events must be registered."""
+        routes = self._get_routes()
+        assert ("POST", "/integrations/microsoft/calendar/events") in routes, (
+            f"POST /integrations/microsoft/calendar/events not found in integrations router. "
+            f"Registered routes: {routes}"
+        )
+
+    def test_microsoft_calendar_list_route_registered(self):
+        """GET /integrations/microsoft/calendar/events must be registered."""
+        routes = self._get_routes()
+        assert ("GET", "/integrations/microsoft/calendar/events") in routes, (
+            f"GET /integrations/microsoft/calendar/events not found in integrations router. "
+            f"Registered routes: {routes}"
+        )
+
+    def test_microsoft_mail_send_route_registered(self):
+        """POST /integrations/microsoft/mail/send must be registered."""
+        routes = self._get_routes()
+        assert ("POST", "/integrations/microsoft/mail/send") in routes, (
+            f"POST /integrations/microsoft/mail/send not found in integrations router. "
+            f"Registered routes: {routes}"
+        )
+
+
+class TestNormalizeProvider:
+    """Unit tests for _normalize_provider ensuring 'microsoft' slug is returned."""
+
+    def test_outlook_maps_to_microsoft(self):
+        from services.executive_agent_service import _normalize_provider
+        assert _normalize_provider("outlook") == "microsoft"
+
+    def test_microsoft_maps_to_microsoft(self):
+        from services.executive_agent_service import _normalize_provider
+        assert _normalize_provider("microsoft") == "microsoft"
+
+    def test_ms_maps_to_microsoft(self):
+        from services.executive_agent_service import _normalize_provider
+        assert _normalize_provider("ms") == "microsoft"
+
+    def test_office365_maps_to_microsoft(self):
+        from services.executive_agent_service import _normalize_provider
+        assert _normalize_provider("office365") == "microsoft"
+
+    def test_google_maps_to_google(self):
+        from services.executive_agent_service import _normalize_provider
+        assert _normalize_provider("google") == "google"
+
+    def test_gmail_maps_to_google(self):
+        from services.executive_agent_service import _normalize_provider
+        assert _normalize_provider("gmail") == "google"
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

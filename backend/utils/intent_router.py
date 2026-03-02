@@ -39,9 +39,14 @@ class IntentType:
     PROVIDE_SLOT_VALUE = "PROVIDE_SLOT_VALUE"
     SWITCH_TOPIC = "SWITCH_TOPIC"
     GENERAL_MESSAGE = "GENERAL_MESSAGE"
-    # New dedicated calendar intents
+    # Dedicated calendar intents
     CALENDAR_CREATE = "CALENDAR_CREATE"
     CALENDAR_LIST = "CALENDAR_LIST"
+    # Draft correction — user says "no, use outlook" / "no, call it X" / "make it 21:00"
+    MODIFY_DRAFT = "MODIFY_DRAFT"
+    # Reading intents (no write, no confirmation needed)
+    EMAIL_READ = "EMAIL_READ"
+    CALENDAR_READ = "CALENDAR_READ"
 
 
 class IntentRouter:
@@ -83,6 +88,24 @@ class IntentRouter:
         "outlook": ["outlook calendar", "outlook", "microsoft"]
     }
 
+    # ── Regex-based flexible calendar-create detection ─────────────────────
+    # Handles "create ME an event", "add me a meeting", etc. by allowing
+    # up to 6 arbitrary words between the action verb and the target noun.
+    # This is the PRIMARY detector; the string patterns below are fallbacks.
+    _CALENDAR_CREATE_RE: re.Pattern = re.compile(
+        r'\b(?:create|add|make|schedule|book|put|set\s+up|arrange)\b'
+        r'(?:\s+\w+){0,6}'
+        r'\s*\b(?:event|meeting|appointment)\b',
+        re.IGNORECASE,
+    )
+
+    # Known provider keywords that LOCK the provider (no default allowed)
+    _CALENDAR_PROVIDER_RE: re.Pattern = re.compile(
+        r'\b(?:outlook|microsoft|office\s*365|o365|ms\s+calendar|'
+        r'google\s+cale?ndar?|gmail\s+calendar|google|gmail)\b',
+        re.IGNORECASE,
+    )
+
     # ── Calendar intent detection patterns ────────────────────────────────────
     CALENDAR_CREATE_PATTERNS = [
         # Exact phrase fragments (order: longer first to avoid prefix issues)
@@ -109,28 +132,127 @@ class IntentRouter:
         "look at calendar", "view calendar", "see my calendar",
     ]
 
+    # ── Email READ intent patterns ─────────────────────────────────────────────
+    EMAIL_READ_PATTERNS = [
+        # Count-based queries
+        "last 3 emails", "last 5 emails", "last 10 emails",
+        "my last emails", "recent emails", "latest emails",
+        "show me my emails", "show my emails", "list my emails",
+        # Unread queries
+        "any new emails", "do i have new emails", "any unread emails",
+        "unread emails", "new emails", "new messages",
+        "do i have any emails", "do i have any new",
+        # Sender queries
+        "what did john", "what did sarah", "emails from", "mail from",
+        "what email", "what emails did",
+        # Date-based queries
+        "emails today", "emails yesterday", "today's emails",
+        "emails this week", "emails last week",
+        "summarize today", "summarize my emails",
+        # Generic email read
+        "check my email", "check my inbox", "inbox",
+        "read my email", "read my emails",
+        "what's in my inbox", "what is in my inbox",
+        "show me my inbox", "any emails",
+    ]
+
+    # ── Calendar READ intent patterns ──────────────────────────────────────────
+    CALENDAR_READ_PATTERNS = [
+        # Flexible date queries not in CALENDAR_LIST_PATTERNS
+        "what's on my calendar", "what is on my calendar",
+        "do i have anything", "do i have any meetings",
+        "what meetings do i have", "what do i have",
+        "when is my next meeting", "next meeting",
+        "what's scheduled", "what is scheduled",
+        "show me my calendar", "show me my schedule",
+        "what did i have", "did i have anything",
+        "am i free", "am i busy",
+        "any meetings", "any events",
+        "calendar today", "calendar tomorrow",
+        "my schedule", "my agenda",
+        "do i have anything at", "do i have a meeting at",
+        "events this week", "events next week",
+        "what's next", "what is next",
+    ]
+
+    @staticmethod
+    def _detect_email_read_intent(message: str) -> bool:
+        """
+        Detect if the message is a request to READ emails (not send/draft).
+
+        Returns True if EMAIL_READ intent is detected.
+        """
+        for pattern in IntentRouter.EMAIL_READ_PATTERNS:
+            if pattern in message:
+                return True
+
+        # Count-based pattern: "last N emails" / "show N emails"
+        if re.search(r'\b(last|show|get|fetch|read)\s+\d+\s+email', message):
+            return True
+
+        # "email/emails" with read verbs
+        if re.search(r'\b(email|emails|inbox|mail)\b', message):
+            read_verbs = ["what", "show", "list", "check", "read", "any", "do i have", "have i", "summarize"]
+            if any(v in message for v in read_verbs):
+                # Make sure it's not a SEND intent
+                send_indicators = ["send", "draft", "write", "compose", "reply", "forward"]
+                if not any(v in message for v in send_indicators):
+                    return True
+
+        return False
+
+    # Date modifiers that indicate a CALENDAR_READ query rather than a simple CALENDAR_LIST
+    _CALENDAR_DATE_MODIFIERS = re.compile(
+        r'\b(yesterday|last week|this week|next week|next monday|next tuesday|next wednesday|'
+        r'next thursday|next friday|next saturday|next sunday|last monday|last tuesday|'
+        r'last wednesday|last thursday|last friday|last saturday|last sunday|'
+        r'tomorrow|in \d+ days?|\d{4}-\d{2}-\d{2})\b'
+    )
+
     @staticmethod
     def _detect_calendar_intent(message: str) -> Optional[str]:
         """
         Detect calendar-specific intents from free text.
 
-        Returns IntentType.CALENDAR_CREATE, IntentType.CALENDAR_LIST, or None.
-        The create patterns are checked first.
+        Returns IntentType.CALENDAR_CREATE, CALENDAR_LIST, CALENDAR_READ, or None.
+
+        Detection order:
+        1. Regex CREATE check  — catches "create ME an event", typos, flexible phrasing
+        2. String CREATE patterns — legacy exact-phrase matches (backward compat)
+        3. LIST patterns  — upgrade to CALENDAR_READ when date modifier present
+        4. READ patterns  — richer date/time queries
+
+        The regex check (step 1) is intentionally placed BEFORE the string patterns
+        so that "create me an event on my outlook calender …" is caught even though
+        none of the legacy patterns contain the word "me".
         """
-        # Check create patterns
+        # ── Step 1: Regex-based CREATE detection (PRIMARY) ─────────────────
+        # Handles flexible phrasing: "create me an event", "add me a meeting",
+        # "book a quick appointment", etc.
+        if IntentRouter._CALENDAR_CREATE_RE.search(message):
+            logger.debug("[CALENDAR_INTENT] Regex-matched CALENDAR_CREATE: '%s'", message[:80])
+            return IntentType.CALENDAR_CREATE
+
+        # ── Step 2: String-based CREATE patterns (FALLBACK) ────────────────
         for pattern in IntentRouter.CALENDAR_CREATE_PATTERNS:
             if pattern in message:
                 # Extra guard: "till"/"until" only triggers CREATE when a time is present
                 if pattern in ("till ", "until "):
-                    # Must have at least one digit near it (time context)
                     if not re.search(r'\d{1,2}[:\.]?\d{0,2}\s*(till|until)', message):
                         continue
                 return IntentType.CALENDAR_CREATE
 
-        # Check list patterns
+        # ── Step 3: LIST patterns (upgrade to READ when date modifier present) ─
         for pattern in IntentRouter.CALENDAR_LIST_PATTERNS:
             if pattern in message:
+                if IntentRouter._CALENDAR_DATE_MODIFIERS.search(message):
+                    return IntentType.CALENDAR_READ
                 return IntentType.CALENDAR_LIST
+
+        # ── Step 4: READ patterns (richer date/time queries) ───────────────
+        for pattern in IntentRouter.CALENDAR_READ_PATTERNS:
+            if pattern in message:
+                return IntentType.CALENDAR_READ
 
         return None
 
@@ -254,15 +376,27 @@ class IntentRouter:
                     "reasoning": f"Declining optional slot: {last_question_type}"
                 }
             
-            # If there's a pending confirmation, treat as cancellation
+            # If there's a pending confirmation:
+            # — "no, use outlook" / "no, call it X" etc. → MODIFY_DRAFT (user is correcting, not cancelling)
+            # — bare "no" → CANCEL_ACTION (user is rejecting)
             if pending_action and pending_action.get("status") == "awaiting_confirmation":
-                logger.info("[INTENT_ROUTER] ✓ CANCEL_ACTION (rejecting confirmation)")
+                from services.nlu_service import NLUExtractor
+                if NLUExtractor._has_correction_words(message_lower):
+                    logger.info("[INTENT_ROUTER] ✓ MODIFY_DRAFT (decline + correction content during confirmation)")
+                    return {
+                        "intent_type": IntentType.MODIFY_DRAFT,
+                        "extracted_slots": {},
+                        "normalized_message": message,
+                        "confidence": 0.9,
+                        "reasoning": "User said 'no' but with correction content — treating as draft modification"
+                    }
+                logger.info("[INTENT_ROUTER] ✓ CANCEL_ACTION (bare 'no' rejecting confirmation)")
                 return {
                     "intent_type": IntentType.CANCEL_ACTION,
                     "extracted_slots": {},
                     "normalized_message": message,
                     "confidence": 0.9,
-                    "reasoning": "Rejecting pending confirmation"
+                    "reasoning": "Bare 'no' while awaiting confirmation — treating as cancellation"
                 }
             
             # Default: treat as general negative response
@@ -352,20 +486,48 @@ class IntentRouter:
                 }
 
         # =================================================================
-        # PRIORITY 6: CALENDAR INTENT DETECTION (when no locked task)
-        # Runs before GENERAL_MESSAGE so calendar phrases are never dropped
-        # into LLM reasoning.
+        # PRIORITY 6: READ INTENTS + CALENDAR INTENT DETECTION (no locked task)
+        # Runs before GENERAL_MESSAGE so read/calendar phrases are never
+        # dropped into LLM reasoning.
         # =================================================================
+
+        # EMAIL_READ — detected first to avoid calendar overlap
+        if IntentRouter._detect_email_read_intent(message_lower):
+            logger.info("[INTENT_ROUTER] ✓ EMAIL_READ detected")
+            return {
+                "intent_type": IntentType.EMAIL_READ,
+                "extracted_slots": {},
+                "normalized_message": message,
+                "confidence": 0.93,
+                "reasoning": "Email read intent detected via keyword patterns"
+            }
 
         cal_intent = IntentRouter._detect_calendar_intent(message_lower)
         if cal_intent:
-            logger.info(f"[INTENT_ROUTER] ✓ {cal_intent} detected")
+            # For CREATE intents: extract the provider hint immediately so it is
+            # locked from the very first message (task spec: "no defaults").
+            cal_slots: Dict[str, Any] = {}
+            if cal_intent == IntentType.CALENDAR_CREATE:
+                from utils.slot_extraction import SlotExtractor
+                provider_hint = SlotExtractor._extract_provider(message_lower)
+                if provider_hint:
+                    cal_slots["provider"] = provider_hint
+                    logger.info(
+                        "[CALENDAR_INTENT] ✓ Provider locked from message: %s", provider_hint
+                    )
+
+            logger.info("[CALENDAR_INTENT] ✓ %s detected (provider=%s)",
+                        cal_intent, cal_slots.get("provider", "<ask later>"))
+            logger.info("[INTENT_ROUTER] ✓ %s detected", cal_intent)
             return {
                 "intent_type": cal_intent,
-                "extracted_slots": {},
+                "extracted_slots": cal_slots,
                 "normalized_message": message,
                 "confidence": 0.95,
-                "reasoning": f"Calendar intent detected via keyword patterns: {cal_intent}"
+                "reasoning": (
+                    f"Calendar intent detected via keyword patterns: {cal_intent}"
+                    + (f" | provider locked: {cal_slots['provider']}" if cal_slots.get("provider") else "")
+                ),
             }
 
         # =================================================================

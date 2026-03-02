@@ -62,6 +62,8 @@ class ConversationMemory:
     action_history: List[Dict[str, Any]] = field(default_factory=list)
     context: Dict[str, Any] = field(default_factory=dict)
     last_question_type: Optional[str] = None
+    # Remembered provider preference — set after successful execution, used next time
+    preferred_provider: Optional[str] = None
     created_at: datetime = field(default_factory=datetime.now)
     last_activity: datetime = field(default_factory=datetime.now)
     
@@ -376,8 +378,30 @@ class ExecutiveAgent:
             logger.info("[AGENT] ✓ Calendar list intent detected (CALENDAR_LIST)")
             return await self._handle_calendar_list_events(user_id, _cal, user_message)
 
-        # Slot filling for active task
+        # Email READ intent — read/summarize emails, no write action
+        if intent_type == IntentType.EMAIL_READ:
+            logger.info("[AGENT] ✓ Email read intent detected (EMAIL_READ)")
+            return await self._handle_email_read(user_message, user_id, _mail)
+
+        # Calendar READ intent — richer date-range queries
+        if intent_type == IntentType.CALENDAR_READ:
+            logger.info("[AGENT] ✓ Calendar read intent detected (CALENDAR_READ)")
+            return await self._handle_calendar_read(user_message, user_id, _cal)
+
+        # Draft correction — "no, use outlook" / "no, call it X" / "make it 21:00"
+        if intent_type == IntentType.MODIFY_DRAFT:
+            return await self._handle_modify_draft(user_message, extracted_slots, user_id, _cal, _mail)
+
+        # Slot filling for active task.
+        # During awaiting_confirmation, any new input is treated as a slot CORRECTION
+        # (the user saw the confirmation and wants to change something).
         if intent_type == IntentType.PROVIDE_SLOT_VALUE:
+            active_task = self.memory.get_active_task()
+            if active_task and active_task.get("status") == "awaiting_confirmation":
+                logger.info(
+                    "[AGENT] PROVIDE_SLOT_VALUE during awaiting_confirmation → _handle_modify_draft"
+                )
+                return await self._handle_modify_draft(user_message, extracted_slots, user_id, _cal, _mail)
             return await self._handle_slot_filling(user_message, extracted_slots, user_id, _cal)
 
         # Topic switch during active task
@@ -608,7 +632,7 @@ Remember: You're not just executing commands - you're an intelligent companion w
         - Execution proof: includes event_id, htmlLink, start, end in response data
         - Error handling: preserves pending_action on failure so user can retry;
           only clears it after confirmed success
-        - Provider normalisation: "gmail" → "google", "microsoft" → "outlook", etc.
+        - Provider normalisation: "gmail" → "google", "outlook" → "microsoft", etc.
         """
         import httpx
         from datetime import datetime, timedelta
@@ -797,6 +821,10 @@ Remember: You're not just executing commands - you're an intelligent companion w
                     "event_id": event_id,
                 })
 
+                # Remember provider for next calendar event in this session
+                self.memory.preferred_provider = provider
+                logger.info("[MEMORY] preferred_provider updated → '%s'", provider)
+
                 # Clear state only on success
                 self.memory.clear_pending_action()
                 self.memory.clear_active_task()
@@ -906,7 +934,7 @@ Remember: You're not just executing commands - you're an intelligent companion w
 
         Calls:
           Gmail:   POST /api/integrations/google/gmail/send?user_id={user_id}
-          Outlook: POST /api/integrations/outlook/mail/send?user_id={user_id}
+          Outlook: POST /api/integrations/microsoft/mail/send?user_id={user_id}
 
         Mirrors _execute_calendar_event_creation pattern exactly:
         - Guard: refuses if no pending_action
@@ -962,7 +990,7 @@ Remember: You're not just executing commands - you're an intelligent companion w
             if provider == "google":
                 endpoint = f"{base_url}/api/integrations/google/gmail/send"
             else:
-                endpoint = f"{base_url}/api/integrations/outlook/mail/send"
+                endpoint = f"{base_url}/api/integrations/microsoft/mail/send"
 
             params = {"user_id": user_id}
 
@@ -1367,6 +1395,125 @@ Remember: You're not just executing commands - you're an intelligent companion w
             "action_needed": "confirm_topic_switch"
         }
     
+    # ── Draft modification (slot correction) ─────────────────────────────────
+
+    async def _handle_modify_draft(
+        self,
+        user_message: str,
+        extracted_slots: Dict[str, Any],
+        user_id: str,
+        calendar_provider: str,
+        mail_provider: str,
+    ) -> Dict[str, Any]:
+        """
+        Handle user correcting a slot in an active draft.
+
+        Called when:
+          - IntentRouter → MODIFY_DRAFT  ("no, use outlook" / "no, call it X")
+          - PROVIDE_SLOT_VALUE while task status is awaiting_confirmation
+            ("make it 21:00 instead")
+
+        Steps:
+          1. Run NLUExtractor on the raw message (bypasses existing-slot guards)
+          2. Patch task data with the extracted updates
+          3. Clear pending action (fresh one created by re-dispatch)
+          4. Reset status → collecting
+          5. Re-dispatch to appropriate handler → advances back to confirmation
+        """
+        logger.info("[AGENT] Handling draft modification: '%s'", user_message)
+
+        active_task = self.memory.get_active_task()
+        if not active_task:
+            return await self._handle_general_message(
+                user_message, extracted_slots, user_id, mail_provider, calendar_provider
+            )
+
+        task_type   = active_task.get("type")
+        current_data = active_task.get("data", {})
+
+        # Run NLU — no existing-slot guards, so corrections always apply
+        from services.nlu_service import NLUExtractor
+        nlu = await NLUExtractor.extract(
+            message=user_message,
+            task_type=task_type,
+            current_slots=current_data,
+            chat_service=self.chat_service,
+        )
+
+        logger.info(
+            "[AGENT] NLU result: intent=%s updates=%s confidence=%.2f",
+            nlu.intent, list(nlu.updates.keys()), nlu.confidence,
+        )
+
+        # Honour unexpected cancel / confirm signals from NLU
+        if nlu.intent == "cancel":
+            return await self._handle_cancellation()
+        if nlu.intent == "confirm":
+            return await self._handle_confirmation(user_id, calendar_provider)
+
+        updates = nlu.updates or {}
+
+        # Normalize provider if it was extracted
+        if "provider" in updates:
+            updates["provider"] = _normalize_provider(updates["provider"])
+
+        # If NLU found nothing, ask user to rephrase (don't silently discard)
+        if not updates:
+            logger.warning("[AGENT] _handle_modify_draft: NLU found no updates for: '%s'", user_message)
+            return {
+                "message": (
+                    "I'm not sure what you'd like to change. Could you rephrase?\n\n"
+                    "Examples:\n"
+                    "- `call it 'I will see'`\n"
+                    "- `use outlook`\n"
+                    "- `at 14:00`\n"
+                    "- `make it tomorrow`"
+                ),
+                "success": True,
+                "type": "clarification",
+            }
+
+        # Patch task data
+        merged = {**current_data, **updates}
+        logger.info("[AGENT] Patching task '%s' with %s", task_type, updates)
+
+        self.memory.update_task_data(merged)
+        self.memory.clear_pending_action()          # fresh pending_action from re-dispatch
+        self.memory.update_task_status("collecting")  # allow re-dispatch to reach confirmation
+
+        # Re-dispatch with an EMPTY message so the slot extractor cannot
+        # accidentally parse anything from the correction phrase (e.g. "no, use
+        # outlook") as a new slot. All needed data is already in `merged`.
+        if task_type in ("send_email", "draft_email"):
+            return await self._handle_send_email("", merged, user_id, mail_provider)
+        elif task_type == "calendar_event":
+            return await self._handle_calendar_event_creation(
+                "", merged, user_id, calendar_provider
+            )
+        else:
+            return {
+                "message": "✅ Updated! Ready to proceed?",
+                "success": True,
+                "type": "draft_updated",
+                "data": merged,
+            }
+
+    def _check_provider_connected(self, user_id: str, provider: str) -> bool:
+        """
+        Synchronous check: does this user have stored tokens for the given provider?
+        Fast file read — no HTTP call.
+        """
+        try:
+            from utils.token_storage import TokenStorage
+            ts = TokenStorage()
+            tokens = ts.load_tokens(user_id, provider)
+            return bool(tokens and tokens.get("access_token"))
+        except Exception as exc:
+            logger.warning("[AGENT] Provider connection check failed (%s): %s", provider, exc)
+            return False
+
+    # ── Calendar event creation flow ──────────────────────────────────────────
+
     async def _handle_calendar_event_creation(
         self,
         user_message: str,
@@ -1439,6 +1586,21 @@ Remember: You're not just executing commands - you're an intelligent companion w
                 }
         
         # STEP 4: Check provider preference
+        # Order: explicit slot > session memory (preferred_provider) > API param
+        if not all_slots.get("provider"):
+            if self.memory.preferred_provider:
+                # Reuse the provider the user chose last time in this session
+                all_slots["provider"] = self.memory.preferred_provider
+                logger.info(
+                    "[ORCHESTRATION] Provider pre-filled from session preference: '%s'",
+                    self.memory.preferred_provider,
+                )
+            elif provider:
+                all_slots["provider"] = provider
+                logger.info(
+                    "[ORCHESTRATION] Provider pre-filled from API parameter: '%s'", provider
+                )
+
         if not all_slots.get("provider"):
             logger.info("[ORCHESTRATION] Provider not specified - asking user")
             
@@ -1456,9 +1618,38 @@ Remember: You're not just executing commands - you're an intelligent companion w
                 "data": all_slots
             }
         
-        # STEP 5: All slots present - create pending_action and request confirmation
-        logger.info("[ORCHESTRATION] All slots collected - requesting confirmation")
-        
+        # STEP 5: All slots present — pre-check provider connection, then request confirmation
+        logger.info("[ORCHESTRATION] All slots collected - pre-checking provider connection")
+
+        selected_provider = _normalize_provider(all_slots.get("provider", "google"))
+        if not self._check_provider_connected(user_id, selected_provider):
+            provider_label = "Microsoft / Outlook" if selected_provider == "microsoft" else "Google"
+            # Keep the draft alive so user can retry after connecting
+            self.memory.set_active_task(
+                task_type="calendar_event",
+                data=all_slots,
+                status="collecting",
+            )
+            return {
+                "message": (
+                    f"⚠️ Your **{provider_label}** account is not connected yet.\n\n"
+                    f"Please connect it first via the **Integrations** page, then retry.\n\n"
+                    f"Your event details are saved. Once connected you can either:\n"
+                    f"- say **`use google`** to switch to Google Calendar, or\n"
+                    f"- say **`yes`** to create it with {provider_label}."
+                ),
+                "success": False,
+                "type": "provider_not_connected",
+                "data": {**all_slots},
+            }
+
+        logger.info("[ORCHESTRATION] Provider '%s' connected — requesting confirmation", selected_provider)
+
+        # Apply default 60-minute duration when neither explicit end_time nor duration given
+        if not all_slots.get("end_time") and not all_slots.get("duration"):
+            all_slots["duration"] = 60
+            logger.info("[ORCHESTRATION] Default duration applied: 60 minutes")
+
         # Format confirmation message
         confirmation_msg = f"""📅 **Ready to create your calendar event:**
 
@@ -1466,7 +1657,7 @@ Remember: You're not just executing commands - you're an intelligent companion w
 - **Date:** {all_slots['date']}
 - **Time:** {all_slots['time']}
 - **Calendar:** {all_slots['provider'].title()}"""
-        
+
         if all_slots.get("end_time"):
             confirmation_msg += f"\n- **End Time:** {all_slots['end_time']}"
         elif all_slots.get("duration"):
@@ -1513,7 +1704,7 @@ Remember: You're not just executing commands - you're an intelligent companion w
 
         Calls:
           Google:  GET /api/integrations/google/calendar/events
-          Outlook: GET /api/integrations/outlook/calendar/events
+          Outlook: GET /api/integrations/microsoft/calendar/events
 
         Parses "tomorrow" / "today" from user_message to set time_min/time_max.
         Returns events formatted as a readable list.
@@ -1662,6 +1853,428 @@ Remember: You're not just executing commands - you're an intelligent companion w
             }
 
 
+    # ── Email READ handler ────────────────────────────────────────────────────
+
+    async def _handle_email_read(
+        self,
+        user_message: str,
+        user_id: str,
+        provider: str,
+    ) -> Dict[str, Any]:
+        """
+        Read and summarize emails from Gmail or Outlook.
+
+        Flow:
+        1. Extract read-email slots (count, unread_only, sender_filter, date range)
+        2. Verify provider connection
+        3. Call correct read endpoint
+        4. Format structured response
+
+        Never fabricates emails — returns real data from the API only.
+        """
+        import httpx
+
+        logger.info("[ORCHESTRATION] Starting email read workflow")
+
+        normalized_provider = _normalize_provider(provider)
+
+        # STEP 1: Extract slots
+        from utils.slot_extraction import SlotExtractor
+        slots = SlotExtractor.extract_email_read_slots(user_message)
+
+        count = slots.get("count", 5)
+        unread_only = slots.get("unread_only", False)
+        sender_filter = slots.get("sender_filter")
+        start_date = slots.get("start_date")
+        end_date = slots.get("end_date")
+        date_filter = slots.get("date_filter")
+
+        # STEP 2: Verify provider connection
+        if not self._check_provider_connected(user_id, normalized_provider):
+            provider_label = "Microsoft / Outlook" if normalized_provider == "microsoft" else "Google"
+            return {
+                "message": (
+                    f"⚠️ Your **{provider_label}** account is not connected.\n\n"
+                    "Would you like to connect it? Go to the **Integrations** page to set it up."
+                ),
+                "success": False,
+                "type": "provider_not_connected",
+                "data": {"provider": normalized_provider},
+            }
+
+        # STEP 3: Call read endpoint
+        base_url = os.getenv("BACKEND_URL", "http://localhost:8000")
+        if normalized_provider == "google":
+            endpoint = f"{base_url}/api/integrations/google/gmail/messages"
+        else:
+            endpoint = f"{base_url}/api/integrations/microsoft/mail/messages"
+
+        params: Dict[str, Any] = {
+            "user_id": user_id,
+            "max_results": count,
+            "unread_only": unread_only,
+        }
+        if sender_filter:
+            params["sender"] = sender_filter
+        if start_date:
+            params["date_after"] = start_date
+        if end_date:
+            params["date_before"] = end_date
+
+        logger.info("[AUDIT] Email read → endpoint=%s params=%s", endpoint, params)
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(endpoint, params=params, timeout=30.0)
+
+            logger.info(
+                "[AUDIT] Email read ← status=%s body_preview=%s",
+                response.status_code, response.text[:200],
+            )
+
+            if not response.is_success:
+                error_body = response.text[:300]
+                # Handle auth failure gracefully
+                if response.status_code in (401, 403):
+                    provider_label = "Microsoft / Outlook" if normalized_provider == "microsoft" else "Google"
+                    return {
+                        "message": (
+                            f"⚠️ Your **{provider_label}** account is not connected or the token has expired.\n\n"
+                            "Please reconnect it via the **Integrations** page."
+                        ),
+                        "success": False,
+                        "type": "provider_not_connected",
+                        "data": {"provider": normalized_provider},
+                    }
+                return {
+                    "message": f"❌ Failed to read emails (HTTP {response.status_code}): {error_body}",
+                    "success": False,
+                    "type": "error",
+                    "error": f"HTTP {response.status_code}",
+                }
+
+            data = response.json()
+            emails = data.get("emails", [])
+            total = data.get("total", len(emails))
+
+            # STEP 4: Format response
+            if not emails:
+                qualifier = "unread " if unread_only else ""
+                date_label = f" for **{date_filter}**" if date_filter else ""
+                sender_label = f" from **{sender_filter}**" if sender_filter else ""
+                return {
+                    "message": (
+                        f"📭 You have no {qualifier}emails{sender_label}{date_label}."
+                    ),
+                    "success": True,
+                    "type": "email_list",
+                    "data": {"emails": [], "total": 0},
+                }
+
+            # Build structured summary
+            lines = [f"📩 Here are your last **{len(emails)}** email{'s' if len(emails) != 1 else ''}:\n"]
+            for idx, email in enumerate(emails, 1):
+                from_raw = email.get("from", "Unknown")
+                subject = email.get("subject", "(No Subject)")
+                received = email.get("received", "")
+                preview = email.get("preview", "")
+                unread_flag = " 🔵" if email.get("unread") else ""
+
+                # Try to format received time nicely
+                received_label = received
+                try:
+                    from email.utils import parsedate_to_datetime as _pdt
+                    dt = _pdt(received)
+                    now = datetime.now()
+                    if dt.date() == now.date():
+                        received_label = f"Today at {dt.strftime('%H:%M')}"
+                    elif dt.date() == (now - timedelta(days=1)).date():
+                        received_label = f"Yesterday at {dt.strftime('%H:%M')}"
+                    else:
+                        received_label = dt.strftime("%b %d at %H:%M")
+                except Exception:
+                    # Non-RFC 2822 format (e.g. ISO from Outlook)
+                    try:
+                        dt = datetime.fromisoformat(received.replace("Z", "+00:00"))
+                        now = datetime.now()
+                        if dt.date() == now.date():
+                            received_label = f"Today at {dt.strftime('%H:%M')}"
+                        else:
+                            received_label = dt.strftime("%b %d at %H:%M")
+                    except Exception:
+                        received_label = received[:20] if received else "Unknown time"
+
+                lines.append(
+                    f"**{idx}.{unread_flag} From:** {from_raw}\n"
+                    f"   **Subject:** {subject}\n"
+                    f"   **Received:** {received_label}\n"
+                    f"   **Preview:** _{preview[:120]}{'…' if len(preview) > 120 else ''}_\n"
+                )
+
+            return {
+                "message": "\n".join(lines),
+                "success": True,
+                "type": "email_list",
+                "data": {"emails": emails, "total": total},
+            }
+
+        except httpx.TimeoutException:
+            return {
+                "message": "❌ The email service timed out. Please try again.",
+                "success": False,
+                "type": "error",
+                "error": "Timeout",
+            }
+        except Exception as e:
+            logger.error("[ORCHESTRATION] Error reading emails: %s", e, exc_info=True)
+            return {
+                "message": f"❌ Error reading emails: {e}",
+                "success": False,
+                "type": "error",
+                "error": str(e),
+            }
+
+    # ── Calendar READ handler ─────────────────────────────────────────────────
+
+    async def _handle_calendar_read(
+        self,
+        user_message: str,
+        user_id: str,
+        provider: str,
+    ) -> Dict[str, Any]:
+        """
+        Read and summarize calendar events with rich date-range support.
+
+        Handles:
+        - Single day (today, tomorrow, yesterday, specific date, next Friday)
+        - Date ranges (this week, next week, last week)
+        - Next-event query ("when is my next meeting?")
+        - Time filter ("do I have anything at 3pm?")
+
+        Never fabricates events — returns real data from the API only.
+        """
+        import httpx
+
+        logger.info("[ORCHESTRATION] Starting calendar read workflow")
+
+        normalized_provider = _normalize_provider(provider)
+
+        # STEP 1: Extract slots
+        from utils.slot_extraction import SlotExtractor
+        slots = SlotExtractor.extract_calendar_read_slots(user_message)
+
+        next_event = slots.get("next_event", False)
+        start_date = slots.get("start_date")
+        end_date = slots.get("end_date")
+        date_label = slots.get("date_label", "today")
+        time_filter = slots.get("time_filter")
+
+        # STEP 2: Verify provider connection
+        if not self._check_provider_connected(user_id, normalized_provider):
+            provider_label = "Microsoft / Outlook" if normalized_provider == "microsoft" else "Google"
+            return {
+                "message": (
+                    f"⚠️ Your **{provider_label}** account is not connected.\n\n"
+                    "Would you like to connect it? Go to the **Integrations** page to set it up."
+                ),
+                "success": False,
+                "type": "provider_not_connected",
+                "data": {"provider": normalized_provider},
+            }
+
+        # STEP 3: Call calendar events endpoint
+        now = datetime.now()
+        base_url = os.getenv("BACKEND_URL", "http://localhost:8000")
+        endpoint = f"{base_url}/api/integrations/{normalized_provider}/calendar/events"
+
+        # For "next event" we fetch 1 future event
+        if next_event:
+            time_min = now.isoformat() + "Z"
+            max_results = 1
+        else:
+            # Build time_min from start_date or default to now
+            if start_date:
+                time_min = f"{start_date}T00:00:00Z"
+            else:
+                time_min = now.isoformat() + "Z"
+            max_results = 20
+
+        params: Dict[str, Any] = {
+            "user_id": user_id,
+            "max_results": max_results,
+            "time_min": time_min,
+        }
+
+        logger.info("[AUDIT] Calendar read → endpoint=%s params=%s", endpoint, params)
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(endpoint, params=params, timeout=30.0)
+
+            logger.info(
+                "[AUDIT] Calendar read ← status=%s body_preview=%s",
+                response.status_code, response.text[:200],
+            )
+
+            if not response.is_success:
+                error_body = response.text[:300]
+                if response.status_code in (401, 403):
+                    provider_label = "Microsoft / Outlook" if normalized_provider == "microsoft" else "Google"
+                    return {
+                        "message": (
+                            f"⚠️ Your **{provider_label}** account is not connected or the token has expired.\n\n"
+                            "Please reconnect it via the **Integrations** page."
+                        ),
+                        "success": False,
+                        "type": "provider_not_connected",
+                        "data": {"provider": normalized_provider},
+                    }
+                return {
+                    "message": f"❌ Failed to read calendar (HTTP {response.status_code}): {error_body}",
+                    "success": False,
+                    "type": "error",
+                    "error": f"HTTP {response.status_code}",
+                }
+
+            data = response.json()
+            events = data.get("events", [])
+
+            # ── Filter to end_date if set ─────────────────────────────────────
+            if end_date and not next_event:
+                end_dt_boundary = datetime.fromisoformat(f"{end_date}T23:59:59")
+                filtered = []
+                for evt in events:
+                    start_str = evt.get("start", "")
+                    try:
+                        evt_start = datetime.fromisoformat(
+                            start_str.replace("Z", "+00:00").replace("+00:00", "")
+                        )
+                        if evt_start <= end_dt_boundary:
+                            filtered.append(evt)
+                    except Exception:
+                        filtered.append(evt)
+                events = filtered
+
+            # ── Additional time filter ────────────────────────────────────────
+            if time_filter and events:
+                target_hour, target_min = map(int, time_filter.split(":"))
+                matched = []
+                for evt in events:
+                    start_str = evt.get("start", "")
+                    try:
+                        evt_start = datetime.fromisoformat(
+                            start_str.replace("Z", "+00:00").replace("+00:00", "")
+                        )
+                        if evt_start.hour == target_hour:
+                            matched.append(evt)
+                    except Exception:
+                        pass
+                events = matched if matched else events
+
+            total = len(events)
+
+            # STEP 4: Format response
+            if not events:
+                if next_event:
+                    return {
+                        "message": "📅 You have no upcoming events scheduled.",
+                        "success": True,
+                        "type": "calendar_list",
+                        "data": {"events": [], "total": 0},
+                    }
+                return {
+                    "message": f"📅 You have no events scheduled for **{date_label}**.",
+                    "success": True,
+                    "type": "calendar_list",
+                    "data": {"events": [], "total": 0},
+                }
+
+            if next_event:
+                evt = events[0]
+                summary = evt.get("summary", "Untitled")
+                start_str = evt.get("start", "")
+                end_str = evt.get("end", "")
+                location = evt.get("location")
+                try:
+                    start_dt = datetime.fromisoformat(
+                        start_str.replace("Z", "+00:00").replace("+00:00", "")
+                    )
+                    end_dt = datetime.fromisoformat(
+                        end_str.replace("Z", "+00:00").replace("+00:00", "")
+                    )
+                    duration_min = int((end_dt - start_dt).total_seconds() / 60)
+                    time_label = (
+                        f"{start_dt.strftime('%A, %B %d')} at "
+                        f"{start_dt.strftime('%H:%M')} "
+                        f"({duration_min} min)"
+                    )
+                except Exception:
+                    time_label = start_str
+
+                msg = f"📅 Your next meeting is **{summary}**\n- 🕐 {time_label}"
+                if location:
+                    msg += f"\n- 📍 {location}"
+                return {
+                    "message": msg,
+                    "success": True,
+                    "type": "calendar_list",
+                    "data": {"events": events, "total": total},
+                }
+
+            # Multiple events
+            lines = [
+                f"📅 **You have {total} event{'s' if total != 1 else ''}"
+                f" for {date_label}:**\n"
+            ]
+            for evt in events:
+                summary = evt.get("summary", "Untitled")
+                start_str = evt.get("start", "")
+                end_str = evt.get("end", "")
+                location = evt.get("location")
+                try:
+                    start_dt = datetime.fromisoformat(
+                        start_str.replace("Z", "+00:00").replace("+00:00", "")
+                    )
+                    end_dt = datetime.fromisoformat(
+                        end_str.replace("Z", "+00:00").replace("+00:00", "")
+                    )
+                    duration_min = int((end_dt - start_dt).total_seconds() / 60)
+                    time_label = (
+                        f"{start_dt.strftime('%H:%M')} "
+                        f"({duration_min} min)"
+                    )
+                except Exception:
+                    time_label = start_str
+
+                line = f"  • **{summary}** — {time_label}"
+                if location:
+                    line += f" — 📍 {location}"
+                lines.append(line)
+
+            return {
+                "message": "\n".join(lines),
+                "success": True,
+                "type": "calendar_list",
+                "data": {"events": events, "total": total},
+            }
+
+        except httpx.TimeoutException:
+            return {
+                "message": "❌ The calendar service timed out. Please try again.",
+                "success": False,
+                "type": "error",
+                "error": "Timeout",
+            }
+        except Exception as e:
+            logger.error("[ORCHESTRATION] Error reading calendar: %s", e, exc_info=True)
+            return {
+                "message": f"❌ Error reading calendar: {e}",
+                "success": False,
+                "type": "error",
+                "error": str(e),
+            }
+
+
 # ==============================================================================
 # HELPER FUNCTIONS
 # ==============================================================================
@@ -1669,21 +2282,33 @@ Remember: You're not just executing commands - you're an intelligent companion w
 def _normalize_provider(raw_provider: str) -> str:
     """
     Normalise provider string to a valid URL segment for the integrations API.
+    Handles exact names, aliases, and common typos via fuzzy keyword matching.
 
-    Accepted URL segments: "google" | "outlook"
-
-    Maps:
-      gmail / gcal / google calendar / google → "google"
-      outlook / microsoft / ms / office365 / outlook calendar → "outlook"
+    Accepted URL segments: "google" | "microsoft"
     """
     p = raw_provider.lower().strip() if raw_provider else "google"
+
+    # ── Exact / common alias match (fast path) ────────────────────────────────
     if p in ("google", "gmail", "gcal", "google calendar", "google cal"):
         return "google"
-    if p in ("outlook", "microsoft", "ms", "office365", "office 365", "outlook calendar"):
-        return "outlook"
-    logger.warning(
-        "[ORCHESTRATION] Unknown provider '%s', defaulting to 'google'", raw_provider
-    )
+    if p in ("microsoft", "outlook", "ms", "office365", "office 365", "outlook calendar"):
+        return "microsoft"
+
+    # ── Fuzzy match using shared NLU keyword lists (handles typos like "otlook") ─
+    try:
+        from services.nlu_service import MS_KEYWORDS, GOOGLE_KEYWORDS
+        for kw in MS_KEYWORDS:
+            if kw in p:
+                logger.info("[ORCHESTRATION] Fuzzy matched '%s' → microsoft (via '%s')", p, kw)
+                return "microsoft"
+        for kw in GOOGLE_KEYWORDS:
+            if kw in p:
+                logger.info("[ORCHESTRATION] Fuzzy matched '%s' → google (via '%s')", p, kw)
+                return "google"
+    except ImportError:
+        pass  # nlu_service not available — fall through to default
+
+    logger.warning("[ORCHESTRATION] Unknown provider '%s', defaulting to 'google'", raw_provider)
     return "google"
 
 
