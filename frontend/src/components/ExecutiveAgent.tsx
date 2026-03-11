@@ -95,7 +95,7 @@ export default function ExecutiveAgent({ onPageChange }: Props = {}) {
 
   // Query integration status on mount — determines which provider to send per-message
   useEffect(() => {
-    const apiKey = (import.meta.env.VITE_API_KEY as string) || 'test-key-123';
+    const apiKey = (import.meta.env.VITE_API_KEY as string) ?? '';
     const fetchStatus = async () => {
       try {
         const gRes = await fetch(`${API_BASE_URL}/api/integrations/google/status?user_id=default_user`, {

@@ -14,8 +14,8 @@ export default defineConfig(({ mode }) => {
     env.VITE_API_BASE_URL ||
     (mode === 'production' ? '' : 'http://localhost:8000')
 
-  // VITE_API_KEY: read from .env (or OS env). Falls back to "" so the runtime
-  // || 'test-key-123' fallback in apiClient.ts activates in local dev.
+  // VITE_API_KEY: must be set in frontend/.env — no fallback.
+  // An empty key is passed through; the backend will reject it with 401.
   const apiKey = env.VITE_API_KEY || ''
 
   return {

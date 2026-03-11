@@ -9,7 +9,11 @@
  */
 
 export const API_BASE_URL: string = import.meta.env.VITE_API_BASE_URL ?? '';
-const API_KEY: string = import.meta.env.VITE_API_KEY || 'test-key-123';
+
+// SECURITY: API key MUST be set in .env (VITE_API_KEY). No fallback — an
+// empty key would pass through to the backend where it would be rejected with
+// 401, giving a clear error rather than silently using a guessable default.
+const API_KEY: string = import.meta.env.VITE_API_KEY ?? '';
 
 function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
   return { 'X-API-Key': API_KEY, ...extra };

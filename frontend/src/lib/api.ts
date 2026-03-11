@@ -5,7 +5,7 @@
 
 // Get API base URL and key from environment variables (set by vite.config.ts)
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
-const API_KEY: string = import.meta.env.VITE_API_KEY || 'test-key-123';
+const API_KEY: string = import.meta.env.VITE_API_KEY ?? '';
 
 /** Build headers that always include X-API-Key (required by backend auth). */
 function authHeaders(extra: Record<string, string> = {}): Record<string, string> {

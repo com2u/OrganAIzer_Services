@@ -19,7 +19,7 @@ export default function IntegrationsPage() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  const API_KEY = import.meta.env.VITE_API_KEY || 'test-key-123';
+  const API_KEY = import.meta.env.VITE_API_KEY ?? '';
   const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
   useEffect(() => {

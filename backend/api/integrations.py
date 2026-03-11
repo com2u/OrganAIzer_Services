@@ -44,7 +44,19 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/integrations", tags=["Integrations"])
 
 # OAuth state storage (in production, use Redis or database)
-_oauth_states = {}
+# Each entry: { "user_id": str, "timestamp": datetime }
+_oauth_states: dict = {}
+_OAUTH_STATE_TTL_SECONDS = 600  # 10-minute window to complete the OAuth flow
+
+
+def _cleanup_expired_oauth_states() -> None:
+    """Remove OAuth state entries older than _OAUTH_STATE_TTL_SECONDS."""
+    cutoff = datetime.now() - timedelta(seconds=_OAUTH_STATE_TTL_SECONDS)
+    expired = [k for k, v in _oauth_states.items() if v.get("timestamp", datetime.now()) < cutoff]
+    for k in expired:
+        _oauth_states.pop(k, None)
+    if expired:
+        logger.debug("[OAUTH] Cleaned up %d expired state entries", len(expired))
 
 
 def get_credentials_json_path() -> Path:
@@ -90,6 +102,7 @@ async def google_auth_start(user_id: str = Query("default_user")):
     This will grant access to Google Calendar and Gmail.
     """
     try:
+        _cleanup_expired_oauth_states()
         # Get credentials file path
         credentials_path = get_credentials_json_path()
         logger.info(f"🔑 Using credentials from: {credentials_path}")
@@ -890,6 +903,7 @@ async def microsoft_auth_start(user_id: str = Query("default_user")):
     After consent, Microsoft redirects to /microsoft/auth/callback.
     """
     try:
+        _cleanup_expired_oauth_states()
         client_id = os.getenv("MICROSOFT_CLIENT_ID")
         client_secret = os.getenv("MICROSOFT_CLIENT_SECRET")
         if not client_id or not client_secret:
@@ -940,6 +954,9 @@ async def _ms_handle_callback(code: str, state: str) -> RedirectResponse:
         if "error" in result:
             raise Exception(f"Microsoft OAuth error: {result.get('error_description', result['error'])}")
 
+        # SECURITY: client_id and client_secret are intentionally NOT stored here.
+        # They are always read from environment variables (MICROSOFT_CLIENT_ID /
+        # MICROSOFT_CLIENT_SECRET) by _refresh_ms_token when a refresh is needed.
         token_data = {
             "access_token": result["access_token"],
             "refresh_token": result.get("refresh_token"),
@@ -947,8 +964,6 @@ async def _ms_handle_callback(code: str, state: str) -> RedirectResponse:
             "scopes": result.get("scope", "").split(" "),
             "expires_in": result.get("expires_in", 3600),
             "expires_at": (datetime.utcnow() + timedelta(seconds=result.get("expires_in", 3600))).isoformat(),
-            "client_id": client_id,
-            "client_secret": client_secret,
         }
         get_token_storage().save_tokens(user_id, "microsoft", token_data)
         logger.info(f"✅ Microsoft OAuth successful for user {user_id}")
