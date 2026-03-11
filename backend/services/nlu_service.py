@@ -175,13 +175,30 @@ class NLUExtractor:
 
     @staticmethod
     def _extract_title(msg: str, msg_lower: str) -> Optional[str]:
-        """Extract an explicit title correction from the message."""
+        """
+        Extract an explicit title correction from the message.
+
+        Patterns covered (live-log bugs fixed):
+        - Quoted string anywhere: "call it 'Sprint Review'"
+        - "call it X" / "name it X" / "rename (it) to X"
+        - "change the title to X" / "change title to X"   ← new (live-log bug)
+        - "set the title to X" / "set title to X"         ← new
+        - "update the title to X" / "update title to X"   ← new
+        - "the title is X" / "title: X" / "title should be X"
+        """
         patterns = [
             # Quoted string anywhere
             r"""["']([^"']{1,80})["']""",
             # "call it X", "name it X", "rename (it) to X", "let's call it X"
             r"(?:call\s+it|name\s+it|rename(?:\s+it)?\s+to|name(?:\s+the\s+event)?\s+to|"
             r"let(?:'s|\s+us)?\s+call\s+it)\s+(.{1,80})$",
+            # "change the title to X" / "change title to X"  (live-log bug fix)
+            r"change\s+(?:the\s+)?title\s+to\s+(.{1,80})$",
+            # "set the title to X" / "set title to X"
+            r"set\s+(?:the\s+)?title\s+(?:to\s+)?(.{1,80})$",
+            # "update the title to X" / "update title to X"
+            r"update\s+(?:the\s+)?title\s+(?:to\s+)?(.{1,80})$",
+            # "title: X" / "title should be X" / "the title is X"
             r"(?:title|entitle[sd]?)\s*:?\s*(.{1,80})$",
         ]
         for pat in patterns:
@@ -268,7 +285,13 @@ class NLUExtractor:
 
     @staticmethod
     def _has_correction_words(msg_lower: str) -> bool:
-        """Returns True if the text after 'no' contains correction content."""
+        """
+        Returns True if the text after 'no' contains correction/edit content.
+
+        Also covers "edit", "modify", "update", "i want to" so that messages
+        like "No, I would like you to edit this event" are classified as
+        MODIFY_DRAFT rather than CANCEL (group-10 stuck-state fix).
+        """
         stripped = re.sub(r"^no[,.]?\s*", "", msg_lower).strip()
         if not stripped:
             return False
@@ -278,6 +301,9 @@ class NLUExtractor:
             "instead", "at ", "tomorrow", "today",
             "morning", "evening", "noon",
             "outlook", "google", "microsoft",
+            # ── Group 10 additions: edit-intent words ────────────────────────
+            "edit", "modify", "update", "adjust", "fix",
+            "i want", "i'd like", "would like", "i would like",
         ]
         for t in triggers:
             if t in stripped:

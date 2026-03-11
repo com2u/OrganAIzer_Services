@@ -80,6 +80,23 @@ class SlotExtractor:
             if title:
                 extracted["title"] = title
                 logger.info(f"[SLOT_EXTRACT] ✓ title: '{title}'")
+
+        # ── Post-extraction: STT title cleanup ────────────────────────────────
+        # After STT (Whisper), titles sometimes arrive with leading/trailing
+        # punctuation or contain patterns that strongly suggest a mishear
+        # (e.g. "from 1011?", "call it 42", "what is").  Strip punctuation
+        # and flag suspicious titles so the agent can ask for confirmation
+        # rather than silently using a bad title.
+        if "title" in extracted:
+            cleaned, is_suspicious, reason = SlotExtractor._clean_and_validate_title(extracted["title"])
+            extracted["title"] = cleaned
+            if is_suspicious:
+                extracted["title_needs_confirmation"] = True
+                extracted["title_suspicious_reason"] = reason
+                logger.warning(
+                    "[SLOT_EXTRACT] ⚠ Suspicious STT title: '%s' — reason: %s",
+                    cleaned, reason,
+                )
         
         # ==============================================
         # TIME EXTRACTION (CRITICAL FIX: Extract both start and end times)
@@ -351,6 +368,61 @@ class SlotExtractor:
             return True
 
         return False
+
+    @staticmethod
+    def _clean_and_validate_title(title: str):
+        """
+        Post-STT title cleanup and suspicious-title detection.
+
+        Steps:
+        1. Strip leading/trailing whitespace and common punctuation artefacts
+           that Whisper often adds (? . , ! at the boundaries).
+        2. Detect patterns that strongly suggest a mishear:
+           - Starts with "from" (Whisper often outputs "from <garbled number>")
+           - Contains only digits / numbers (e.g. "1011")
+           - Contains a literal "?" (question mark in title = likely mishear)
+           - Starts with a question word (what/where/who/why/when/how)
+           - Ends with a question mark
+           - Very short after stripping (< 2 meaningful chars)
+
+        Returns:
+            Tuple (cleaned_title: str, is_suspicious: bool, reason: str)
+        """
+        # ── Step 1: Strip punctuation artefacts at boundaries ────────────────
+        cleaned = title.strip()
+        # Strip leading/trailing: ? . , ! ; : – — 
+        cleaned = re.sub(r'^[\?\.\,\!\;\:\-–—]+\s*', '', cleaned)
+        cleaned = re.sub(r'\s*[\?\.\,\!\;\:\-–—]+$', '', cleaned)
+        cleaned = cleaned.strip()
+
+        if not cleaned:
+            return title, True, "Empty after stripping punctuation"
+
+        lower = cleaned.lower()
+
+        # ── Step 2: Suspicious pattern detection ─────────────────────────────
+        # Pattern A: starts with "from" — common Whisper mishear of "call it from…"
+        if lower.startswith("from ") or lower == "from":
+            return cleaned, True, f"Title starts with 'from' — likely STT mishear: '{cleaned}'"
+
+        # Pattern B: only digits / digit-words
+        if re.fullmatch(r'[\d\s]+', cleaned):
+            return cleaned, True, f"Title is only numbers — likely STT mishear: '{cleaned}'"
+
+        # Pattern C: contains literal "?" 
+        if "?" in cleaned:
+            return cleaned, True, f"Title contains '?' — likely STT question mishear: '{cleaned}'"
+
+        # Pattern D: starts with a question word
+        question_starters = ("what ", "where ", "who ", "why ", "when ", "how ", "is ", "are ", "did ")
+        if any(lower.startswith(qs) for qs in question_starters):
+            return cleaned, True, f"Title starts with question word — likely mishear: '{cleaned}'"
+
+        # Pattern E: very short (1 char) after cleaning
+        if len(cleaned) < 2:
+            return cleaned, True, f"Title too short after cleanup: '{cleaned}'"
+
+        return cleaned, False, ""
 
     @staticmethod
     def _extract_explicit_title_correction(message: str, message_lower: str) -> Optional[str]:
