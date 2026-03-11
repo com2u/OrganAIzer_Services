@@ -67,7 +67,15 @@ class SlotExtractor:
         # ==============================================
         # TITLE EXTRACTION (highest priority)
         # ==============================================
-        if not existing.get("title"):
+        # Phase A: Explicit title corrections — run REGARDLESS of existing title.
+        # This handles "call it X", "name it X", etc. during the collecting state,
+        # even when a system default like "Meeting" is already stored.
+        explicit_title = SlotExtractor._extract_explicit_title_correction(message, message_lower)
+        if explicit_title:
+            extracted["title"] = explicit_title
+            logger.info(f"[SLOT_EXTRACT] ✓ title (explicit correction): '{explicit_title}'")
+        elif not existing.get("title"):
+            # Phase B: Normal title extraction — only when no title is locked yet.
             title = SlotExtractor._extract_title(message, message_lower)
             if title:
                 extracted["title"] = title
@@ -84,10 +92,20 @@ class SlotExtractor:
                     # Also set "time" for backward compatibility
                     extracted["time"] = time_result["start_time"]
                     logger.info(f"[SLOT_EXTRACT] ✓ start_time: {time_result['start_time']}")
-                
+
                 if time_result.get("end_time"):
                     extracted["end_time"] = time_result["end_time"]
                     logger.info(f"[SLOT_EXTRACT] ✓ end_time: {time_result['end_time']}")
+
+                # Propagate ambiguity flag — the executive agent must ask the user
+                # for clarification before creating the event.
+                if time_result.get("ambiguous"):
+                    extracted["time_ambiguous"] = True
+                    extracted["time_ambiguity_hint"] = time_result.get("ambiguity_hint", "")
+                    logger.warning(
+                        "[SLOT_EXTRACT] ⚠ ambiguous time range — agent must ask: %s",
+                        extracted["time_ambiguity_hint"],
+                    )
         
         # ==============================================
         # DATE EXTRACTION
@@ -326,111 +344,251 @@ class SlotExtractor:
         if len(title_lower) == 1:
             return True
 
+        # Titles starting with personal pronouns + article/noun are filler fragments,
+        # not real event names.  Catches "me an event", "me a meeting", etc.
+        # that slip through the exact-match check above.
+        if re.match(r'^me\s+(a|an|the)\s+', title_lower):
+            return True
+
         return False
+
+    @staticmethod
+    def _extract_explicit_title_correction(message: str, message_lower: str) -> Optional[str]:
+        """
+        Extract EXPLICIT title-setting commands from user messages.
+
+        This method runs BEFORE the existing-slot guard in extract_calendar_slots,
+        so it applies even when a title is already stored (e.g., the system
+        default "Meeting").  The patterns signal deliberate correction intent.
+
+        Supported patterns (all via re.search → works anywhere in sentence):
+        - "call it <title>"
+        - "name it <title>"
+        - "rename it to <title>" / "rename to <title>"
+        - "make the title <title>" / "make it <title>" (as title)
+        - "title: <title>" / "title should be <title>" / "title is <title>"
+
+        Examples that MUST work:
+        - "call it test frontend"               → "test frontend"
+        - "i would like you to call it test frontend" → "test frontend"
+        - "please name it Sprint Review"        → "Sprint Review"
+        - "make the title Team Sync"            → "Team Sync"
+        - "title should be Q2 Planning"         → "Q2 Planning"
+
+        Returns:
+            Extracted title string (original user casing), or None.
+        """
+        explicit_patterns = [
+            # "call it X" / "name it X" — with optional prefix words via re.search
+            r'call\s+it\s+(.+?)(?:\s*;|\s*$)',
+            r'name\s+it\s+(.+?)(?:\s*;|\s*$)',
+            # "rename it to X" / "rename to X"
+            r'rename\s+(?:it\s+)?(?:to\s+)?(.+?)(?:\s*;|\s*$)',
+            # "make the title X" / "make it title X"
+            r'make\s+(?:the\s+)?title\s+(.+?)(?:\s*;|\s*$)',
+            # "title: X" / "title should be X" / "title is X"
+            r'title\s*(?::\s*|should\s+be\s+|is\s+)(.+?)(?:\s*;|\s*$)',
+        ]
+
+        for pattern in explicit_patterns:
+            m = re.search(pattern, message, re.IGNORECASE)
+            if not m:
+                continue
+            raw = m.group(1).strip().strip("'\"").strip()
+            raw = re.sub(r'[;,.]$', '', raw).strip()
+            if 1 < len(raw) <= 80 and not SlotExtractor._is_garbage_title(raw):
+                logger.info("[TITLE_EXTRACT] Explicit title correction: '%s'", raw)
+                return raw
+
+        return None
     
     @staticmethod
-    def _extract_time_range(message: str, message_lower: str) -> Optional[Dict[str, str]]:
+    def _normalize_ampm(text: str) -> str:
         """
-        Extract start_time and end_time from message (CRITICAL FIX #1).
-        
-        Patterns with explicit end time:
-        - "from 10:00 to 18:00" → start: 10:00, end: 18:00
-        - "10:00-18:00" → start: 10:00, end: 18:00
-        - "10:00–18:00" (em dash) → start: 10:00, end: 18:00
-        - "10am to 6pm" → start: 10:00, end: 18:00
-        
-        Single time patterns:
-        - "08:00" → start: 08:00, end: None
-        - "5pm" → start: 17:00, end: None
-        - "morning" → start: 09:00, end: None
-        
+        Normalise written-out AM/PM variants to simple 'am'/'pm'.
+
+        Handles: p.m., P.M., p. m., PM, pm, a.m., A.M., a. m., AM, am
+        Called before all time-range regex so '11 p.m.' is treated as '11 pm'.
+        """
+        text = re.sub(r'\bp\s*\.\s*m\s*\.', 'pm', text, flags=re.IGNORECASE)
+        text = re.sub(r'\ba\s*\.\s*m\s*\.', 'am', text, flags=re.IGNORECASE)
+        # Remaining standalone PM/AM already handled by regex; ensure lower-case
+        return text.lower()
+
+    @staticmethod
+    def _extract_time_range(message: str, message_lower: str) -> Optional[Dict[str, Any]]:
+        """
+        Extract start_time and end_time from message.
+
+        Spoken-language support added:
+        - Normalises "p.m." / "a.m." / "P.M." to "pm" / "am" before regex
+        - Detects logically inconsistent or ambiguous ranges (e.g. "11pm till 12pm")
+          and adds an "ambiguous" key so the agent can ask for clarification
+
+        Range patterns:
+          "from 10:00 to 18:00"  →  start: 10:00, end: 18:00
+          "10am to 6pm"          →  start: 10:00, end: 18:00
+          "11 p.m. till 12 p.m." →  ambiguous (23:00→12:00 is inconsistent)
+          "11pm to midnight"     →  start: 23:00 (end extracted separately if present)
+
+        Single-time patterns:
+          "08:00"  →  start: 08:00
+          "5pm"    →  start: 17:00
+          "morning" → start: 09:00
+
         Returns:
-            Dict with start_time and optional end_time, or None if no time found
+            Dict with start_time, optional end_time, optional ambiguous:bool
+            or None if no time found.
         """
-        result = {}
-        
-        # CRITICAL: Check for time range patterns FIRST (explicit start AND end)
-        # Pattern 1: "from HH:MM to HH:MM" or "HH:MM to HH:MM"
+        result: Dict[str, Any] = {}
+
+        # Normalise p.m./a.m. variants in BOTH working strings
+        norm_lower = SlotExtractor._normalize_ampm(message_lower)
+        norm_msg   = SlotExtractor._normalize_ampm(message)
+
+        # ── RANGE PATTERNS (checked first) ───────────────────────────────────
+
+        # Pattern 1: "from HH:MM to HH:MM" (24-hour)
         range_match = re.search(
             r'(?:from\s+)?(\d{1,2}):(\d{2})\s*(?:to|until|till|-|–|—)\s*(\d{1,2}):(\d{2})',
-            message
+            norm_msg,
         )
         if range_match:
-            start_hour, start_min, end_hour, end_min = range_match.groups()
-            result["start_time"] = f"{int(start_hour):02d}:{start_min}"
-            result["end_time"] = f"{int(end_hour):02d}:{end_min}"
-            logger.info(f"[TIME_EXTRACT] Found time range: {result['start_time']} to {result['end_time']}")
+            sh, sm, eh, em = range_match.groups()
+            result["start_time"] = f"{int(sh):02d}:{sm}"
+            result["end_time"]   = f"{int(eh):02d}:{em}"
+            logger.info("[TIME_EXTRACT] Found 24h range: %s–%s", result["start_time"], result["end_time"])
             return result
-        
-        # Pattern 2: "from H:MM am/pm to H:MM am/pm" or "H:MM am/pm to H:MM am/pm"
+
+        # Pattern 2: "H[:]MM am/pm to H[:]MM am/pm"  (spoken time)
         range_match = re.search(
-            r'(?:from\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*(?:to|until|till|-|–)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)',
-            message_lower
+            r'(?:from\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*(?:to|until|till|-|–|—)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)',
+            norm_lower,
         )
         if range_match:
-            start_hour_str, start_min_str, start_ampm, end_hour_str, end_min_str, end_ampm = range_match.groups()
-            
-            # Convert start time
-            start_hour = int(start_hour_str)
-            start_min = int(start_min_str) if start_min_str else 0
-            if start_ampm == 'pm' and start_hour < 12:
-                start_hour += 12
-            elif start_ampm == 'am' and start_hour == 12:
-                start_hour = 0
-            
-            # Convert end time
-            end_hour = int(end_hour_str)
-            end_min = int(end_min_str) if end_min_str else 0
-            if end_ampm == 'pm' and end_hour < 12:
-                end_hour += 12
-            elif end_ampm == 'am' and end_hour == 12:
-                end_hour = 0
-            
-            result["start_time"] = f"{start_hour:02d}:{start_min:02d}"
-            result["end_time"] = f"{end_hour:02d}:{end_min:02d}"
-            logger.info(f"[TIME_EXTRACT] Found time range (am/pm): {result['start_time']} to {result['end_time']}")
+            s_h, s_m, s_ap, e_h, e_m, e_ap = range_match.groups()
+
+            # Convert start
+            sh = int(s_h)
+            sm = int(s_m) if s_m else 0
+            if s_ap == 'pm' and sh < 12:
+                sh += 12
+            elif s_ap == 'am' and sh == 12:
+                sh = 0
+
+            # Convert end
+            eh = int(e_h)
+            em = int(e_m) if e_m else 0
+            if e_ap == 'pm' and eh < 12:
+                eh += 12
+            elif e_ap == 'am' and eh == 12:
+                eh = 0
+
+            result["start_time"] = f"{sh:02d}:{sm:02d}"
+            result["end_time"]   = f"{eh:02d}:{em:02d}"
+
+            # ── Logical-inconsistency check ───────────────────────────────────
+            # "11 pm till 12 pm" → start=23, end=12 → end < start → ambiguous.
+            # The user likely said "12 pm" but meant "12 am" (midnight), OR they
+            # genuinely want a 13-hour block ending at noon the next day.
+            # Either way the agent must ask for clarification.
+            start_mins = sh * 60 + sm
+            end_mins   = eh * 60 + em
+            if end_mins < start_mins:
+                logger.warning(
+                    "[TIME_EXTRACT] Ambiguous time range: %s → %s (end < start, "
+                    "possible AM/PM confusion).  Will ask for clarification.",
+                    result["start_time"], result["end_time"],
+                )
+                result["ambiguous"] = True
+                result["ambiguity_hint"] = (
+                    f"Did you mean {result['start_time']} to {result['end_time']} "
+                    f"(next day / 13 h), or {result['start_time']} to "
+                    f"{eh:02d}:00 AM (midnight, 1 h)?"
+                )
+            elif start_mins == end_mins:
+                result["ambiguous"] = True
+                result["ambiguity_hint"] = (
+                    f"Start and end time are the same ({result['start_time']}). "
+                    "Did you mean a different end time?"
+                )
+
+            logger.info(
+                "[TIME_EXTRACT] Found spoken range: %s–%s  ambiguous=%s",
+                result["start_time"], result["end_time"], result.get("ambiguous", False),
+            )
             return result
-        
-        # FALLBACK: Single time extraction (no explicit end time)
-        # Pattern 3: HH:MM format (24-hour)
-        match = re.search(r'\b([01]?\d|2[0-3]):([0-5]\d)\b', message)
+
+        # ── SINGLE-TIME FALLBACK ──────────────────────────────────────────────
+
+        # Pattern 3: HH:MM (24-hour)
+        match = re.search(r'\b([01]?\d|2[0-3]):([0-5]\d)\b', norm_msg)
         if match:
             hour, minute = match.groups()
             result["start_time"] = f"{int(hour):02d}:{minute}"
-            logger.info(f"[TIME_EXTRACT] Found single time (24h): {result['start_time']}")
+            logger.info("[TIME_EXTRACT] Found single time (24h): %s", result["start_time"])
             return result
-        
-        # Pattern 4: H:MM am/pm or H am/pm
-        match = re.search(r'\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b', message_lower)
+
+        # Pattern 4: H[:]MM am/pm  or  H am/pm  (spoken)
+        match = re.search(r'\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b', norm_lower)
         if match:
-            hour_str, minute_str, ampm = match.groups()
-            hour = int(hour_str)
-            minute = int(minute_str) if minute_str else 0
-            
-            # Convert to 24-hour format
-            if ampm == 'pm' and hour < 12:
-                hour += 12
-            elif ampm == 'am' and hour == 12:
-                hour = 0
-            
-            result["start_time"] = f"{hour:02d}:{minute:02d}"
-            logger.info(f"[TIME_EXTRACT] Found single time (am/pm): {result['start_time']}")
+            h_str, m_str, ampm = match.groups()
+            h = int(h_str)
+            m = int(m_str) if m_str else 0
+            if ampm == 'pm' and h < 12:
+                h += 12
+            elif ampm == 'am' and h == 12:
+                h = 0
+            result["start_time"] = f"{h:02d}:{m:02d}"
+            logger.info("[TIME_EXTRACT] Found single spoken time: %s", result["start_time"])
             return result
-        
-        # Pattern 5: Time keywords
+
+        # Pattern 5: keyword times
         time_keywords = {
-            'morning': '09:00',
-            'noon': '12:00',
+            'morning':   '09:00',
+            'noon':      '12:00',
             'afternoon': '14:00',
-            'evening': '18:00',
-            'night': '20:00',
+            'evening':   '18:00',
+            'night':     '20:00',
         }
         for keyword, default_time in time_keywords.items():
-            if keyword in message_lower:
+            if keyword in norm_lower:
                 result["start_time"] = default_time
-                logger.info(f"[TIME_EXTRACT] Found keyword time: {result['start_time']}")
+                logger.info("[TIME_EXTRACT] Found keyword time '%s' → %s", keyword, default_time)
                 return result
-        
+
+        # Pattern 6: Fuzzy / partial AM-PM notation — "11 m", "11 p", "11 a"
+        # Handles incomplete spoken input where the user typed only one letter
+        # instead of the full "am" / "pm" suffix.
+        # Rules:
+        #   "11 p"  → likely PM   → tentative start_time=23:00 + ambiguous flag
+        #   "11 a"  → likely AM   → tentative start_time=11:00 + ambiguous flag
+        #   "11 m"  → ambiguous   → no start_time set          + ambiguous flag
+        # Must be checked LAST to avoid false positives with real am/pm patterns
+        # (Patterns 1-4 return early, so this is only reached when none matched).
+        # Word-boundary `\b` after the suffix prevents matching "11 min", "11 months".
+        fuzzy_match = re.search(r'\b(\d{1,2})\s+([apm])\b', norm_lower)
+        if fuzzy_match:
+            hour_str, suffix = fuzzy_match.group(1), fuzzy_match.group(2)
+            h = int(hour_str)
+            if 1 <= h <= 12:
+                if suffix == 'p':
+                    # Likely PM — set tentative time, still ask for confirmation
+                    start_h = (h + 12) if h < 12 else 12
+                    result["start_time"] = f"{start_h:02d}:00"
+                elif suffix == 'a':
+                    # Likely AM — set tentative time, still ask for confirmation
+                    start_h = 0 if h == 12 else h
+                    result["start_time"] = f"{start_h:02d}:00"
+                # suffix == 'm': completely ambiguous — don't set start_time
+                result["ambiguous"] = True
+                result["ambiguity_hint"] = f"Did you mean {h} AM or {h} PM?"
+                logger.info(
+                    "[TIME_EXTRACT] Fuzzy partial AM/PM: '%s %s' → ambiguous, hint: %s",
+                    hour_str, suffix, result["ambiguity_hint"],
+                )
+                return result
+
         return None if not result else result
     
     @staticmethod

@@ -10,6 +10,15 @@ interface Message {
   content: string;
   timestamp: Date;
   audioUrl?: string;
+  /** Backend response type (calendar_created, email_sent, provider_not_connected, …) */
+  responseType?: string;
+  /** Backend action_needed field — 'confirmation' shows yes/no quick-reply buttons */
+  actionNeeded?: string;
+}
+
+interface Props {
+  /** Called when the user clicks "Go to Integrations" from a provider_not_connected message */
+  onPageChange?: (page: string) => void;
 }
 
 type VoiceState = 'idle' | 'listening' | 'thinking' | 'speaking';
@@ -39,16 +48,18 @@ function toWsBase(apiBase: string): string {
 
 const SESSION_ID = `agent-${Date.now()}`;
 
+// These chips must use English phrases that the backend intent router matches deterministically.
+// German phrases fall through to the LLM general-message handler and never call the calendar/email API.
 const SUGGESTIONS = [
-  'Was ist heute auf meinem Kalender?',
-  'Zeige meine letzten E-Mails',
-  'Erstelle einen Termin für morgen 10 Uhr',
-  'Schreibe eine E-Mail an meinen Chef',
+  'What meetings do I have today?',
+  'Show my last 5 emails',
+  'Create a meeting tomorrow at 10am',
+  'Send an email to my boss',
 ];
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export default function ExecutiveAgent() {
+export default function ExecutiveAgent({ onPageChange }: Props = {}) {
   const [messages,        setMessages]        = useState<Message[]>([]);
   const [loading,         setLoading]         = useState(false);
   const [error,           setError]           = useState<string | null>(null);
@@ -160,6 +171,9 @@ export default function ExecutiveAgent() {
       const assistantMsg: Message = {
         id: makeId(), role: 'assistant', content: assistantText,
         timestamp: new Date(), audioUrl,
+        // Capture backend structured response type + action_needed for special rendering
+        responseType: data.type ?? undefined,
+        actionNeeded: data.action_needed ?? undefined,
       };
       setMessages(prev => [...prev, assistantMsg]);
       if (audioUrl) playAudio(audioUrl);
@@ -185,7 +199,9 @@ export default function ExecutiveAgent() {
   const connectVoiceWS = useCallback(() => {
     setWsStatus('connecting');
     const wsBase = toWsBase(API_BASE_URL);
-    const url = `${wsBase}/api/voice/stream?session_id=${SESSION_ID}&user_id=default_user&provider=gmail`;
+    // Use the same provider logic as text chat: prefer Gmail/Google, fall back to Outlook/Microsoft
+    const wsProvider = (!googleConnected && microsoftConnected) ? 'outlook' : 'gmail';
+    const url = `${wsBase}/api/voice/stream?session_id=${SESSION_ID}&user_id=default_user&provider=${wsProvider}`;
     addDebug('ws:connecting', { url });
     const ws = new WebSocket(url);
     wsRef.current = ws;
@@ -247,6 +263,17 @@ export default function ExecutiveAgent() {
               addDebug('tts.audio', { url: fullUrl });
             }
             break;
+          case 'stt':
+            // {"type": "stt", "status": "no_speech"|"no_audio", "reason": "..."}
+            // Emitted when the server detected silence or a too-short recording.
+            if (data.status === 'no_speech') {
+              addDebug('stt:no_speech');
+              setPartialTranscript('');
+            } else if (data.status === 'no_audio') {
+              addDebug('stt:no_audio', data.reason);
+              setVoiceError('No audio recorded — please hold the button while speaking.');
+            }
+            break;
           case 'error':
             setVoiceError(data.message ?? 'Voice-Fehler');
             addDebug('error', data.message);
@@ -280,7 +307,7 @@ export default function ExecutiveAgent() {
       setWsStatus('error');
       addDebug('ws:error');
     };
-  }, [addDebug]);
+  }, [addDebug, googleConnected, microsoftConnected]);
 
   useEffect(() => {
     voiceModeRef.current = voiceMode;
@@ -549,6 +576,63 @@ export default function ExecutiveAgent() {
                   </button>
                 )}
               </div>
+
+              {/* ── Confirmation quick-reply buttons ───────────────────── */}
+              {msg.role === 'assistant' && msg.actionNeeded === 'confirmation' && (
+                <div className="flex gap-2 mt-2 px-1">
+                  <button
+                    onClick={() => handleSend('yes')}
+                    disabled={loading}
+                    className="px-4 py-1.5 bg-green-600 text-white text-xs font-medium
+                               rounded-full hover:bg-green-700 disabled:opacity-50 transition-colors"
+                  >
+                    ✓ Ja
+                  </button>
+                  <button
+                    onClick={() => handleSend('no')}
+                    disabled={loading}
+                    className="px-4 py-1.5 bg-gray-500 text-white text-xs font-medium
+                               rounded-full hover:bg-gray-600 disabled:opacity-50 transition-colors"
+                  >
+                    ✕ Nein
+                  </button>
+                </div>
+              )}
+
+              {/* ── Calendar provider selection quick-reply ────────────── */}
+              {msg.role === 'assistant' && msg.responseType === 'calendar_provider_request' && (
+                <div className="flex gap-2 mt-2 px-1 flex-wrap">
+                  <button
+                    onClick={() => handleSend('Google Calendar')}
+                    disabled={loading}
+                    className="px-4 py-1.5 bg-blue-600 text-white text-xs font-medium
+                               rounded-full hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                  >
+                    📅 Google Calendar
+                  </button>
+                  <button
+                    onClick={() => handleSend('Outlook Calendar')}
+                    disabled={loading}
+                    className="px-4 py-1.5 bg-cyan-700 text-white text-xs font-medium
+                               rounded-full hover:bg-cyan-800 disabled:opacity-50 transition-colors"
+                  >
+                    📅 Outlook
+                  </button>
+                </div>
+              )}
+
+              {/* ── Provider not connected — deep-link to Integrations ── */}
+              {msg.role === 'assistant' && msg.responseType === 'provider_not_connected' && onPageChange && (
+                <div className="mt-2 px-1">
+                  <button
+                    onClick={() => onPageChange('integrations')}
+                    className="text-xs text-blue-600 hover:text-blue-800 underline
+                               flex items-center gap-1 transition-colors"
+                  >
+                    🔗 Integrations-Seite öffnen
+                  </button>
+                </div>
+              )}
             </div>
             {msg.role === 'user' && (
               <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center

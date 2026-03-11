@@ -47,7 +47,7 @@ export default function App() {
       </div>
 
       <main>
-        {currentPage === 'executive'    && <ExecutiveAgent />}
+        {currentPage === 'executive'    && <ExecutiveAgent onPageChange={p => setCurrentPage(p as PageType)} />}
         {currentPage === 'tts'          && <TTSPage />}
         {currentPage === 'stt'          && <STTPage />}
         {currentPage === 'image-gen'    && <ImageGenPage />}

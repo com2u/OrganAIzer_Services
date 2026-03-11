@@ -32,8 +32,17 @@ CHUNK_THRESHOLD_BYTES = 15 * 1024 * 1024
 # Maximum retries for transcription
 MAX_RETRIES = 3
 
-# Cached Whisper model instance (loaded lazily on first use)
-_whisper_model = None
+# ── Environment-driven model selection ─────────────────────────────────────
+# FILE_UPLOAD transcription: heavier model for better accuracy (default: medium)
+# VOICE / live transcription: lighter model for low latency (default: base)
+import os as _os
+UPLOAD_STT_MODEL = _os.getenv("UPLOAD_STT_MODEL", "medium")
+VOICE_STT_MODEL  = _os.getenv("VOICE_STT_MODEL",  "base")
+
+# Cached Whisper model instances (loaded lazily / eagerly)
+_whisper_model       = None   # file-upload model (medium by default)
+_voice_whisper_model = None   # voice / live-transcription model (base by default)
+
 # Cached import result: None = not yet tried, False = failed, module = success
 _whisper_module = None
 _whisper_import_error: Optional[str] = None
@@ -81,17 +90,55 @@ def _load_whisper():
 
 def get_whisper_model():
     """
-    Lazy-loads and returns the Whisper model.
-    Uses medium model for better accuracy with English and German.
+    Lazy-loads and returns the file-upload Whisper model (default: medium).
+    Model size is controlled by UPLOAD_STT_MODEL env var.
     Raises AppError(503) if whisper/torch is not available.
     """
     global _whisper_model
     if _whisper_model is None:
         whisper = _load_whisper()
-        logger.info("Loading Whisper model (medium)...")
-        _whisper_model = whisper.load_model("medium")
-        logger.info("Whisper model loaded successfully")
+        logger.info("Loading Whisper upload model (%s)...", UPLOAD_STT_MODEL)
+        _whisper_model = whisper.load_model(UPLOAD_STT_MODEL)
+        logger.info("Whisper upload model loaded successfully")
     return _whisper_model
+
+
+def get_voice_whisper_model():
+    """
+    Returns the voice / live-transcription Whisper model (default: base).
+
+    Uses a lighter model than the file-upload path so that first-time latency
+    for realtime voice mode is minimised.  Model size is controlled by the
+    VOICE_STT_MODEL env var (base | small | medium | large).
+
+    This model is pre-loaded at application startup via preload_voice_model().
+    Raises AppError(503) if whisper/torch is not available.
+    """
+    global _voice_whisper_model
+    if _voice_whisper_model is None:
+        whisper = _load_whisper()
+        logger.info("Loading Whisper voice model (%s)...", VOICE_STT_MODEL)
+        _voice_whisper_model = whisper.load_model(VOICE_STT_MODEL)
+        logger.info("Whisper voice model loaded successfully (%s)", VOICE_STT_MODEL)
+    return _voice_whisper_model
+
+
+def preload_voice_model() -> None:
+    """
+    Pre-load the voice Whisper model in a background thread at startup.
+
+    Call this from main.py's lifespan startup handler so the model is already
+    in memory before the first live voice request arrives.  Any error is logged
+    but swallowed so it does not prevent the server from starting.
+    """
+    try:
+        logger.info("[STT-PRELOAD] Starting background preload of voice model (%s)...", VOICE_STT_MODEL)
+        t0 = time.monotonic()
+        get_voice_whisper_model()
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        logger.info("[STT-PRELOAD] Voice model ready in %.0f ms", elapsed_ms)
+    except Exception as exc:
+        logger.warning("[STT-PRELOAD] Failed to preload voice model: %s (will retry on first request)", exc)
 
 
 def validate_audio_file(file: UploadFile, max_size_mb: int = 25) -> None:

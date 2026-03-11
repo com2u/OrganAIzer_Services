@@ -1,46 +1,53 @@
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 
 // https://vite.dev/config/
-export default defineConfig({
-  plugins: [react()],
-  base: '/',
-  build: {
-    outDir: 'dist',
-    sourcemap: false,
-    rollupOptions: {
-      output: {
-        manualChunks: {
-          vendor: ['react', 'react-dom', 'react-router-dom'],
+export default defineConfig(({ mode }) => {
+  // Load .env files so VITE_* variables in frontend/.env are available here
+  const env = loadEnv(mode, process.cwd(), '')
+
+  // VITE_API_BASE_URL:
+  //   Dev  → http://localhost:8000  (direct to backend; WS also works because toWsBase maps it)
+  //   Prod → "" (empty = relative; nginx proxies /api/* to backend)
+  // Override by setting VITE_API_BASE_URL in frontend/.env
+  const apiBaseUrl =
+    env.VITE_API_BASE_URL ||
+    (mode === 'production' ? '' : 'http://localhost:8000')
+
+  // VITE_API_KEY: read from .env (or OS env). Falls back to "" so the runtime
+  // || 'test-key-123' fallback in apiClient.ts activates in local dev.
+  const apiKey = env.VITE_API_KEY || ''
+
+  return {
+    plugins: [react()],
+    base: '/',
+    build: {
+      outDir: 'dist',
+      sourcemap: false,
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            vendor: ['react', 'react-dom'],
+          },
         },
       },
     },
-  },
-  server: {
-    proxy: {
-      '/api': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-        secure: false,
-        ws: true,   // ← forward WebSocket upgrades (voice mode WS)
+    server: {
+      proxy: {
+        '/api': {
+          target: 'http://localhost:8000',
+          changeOrigin: true,
+          secure: false,
+          ws: true,   // ← forward WebSocket upgrades (voice mode WS)
+        },
       },
     },
-  },
-  // Environment configuration
-  define: {
-    'import.meta.env.VITE_API_URL': process.env.NODE_ENV === 'production'
-      ? '"https://organaizer_backend.com2u.selfhost.eu"'
-      : '"http://localhost:8000/api"',
-    // VITE_API_BASE_URL drives both REST fetch() calls and the WebSocket URL
-    // (see apiClient.ts → toWsBase).  In dev we point directly at the backend
-    // so the WS base becomes ws://localhost:8000 — no Vite-proxy involvement.
-    // In prod the origin already matches the backend, so '' (relative) is fine
-    // and nginx handles /api/* → backend.
-    'import.meta.env.VITE_API_BASE_URL': process.env.NODE_ENV === 'production'
-      ? '""'
-      : '"http://localhost:8000"',
-    'import.meta.env.VITE_API_KEY': process.env.VITE_API_KEY
-      ? `"${process.env.VITE_API_KEY}"`
-      : '""',
-  },
+    // Build-time replacements — these WIN over .env auto-injection for these vars.
+    // VITE_API_BASE_URL and VITE_API_KEY are intentionally set here so the
+    // production build embeds the correct values without needing a runtime config.
+    define: {
+      'import.meta.env.VITE_API_BASE_URL': JSON.stringify(apiBaseUrl),
+      'import.meta.env.VITE_API_KEY': JSON.stringify(apiKey),
+    },
+  }
 })

@@ -18,14 +18,30 @@ function authHeaders(extra: Record<string, string> = {}): Record<string, string>
 // ── Executive Agent chat ─────────────────────────────────────────────────────
 
 export interface AgentChatResponse {
+  /** Human-readable reply text — always present */
   message: string;
   success: boolean;
+  /**
+   * Structured response type from the Executive Agent.
+   * Key values: calendar_confirmation, calendar_created, calendar_list,
+   * email_confirmation, email_sent, email_list, provider_not_connected,
+   * calendar_slot_request, email_slot_request, knowledge_answer, error
+   */
   type?: string;
+  /** Structured payload (event details, email list, etc.) */
   data?: Record<string, unknown>;
+  /** Current agent FSM state */
   agent_state?: string;
   active_task?: unknown;
+  /** Pending action awaiting user confirmation */
   pending_action?: unknown;
   last_action?: unknown;
+  /**
+   * When set, the frontend should prompt the user to act.
+   * "confirmation" → show yes/no quick-reply buttons
+   * "slot_request" → user must supply missing info (date, recipient, etc.)
+   */
+  action_needed?: string | null;
 }
 
 export async function agentChat(

@@ -78,6 +78,7 @@ function VoiceExecutiveAgent() {
 
   // ── Build WebSocket URL ─────────────────────────────────────────────────────
   const getWsUrl = useCallback((): string => {
+    // provider: use 'gmail' as default; callers should pass the real connected provider
     const params = `session_id=${sessionId}&user_id=voice_user&provider=gmail`;
     if (API_BASE_URL) {
       // Convert http(s):// → ws(s)://

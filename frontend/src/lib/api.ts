@@ -1,10 +1,16 @@
-/**
+   /**
  * API utility functions for communicating with the backend.
  * Handles all HTTP requests to the OrganAIzer Services API.
  */
 
-// Get API base URL from environment variables
+// Get API base URL and key from environment variables (set by vite.config.ts)
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+const API_KEY: string = import.meta.env.VITE_API_KEY || 'test-key-123';
+
+/** Build headers that always include X-API-Key (required by backend auth). */
+function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  return { 'X-API-Key': API_KEY, ...extra };
+}
 
 /**
  * Error structure returned by the backend API.
@@ -46,9 +52,7 @@ export async function generateSpeech(textMd: string): Promise<TTSGenerateRespons
   try {
     const response = await fetch(`${API_BASE_URL}/api/tts/generate`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ text_md: textMd }),
     });
 
@@ -105,9 +109,7 @@ export async function generateImages(request: ImageGenRequest): Promise<ImageGen
   try {
     const response = await fetch(`${API_BASE_URL}/api/image-gen/generate`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(request),
     });
 
@@ -165,9 +167,7 @@ export async function generateNanoBananaImages(request: NanoBananaRequest): Prom
   try {
     const response = await fetch(`${API_BASE_URL}/api/nano-banana/generate`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(request),
     });
 
@@ -243,6 +243,7 @@ export async function transcribeAudio(audioFile: File, language?: string): Promi
 
     const response = await fetch(`${API_BASE_URL}/api/stt/transcribe`, {
       method: 'POST',
+      headers: authHeaders(),
       body: formData,
     });
 
@@ -302,6 +303,7 @@ export async function transcribeVideo(
 
     const response = await fetch(`${API_BASE_URL}/api/video/transcribe`, {
       method: 'POST',
+      headers: authHeaders(),
       body: formData,
     });
 
@@ -385,9 +387,7 @@ export async function chatCompletion(request: ChatRequest): Promise<ChatResponse
   try {
     const response = await fetch(`${API_BASE_URL}/api/chat/completion`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(request),
     });
 
@@ -421,9 +421,7 @@ export async function getAvailableModels(): Promise<AvailableModelsResponse> {
   try {
     const response = await fetch(`${API_BASE_URL}/api/chat/models`, {
       method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
     });
 
     const data = await response.json();

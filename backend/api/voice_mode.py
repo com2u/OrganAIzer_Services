@@ -30,9 +30,11 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import tempfile
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
@@ -43,7 +45,7 @@ from services.tts_service import (
     preprocess_text_for_tts,
     synthesize_speech_to_mp3,
 )
-from services.stt_service import transcribe_audio
+from services.stt_service import get_voice_whisper_model
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,10 @@ router = APIRouter(tags=["Voice Mode"])
 # repeated STT runs. STT now fires exactly once per utterance on audio_end.
 MIN_AUDIO_BYTES = 4096  # ignore tiny/empty recordings (4 KB minimum)
 DEV_MODE        = os.getenv("VOICE_DEBUG", "false").lower() in ("true", "1", "yes")
+
+# Thread pool for CPU-bound and blocking-I/O work (ffmpeg + Whisper).
+# Using a dedicated pool avoids starving asyncio tasks on the default executor.
+_cpu_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="voice-worker")
 
 # ── Session registry for interrupt support ────────────────────────────────────
 # Maps session_id → {"interrupted": bool}
@@ -86,55 +92,57 @@ async def _send_debug(ws: WebSocket, data: dict) -> None:
         await _send(ws, "debug", data=data)
 
 
-async def _convert_webm_to_wav(webm_bytes: bytes) -> Optional[bytes]:
+def _run_ffmpeg_blocking(webm_bytes: bytes) -> Optional[bytes]:
     """
-    Convert a webm/opus buffer to 16 kHz mono wav using ffmpeg.
-    Returns wav bytes on success, or None if ffmpeg is unavailable / fails.
-    Errors are always logged with return-code and stderr so they are observable.
+    Synchronous ffmpeg conversion of webm/opus → 16 kHz mono WAV.
+    Runs in a thread pool executor to avoid blocking the asyncio event loop.
+
+    asyncio.create_subprocess_exec raises NotImplementedError on Windows
+    (ProactorEventLoop) — this approach works on all platforms.
     """
     tmp_in_path  = None
     tmp_out_path = None
     try:
-        # Write raw bytes to a temp webm file
         with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp_in:
             tmp_in.write(webm_bytes)
             tmp_in_path = tmp_in.name
-
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_out:
             tmp_out_path = tmp_out.name
 
-        # Run ffmpeg asynchronously so we don't block the event loop
-        proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-y",
-            "-i", tmp_in_path,
-            "-ac", "1",
-            "-ar", "16000",
-            "-f", "wav",
-            tmp_out_path,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-i",  tmp_in_path,
+                "-ac", "1",
+                "-ar", "16000",
+                "-f",  "wav",
+                tmp_out_path,
+            ],
+            capture_output=True,
+            timeout=30,
         )
-        _, stderr_bytes = await proc.communicate()
-
-        if proc.returncode != 0:
-            stderr_text = stderr_bytes.decode(errors="replace")[:300]
+        if result.returncode != 0:
+            stderr_text = result.stderr.decode(errors="replace")[:300]
             logger.warning(
-                "[VOICE-STT] ffmpeg conversion failed rc=%d stderr=%r",
-                proc.returncode, stderr_text,
+                "[VOICE-STT] ffmpeg rc=%d stderr=%r", result.returncode, stderr_text,
             )
             return None
 
         with open(tmp_out_path, "rb") as f:
             wav_bytes = f.read()
-
-        logger.info("[VOICE-STT] ffmpeg→wav OK  in=%d B  out=%d B", len(webm_bytes), len(wav_bytes))
+        logger.info(
+            "[VOICE-STT] ffmpeg→wav OK  in=%d B  out=%d B", len(webm_bytes), len(wav_bytes),
+        )
         return wav_bytes
 
     except FileNotFoundError:
         logger.warning("[VOICE-STT] ffmpeg not found on PATH – skipping conversion")
         return None
+    except subprocess.TimeoutExpired:
+        logger.warning("[VOICE-STT] ffmpeg timed out")
+        return None
     except Exception as exc:
-        logger.warning("[VOICE-STT] ffmpeg unexpected error: %s (%s)", type(exc).__name__, exc)
+        logger.warning("[VOICE-STT] ffmpeg error %s: %s", type(exc).__name__, exc)
         return None
     finally:
         for p in (tmp_in_path, tmp_out_path):
@@ -145,18 +153,27 @@ async def _convert_webm_to_wav(webm_bytes: bytes) -> Optional[bytes]:
                     pass
 
 
+async def _convert_webm_to_wav(webm_bytes: bytes) -> Optional[bytes]:
+    """Run ffmpeg conversion in thread executor (non-blocking, cross-platform)."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_cpu_executor, _run_ffmpeg_blocking, webm_bytes)
+
+
 async def _run_stt(audio_bytes: bytes, ws_session_id: str = "") -> str:
     """
     Run Whisper STT on the given audio bytes.
 
-    Steps:
-      1. Reject buffers below MIN_AUDIO_BYTES.
-      2. Log the first 16 bytes as hex to verify EBML/webm header.
-      3. Attempt ffmpeg webm→wav conversion (more reliable for Whisper).
-      4. Fall back to raw bytes if conversion fails.
+    Pipeline with granular latency instrumentation:
+      audio_end → [ffmpeg conversion] → stt_start → [whisper base] → transcript_ready
+
+    Uses the pre-loaded voice model (base by default) — NOT the heavier medium
+    upload model.  The model is pre-warmed at startup by preload_voice_model(),
+    so this call should not pay the torch/model-load penalty.
     """
     if not audio_bytes or len(audio_bytes) < MIN_AUDIO_BYTES:
         return ""
+
+    t0 = time.monotonic()
 
     # Log EBML header for diagnostics
     header_hex = audio_bytes[:16].hex().upper()
@@ -171,23 +188,68 @@ async def _run_stt(audio_bytes: bytes, ws_session_id: str = "") -> str:
             "file may not be valid webm  ws=%s", ws_session_id,
         )
 
-    # Convert webm→wav for robust Whisper decoding
-    wav_bytes = await _convert_webm_to_wav(audio_bytes)
+    # ── 1. ffmpeg: webm → 16kHz mono WAV (in thread executor) ────────────────
+    wav_bytes    = await _convert_webm_to_wav(audio_bytes)
+    t_ffmpeg     = time.monotonic()
+    logger.info(
+        "[VOICE-STT] [LAT] audio_end→ffmpeg_done=%.0f ms  ok=%s  ws=%s",
+        (t_ffmpeg - t0) * 1000, wav_bytes is not None, ws_session_id,
+    )
+
+    # Choose audio data: prefer converted WAV; fall back to raw for Whisper
     if wav_bytes:
-        wrapper = _AudioFileWrapper(wav_bytes, filename="voice.wav")
+        audio_data = wav_bytes
+        suffix     = ".wav"
     else:
         logger.warning(
-            "[VOICE-STT] ffmpeg conversion unavailable/failed – "
-            "passing raw bytes to Whisper  ws=%s", ws_session_id,
+            "[VOICE-STT] ffmpeg unavailable/failed – passing raw webm to Whisper  ws=%s",
+            ws_session_id,
         )
-        wrapper = _AudioFileWrapper(audio_bytes, filename="voice.webm")
+        audio_data = audio_bytes
+        suffix     = ".webm"
 
+    # ── 2. Write to temp file and run Whisper in thread executor ─────────────
+    tmp_path = None
     try:
-        transcript, _, _ = await transcribe_audio(wrapper, use_cache=False)
-        return (transcript or "").strip()
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+            f.write(audio_data)
+            tmp_path = f.name
+
+        t_stt_start = time.monotonic()
+        logger.info(
+            "[VOICE-STT] [LAT] ffmpeg_done→stt_start=%.0f ms  audio_size=%d B  ws=%s",
+            (t_stt_start - t_ffmpeg) * 1000, len(audio_data), ws_session_id,
+        )
+
+        # get_voice_whisper_model() returns the pre-loaded base model.
+        # Transcribe runs in the thread pool so it doesn't block asyncio.
+        model  = get_voice_whisper_model()
+        loop   = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            _cpu_executor, model.transcribe, tmp_path
+        )
+
+        t_done     = time.monotonic()
+        transcript = (result.get("text") or "").strip()
+        logger.info(
+            "[VOICE-STT] [LAT] stt_start→transcript_ready=%.0f ms  "
+            "total_stt=%.0f ms  len=%d  ws=%s",
+            (t_done - t_stt_start) * 1000,
+            (t_done - t0) * 1000,
+            len(transcript),
+            ws_session_id,
+        )
+        return transcript
+
     except Exception as exc:
         logger.warning("[VOICE-STT] STT error: %s  ws=%s", exc, ws_session_id)
         return ""
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
 
 
 def _is_interrupted(session_id: str) -> bool:

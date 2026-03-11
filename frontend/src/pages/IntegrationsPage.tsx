@@ -205,7 +205,7 @@ export default function IntegrationsPage() {
               </div>
               <div>
                 <h2 className="text-xl font-semibold text-gray-900">Google</h2>
-                <p className="text-sm text-gray-600">Gmail, Google Calendar, Drive</p>
+                <p className="text-sm text-gray-600">Gmail, Google Calendar</p>
                 {googleStatus?.connected ? (
                   <div className="mt-2">
                     <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
@@ -276,7 +276,7 @@ export default function IntegrationsPage() {
               </div>
               <div>
                 <h2 className="text-xl font-semibold text-gray-900">Microsoft</h2>
-                <p className="text-sm text-gray-600">Outlook, Teams, OneDrive</p>
+                <p className="text-sm text-gray-600">Outlook email &amp; calendar</p>
                 {microsoftStatus?.connected ? (
                   <div className="mt-2">
                     <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">

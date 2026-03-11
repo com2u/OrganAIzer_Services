@@ -33,19 +33,30 @@ async def lifespan(app: FastAPI):
     """
     # Startup
     logger.info("Starting OrganAIzer Services API")
-    
+
     # Ensure required directories exist
     config.ensure_directories()
     logger.info(f"TTS temporary directory: {config.TTS_TEMP_DIR}")
     logger.info(f"Image generation temporary directory: {config.IMAGE_GEN_TEMP_DIR}")
-    
-    # Note: Image generation now uses Google AI Studio (Gemini) via Node.js scripts
-    # Vertex AI initialization removed
-    
+
+    # Pre-load the voice Whisper model in a background thread so that the very
+    # first realtime voice request does NOT pay the torch + model load penalty.
+    # Uses VOICE_STT_MODEL env var (default: base).  Any failure is logged but
+    # does NOT prevent the server from starting.
+    import threading
+    from services.stt_service import preload_voice_model
+    _preload_thread = threading.Thread(
+        target=preload_voice_model,
+        daemon=True,
+        name="whisper-voice-preload",
+    )
+    _preload_thread.start()
+    logger.info("Background Whisper voice-model preload started")
+
     logger.info("Application startup complete")
-    
+
     yield
-    
+
     # Shutdown
     logger.info("Shutting down OrganAIzer Services API")
 
@@ -169,12 +180,29 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
-    
-    # Run the application with uvicorn
+    import os as _os
+
+    # BACKEND_RELOAD controls uvicorn's file-watcher.
+    #
+    # IMPORTANT: Do NOT run with reload=True when testing voice mode or the
+    # executive agent.  File-watcher reloads destroy the in-memory session
+    # dict (_sessions), reset the pending_action state, and disconnect active
+    # WebSockets — leading to ghost confirmation prompts and ~97 s latency on
+    # the first reconnect (Whisper model must be reloaded).
+    #
+    # To disable:  set BACKEND_RELOAD=false   (or just run via   uvicorn main:app --no-reload)
+    # To enable:   set BACKEND_RELOAD=true    (only for pure REST development)
+    _reload = _os.getenv("BACKEND_RELOAD", "false").lower() in ("true", "1", "yes")
+    if _reload:
+        logger.warning(
+            "⚠  uvicorn reload=True — in-memory session state will be wiped on "
+            "every file change.  Set BACKEND_RELOAD=false for voice/agent testing."
+        )
+
     uvicorn.run(
         "main:app",
         host=config.API_HOST,
         port=config.API_PORT,
-        reload=True,
+        reload=_reload,
         log_level=config.LOG_LEVEL.lower()
     )

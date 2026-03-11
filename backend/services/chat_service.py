@@ -11,8 +11,9 @@ from core.config import config
 from core.error_handling import AppError
 from models.chat import ChatMessage, ChatRequest, ChatResponse, ModelInfo, AvailableModelsResponse
 
-logger = logging.getLogger(__name__)
 
+
+logger = logging.getLogger(__name__)
 
 class ChatService:
     """Service for LLM chat completions using OpenRouter."""
@@ -54,11 +55,13 @@ class ChatService:
             messages = []
             
             # Add conversation history if provided
+            MAX_HISTORY = 6
             if request.conversation_history:
-                messages.extend([
-                    {"role": msg.role, "content": msg.content}
-                    for msg in request.conversation_history
-                ])
+               trimmed_history = request.conversation_history[-MAX_HISTORY:]
+               messages.extend([
+               {"role": msg.role, "content": msg.content}
+               for msg in trimmed_history
+                 ])
             
             # Add current user prompt
             messages.append({
@@ -75,12 +78,16 @@ class ChatService:
             }
             
             # Prepare payload
+            SAFE_MAX_TOKENS = 3000
             payload = {
                 "model": model,
                 "messages": messages,
                 "temperature": request.temperature,
-                "max_tokens": request.max_tokens
+                "max_tokens": min(request.max_tokens or SAFE_MAX_TOKENS, SAFE_MAX_TOKENS)
             }
+            logger.warning(f"[OPENROUTER DEBUG] request.max_tokens={request.max_tokens}")
+            logger.warning(f"[OPENROUTER DEBUG] payload.max_tokens={payload['max_tokens']}")
+            logger.warning(f"[OPENROUTER DEBUG] model={payload['model']}")
             
             logger.info(f"Sending request to OpenRouter with {len(messages)} messages")
             
@@ -164,6 +171,9 @@ class ChatService:
             logger.info("Fetching available models from OpenRouter")
             
             # Make API request
+
+            
+
             response = requests.get(self.models_url, headers=headers)
             response.raise_for_status()
             

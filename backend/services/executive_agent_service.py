@@ -1571,6 +1571,19 @@ Remember: You're not just executing commands - you're an intelligent companion w
             # Ask for first missing slot
             missing_slot = missing_slots[0]
             if missing_slot == "time":
+                # Special case: the user gave a partial/ambiguous time like "11 m" or "11 p".
+                # Ask for clarification instead of a generic "What time?" question.
+                if all_slots.get("time_ambiguous"):
+                    hint = all_slots.get(
+                        "time_ambiguity_hint",
+                        "Could you clarify the time? Did you mean AM or PM?"
+                    )
+                    return {
+                        "message": f"⏰ {hint}",
+                        "success": True,
+                        "type": "calendar_slot_request",
+                        "data": {"missing_slot": "time", "current_slots": all_slots}
+                    }
                 return {
                     "message": f"📅 I'm creating an event '{all_slots.get('title')}' on {all_slots.get('date')}. What time should it be?",
                     "success": True,
