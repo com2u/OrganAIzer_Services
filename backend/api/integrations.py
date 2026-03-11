@@ -43,6 +43,49 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/integrations", tags=["Integrations"])
 
+
+# ---------------------------------------------------------------------------
+# Calendar helpers (shared by Google + Microsoft endpoints)
+# ---------------------------------------------------------------------------
+
+def _calendar_timezone() -> str:
+    """Return the configured timezone name (defaults to 'Europe/Berlin').
+    Used in every calendar create/update payload so events are created in the
+    user's local time zone rather than UTC."""
+    return os.getenv("TIMEZONE", "Europe/Berlin")
+
+
+def _validate_calendar_times(start: str, end: str) -> None:
+    """Raise HTTP 400 if end <= start or if either datetime cannot be parsed.
+
+    Accepts ISO 8601 strings with or without a timezone offset.
+    This guard prevents invalid payloads from ever reaching the provider APIs.
+    """
+    try:
+        # Strip trailing 'Z' and normalise offset so fromisoformat works in 3.10
+        start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        end_dt   = datetime.fromisoformat(end.replace("Z", "+00:00"))
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "INVALID_DATETIME",
+                "message": f"Cannot parse start/end datetime: {exc}",
+                "start": start,
+                "end": end,
+            },
+        )
+    if end_dt <= start_dt:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "INVALID_TIME_RANGE",
+                "message": "Event end time must be after start time.",
+                "start": start,
+                "end": end,
+            },
+        )
+
 # OAuth state storage (in production, use Redis or database)
 # Each entry: { "user_id": str, "timestamp": datetime }
 _oauth_states: dict = {}
@@ -413,22 +456,27 @@ async def google_calendar_create_event(
             scopes=token_data.get("scopes")
         )
         
+        # Validate: end must be after start
+        _validate_calendar_times(request.start, request.end)
+
+        tz_name = _calendar_timezone()
+
         # Build Calendar API service
         service = build('calendar', 'v3', credentials=credentials)
-        
-        # Create event body
+
+        # Create event body — use configured timezone, never hardcode UTC
         event_body = {
             'summary': request.summary,
             'start': {
                 'dateTime': request.start,
-                'timeZone': 'UTC',
+                'timeZone': tz_name,
             },
             'end': {
                 'dateTime': request.end,
-                'timeZone': 'UTC',
+                'timeZone': tz_name,
             },
         }
-        
+
         # Add optional fields
         if request.description:
             event_body['description'] = request.description
@@ -436,7 +484,7 @@ async def google_calendar_create_event(
             event_body['location'] = request.location
         if request.attendees:
             event_body['attendees'] = [{'email': email} for email in request.attendees]
-        
+
         # Create the event
         created_event = service.events().insert(
             calendarId='primary',
@@ -457,9 +505,12 @@ async def google_calendar_create_event(
             start=start_time,
             end=end_time,
             location=created_event.get('location'),
-            attendees=[att.get('email') for att in created_event.get('attendees', [])] if created_event.get('attendees') else None
+            attendees=[att.get('email') for att in created_event.get('attendees', [])] if created_event.get('attendees') else None,
+            htmlLink=created_event.get('htmlLink'),
         )
-        
+
+    except HTTPException:
+        raise
     except HttpError as e:
         logger.error(f"Google Calendar API error: {e}")
         if e.resp.status in [401, 403]:
@@ -488,6 +539,171 @@ async def google_calendar_create_event(
                 "message": f"Failed to create calendar event: {str(e)}",
                 "details": {"status": "error"}
             }
+        )
+
+
+@router.patch("/google/calendar/events/{event_id}", response_model=CalendarEvent)
+async def google_calendar_update_event(
+    event_id: str,
+    request: CalendarEventCreateRequest,
+    user_id: str = Query("default_user", description="User ID"),
+):
+    """
+    Update an existing Google Calendar event (PATCH — partial update).
+
+    Only fields present in the request body are changed.
+    Requires prior Google OAuth (calendar scope).
+    """
+    try:
+        token_storage = get_token_storage()
+        token_data = token_storage.load_tokens(user_id, "google")
+        if not token_data:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "code": "NOT_AUTHENTICATED",
+                    "message": "Google account not connected. Please connect your Google account first.",
+                    "action": "CONNECT_GOOGLE",
+                },
+            )
+
+        credentials = Credentials(
+            token=token_data.get("access_token"),
+            refresh_token=token_data.get("refresh_token"),
+            token_uri=token_data.get("token_uri"),
+            client_id=token_data.get("client_id"),
+            client_secret=token_data.get("client_secret"),
+            scopes=token_data.get("scopes"),
+        )
+        service = build("calendar", "v3", credentials=credentials)
+
+        patch_body: dict = {}
+        tz_name = _calendar_timezone()
+
+        if request.summary:
+            patch_body["summary"] = request.summary
+        if request.start and request.end:
+            _validate_calendar_times(request.start, request.end)
+            patch_body["start"] = {"dateTime": request.start, "timeZone": tz_name}
+            patch_body["end"]   = {"dateTime": request.end,   "timeZone": tz_name}
+        elif request.start:
+            patch_body["start"] = {"dateTime": request.start, "timeZone": tz_name}
+        elif request.end:
+            patch_body["end"]   = {"dateTime": request.end,   "timeZone": tz_name}
+        if request.description is not None:
+            patch_body["description"] = request.description
+        if request.location is not None:
+            patch_body["location"] = request.location
+        if request.attendees is not None:
+            patch_body["attendees"] = [{"email": e} for e in request.attendees]
+
+        updated_event = service.events().patch(
+            calendarId="primary", eventId=event_id, body=patch_body
+        ).execute()
+
+        logger.info(f"✅ Updated Google Calendar event {event_id} for user {user_id}")
+        start_time = updated_event["start"].get("dateTime", updated_event["start"].get("date"))
+        end_time   = updated_event["end"].get("dateTime", updated_event["end"].get("date"))
+        return CalendarEvent(
+            id=updated_event.get("id"),
+            summary=updated_event.get("summary"),
+            description=updated_event.get("description"),
+            start=start_time,
+            end=end_time,
+            location=updated_event.get("location"),
+            attendees=[a.get("email") for a in updated_event.get("attendees", [])] or None,
+        )
+
+    except HTTPException:
+        raise
+    except HttpError as e:
+        logger.error(f"Google Calendar update error: {e}")
+        if e.resp.status in (401, 403):
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "code": "AUTHENTICATION_REQUIRED",
+                    "message": "Google Calendar access expired. Please reconnect your Google account.",
+                    "action": "RECONNECT_GOOGLE",
+                },
+            )
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "CALENDAR_API_ERROR", "message": f"Failed to update event: {str(e)}"},
+        )
+    except Exception as e:
+        logger.error(f"Error updating Google Calendar event: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "INTERNAL_ERROR", "message": f"Failed to update calendar event: {str(e)}"},
+        )
+
+
+@router.delete("/google/calendar/events/{event_id}")
+async def google_calendar_delete_event(
+    event_id: str,
+    user_id: str = Query("default_user", description="User ID"),
+):
+    """
+    Delete a Google Calendar event (DELETE).
+
+    Returns 200 with {"status": "deleted", "event_id": event_id} on success.
+    Requires prior Google OAuth (calendar scope).
+    """
+    try:
+        token_storage = get_token_storage()
+        token_data = token_storage.load_tokens(user_id, "google")
+        if not token_data:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "code": "NOT_AUTHENTICATED",
+                    "message": "Google account not connected. Please connect your Google account first.",
+                    "action": "CONNECT_GOOGLE",
+                },
+            )
+
+        credentials = Credentials(
+            token=token_data.get("access_token"),
+            refresh_token=token_data.get("refresh_token"),
+            token_uri=token_data.get("token_uri"),
+            client_id=token_data.get("client_id"),
+            client_secret=token_data.get("client_secret"),
+            scopes=token_data.get("scopes"),
+        )
+        service = build("calendar", "v3", credentials=credentials)
+
+        service.events().delete(calendarId="primary", eventId=event_id).execute()
+        logger.info(f"✅ Deleted Google Calendar event {event_id} for user {user_id}")
+        return {"status": "deleted", "event_id": event_id}
+
+    except HTTPException:
+        raise
+    except HttpError as e:
+        logger.error(f"Google Calendar delete error: {e}")
+        if e.resp.status in (401, 403):
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "code": "AUTHENTICATION_REQUIRED",
+                    "message": "Google Calendar access expired. Please reconnect your Google account.",
+                    "action": "RECONNECT_GOOGLE",
+                },
+            )
+        if e.resp.status == 404:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "EVENT_NOT_FOUND", "message": f"Calendar event {event_id} not found."},
+            )
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "CALENDAR_API_ERROR", "message": f"Failed to delete event: {str(e)}"},
+        )
+    except Exception as e:
+        logger.error(f"Error deleting Google Calendar event: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "INTERNAL_ERROR", "message": f"Failed to delete calendar event: {str(e)}"},
         )
 
 
@@ -1083,11 +1299,13 @@ async def microsoft_calendar_create_event(
     Requires prior authentication via /outlook/auth/start.
     """
     try:
+        _validate_calendar_times(request.start, request.end)
         access_token = _ms_get_token(user_id)
+        tz_name = _calendar_timezone()
         body = {
             "subject": request.summary,
-            "start": {"dateTime": request.start, "timeZone": "UTC"},
-            "end": {"dateTime": request.end, "timeZone": "UTC"},
+            "start": {"dateTime": request.start, "timeZone": tz_name},
+            "end": {"dateTime": request.end, "timeZone": tz_name},
         }
         if request.description:
             body["body"] = {"contentType": "Text", "content": request.description}
@@ -1127,13 +1345,18 @@ async def microsoft_calendar_update_event(
     """
     try:
         access_token = _ms_get_token(user_id)
+        tz_name = _calendar_timezone()
         body: dict = {}
         if request.summary:
             body["subject"] = request.summary
-        if request.start:
-            body["start"] = {"dateTime": request.start, "timeZone": "UTC"}
-        if request.end:
-            body["end"] = {"dateTime": request.end, "timeZone": "UTC"}
+        if request.start and request.end:
+            _validate_calendar_times(request.start, request.end)
+            body["start"] = {"dateTime": request.start, "timeZone": tz_name}
+            body["end"]   = {"dateTime": request.end,   "timeZone": tz_name}
+        elif request.start:
+            body["start"] = {"dateTime": request.start, "timeZone": tz_name}
+        elif request.end:
+            body["end"]   = {"dateTime": request.end,   "timeZone": tz_name}
         if request.description is not None:
             body["body"] = {"contentType": "Text", "content": request.description}
         if request.location is not None:

@@ -35,6 +35,9 @@ class CalendarEvent(BaseModel):
     end: str = Field(..., description="Event end time (ISO 8601)")
     location: Optional[str] = Field(None, description="Event location")
     attendees: Optional[List[str]] = Field(None, description="List of attendee email addresses")
+    # Google Calendar returns an HTML link to the event; included here so the
+    # executive agent can surface "Open in Calendar" links in confirmation messages.
+    htmlLink: Optional[str] = Field(None, description="URL to open the event in the provider's calendar UI")
 
 
 class CalendarEventsResponse(BaseModel):
