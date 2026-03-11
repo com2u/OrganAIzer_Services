@@ -71,6 +71,17 @@ def normalize_markdown_to_text(markdown_text: str) -> str:
     # Remove blockquotes (>)
     text = re.sub(r'^>\s+', '', text, flags=re.MULTILINE)
     
+    # Strip emoji and other pictographic symbols (covers all Unicode emoji blocks)
+    text = re.sub(
+        u"[\U00002600-\U000027BF"
+        u"\U0001F300-\U0001F9FF"
+        u"\U0001FA00-\U0001FAFF"
+        u"\U0000FE00-\U0000FE0F"
+        u"\U0000200D]+",
+        "",
+        text,
+    )
+
     # Clean up multiple spaces
     text = re.sub(r' +', ' ', text)
     

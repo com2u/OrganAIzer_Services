@@ -1,7 +1,7 @@
 """
 Realtime Voice Mode WebSocket endpoint for Executive AI.
 
-WebSocket URL: /api/voice/stream?session_id=...&user_id=...&provider=...
+WebSocket URL: /api/voice/stream?session_id=...&user_id=...&calendar_provider=...&mail_provider=...
 
 Protocol (client → server):
   {"type": "audio_start"}            user pressed mic button
@@ -271,10 +271,11 @@ def _set_interrupt(session_id: str) -> None:
 
 @router.websocket("/stream")
 async def voice_stream(
-    websocket: WebSocket,
-    session_id: str = Query("default"),
-    user_id:    str = Query("default_user"),
-    provider:   str = Query("gmail"),
+    websocket:         WebSocket,
+    session_id:        str = Query("default"),
+    user_id:           str = Query("default_user"),
+    calendar_provider: str = Query("google"),
+    mail_provider:     str = Query("gmail"),
 ):
     """
     WebSocket endpoint: realtime voice conversation with Executive AI.
@@ -306,7 +307,8 @@ async def voice_stream(
             "ws_session_id": ws_session_id,
             "session_id": session_id,
             "user_id": user_id,
-            "provider": provider,
+            "calendar_provider": calendar_provider,
+            "mail_provider": mail_provider,
             "dev_mode": DEV_MODE,
         })
 
@@ -441,7 +443,9 @@ async def voice_stream(
                     ai_resp = await agent.process_message(
                         user_message=transcript,
                         user_id=user_id,
-                        provider=provider,
+                        provider=calendar_provider,
+                        calendar_provider=calendar_provider,
+                        mail_provider=mail_provider,
                     )
                     reply_text = ai_resp.get("message", "") or ""
                 except Exception as exc:
