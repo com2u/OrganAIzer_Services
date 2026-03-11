@@ -315,7 +315,8 @@ async def google_disconnect(user_id: str = Query("default_user")):
 async def google_calendar_list_events(
     user_id: str = Query("default_user", description="User ID"),
     max_results: int = Query(10, description="Maximum number of events to return"),
-    time_min: Optional[str] = Query(None, description="Lower bound for event start time (ISO 8601)")
+    time_min: Optional[str] = Query(None, description="Lower bound for event start time (ISO 8601)"),
+    time_max: Optional[str] = Query(None, description="Upper bound for event end time (ISO 8601)"),
 ):
     """
     List Google Calendar events.
@@ -355,14 +356,19 @@ async def google_calendar_list_events(
         if not time_min:
             time_min = datetime.utcnow().isoformat() + 'Z'
         
+        # Build list() kwargs — only pass timeMax when provided
+        list_kwargs: dict = {
+            "calendarId": "primary",
+            "timeMin": time_min,
+            "maxResults": max_results,
+            "singleEvents": True,
+            "orderBy": "startTime",
+        }
+        if time_max:
+            list_kwargs["timeMax"] = time_max
+
         # Call Calendar API
-        events_result = service.events().list(
-            calendarId='primary',
-            timeMin=time_min,
-            maxResults=max_results,
-            singleEvents=True,
-            orderBy='startTime'
-        ).execute()
+        events_result = service.events().list(**list_kwargs).execute()
         
         events = events_result.get('items', [])
         
