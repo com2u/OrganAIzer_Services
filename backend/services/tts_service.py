@@ -1,19 +1,66 @@
 """
 Text-to-Speech service module.
 Handles markdown normalization, language detection, text preprocessing, and speech synthesis.
+
+TTS BACKEND PRIORITY:
+  1. edge-tts  (Microsoft Edge TTS — free, no API key, ~200ms latency)
+  2. gTTS      (Google TTS — fallback only, 5-7 s latency)
 """
 
+import asyncio
+import concurrent.futures
 import re
 import uuid
 import logging
 from pathlib import Path
-from typing import Tuple
-from gtts import gTTS
+from typing import Tuple, Optional
 from langdetect import detect, LangDetectException
 from core.config import config
 from core.error_handling import AppError
 
 logger = logging.getLogger(__name__)
+
+
+# ===========================================================================
+# EDGE-TTS VOICE MAP
+# Maps ISO 639-1 language codes -> Microsoft Edge TTS neural voice names.
+# Only primary voices are listed; all others fall back to DEFAULT_EDGE_TTS_VOICE.
+# ===========================================================================
+EDGE_TTS_VOICE_MAP: dict = {
+    "en": "en-US-AriaNeural",
+    "de": "de-DE-KatjaNeural",
+    "fr": "fr-FR-DeniseNeural",
+    "es": "es-ES-ElviraNeural",
+    "it": "it-IT-ElsaNeural",
+    "pt": "pt-BR-FranciscaNeural",
+    "nl": "nl-NL-ColetteNeural",
+    "pl": "pl-PL-ZofiaNeural",
+    "ru": "ru-RU-SvetlanaNeural",
+    "ja": "ja-JP-NanamiNeural",
+    "zh": "zh-CN-XiaoxiaoNeural",
+    "ko": "ko-KR-SunHiNeural",
+    "ar": "ar-SA-ZariyahNeural",
+    "tr": "tr-TR-EmelNeural",
+    "sv": "sv-SE-SofieNeural",
+    "da": "da-DK-ChristelNeural",
+    "fi": "fi-FI-NooraNeural",
+    "nb": "nb-NO-PernilleNeural",
+    "cs": "cs-CZ-VlastaNeural",
+    "sk": "sk-SK-ViktoriaNeural",
+    "hu": "hu-HU-NoemiNeural",
+    "ro": "ro-RO-AlinaNeural",
+    "bg": "bg-BG-KalinaNeural",
+    "hr": "hr-HR-GabrijelaNeural",
+    "uk": "uk-UA-PolinaNeural",
+    "el": "el-GR-AthinaNeural",
+    "he": "he-IL-HilaNeural",
+    "vi": "vi-VN-HoaiMyNeural",
+    "th": "th-TH-PremwadeeNeural",
+    "id": "id-ID-GadisNeural",
+    "ms": "ms-MY-YasminNeural",
+}
+
+DEFAULT_EDGE_TTS_VOICE = "en-US-AriaNeural"
 
 
 def normalize_markdown_to_text(markdown_text: str) -> str:
@@ -173,18 +220,12 @@ def preprocess_text_for_tts(text: str, language: str = "en") -> str:
         processed_text = re.sub(abbr, expansion, processed_text, flags=re.IGNORECASE)
     
     # Handle currency symbols with numbers
-    # €123 -> 123 euros
     processed_text = re.sub(r'€\s*(\d+(?:[.,]\d+)?)', r'\1 euros', processed_text)
-    # $123 -> 123 dollars
     processed_text = re.sub(r'\$\s*(\d+(?:[.,]\d+)?)', r'\1 dollars', processed_text)
-    # £123 -> 123 pounds
     processed_text = re.sub(r'£\s*(\d+(?:[.,]\d+)?)', r'\1 pounds', processed_text)
     
     # Handle percentages: 50% -> 50 percent
     processed_text = re.sub(r'(\d+(?:[.,]\d+)?)\s*%', r'\1 percent', processed_text)
-    
-    # Handle basic date formats: 12/31/2023 -> December 31st 2023
-    # This is a simple implementation; more sophisticated handling could be added
     
     # Handle times: 3:30 PM -> 3 30 PM (numbers will be read separately)
     processed_text = re.sub(r'(\d+):(\d+)', r'\1 \2', processed_text)
@@ -196,60 +237,127 @@ def preprocess_text_for_tts(text: str, language: str = "en") -> str:
     return processed_text.strip()
 
 
+# ===========================================================================
+# EDGE-TTS SYNTHESIS (primary — fast path)
+# ===========================================================================
+
+def _run_edge_tts_in_thread(text: str, voice: str, file_path: str) -> None:
+    """
+    Execute edge-tts synthesis in a dedicated OS thread so it can safely
+    create its own asyncio event loop without interfering with the FastAPI
+    / uvicorn event loop running on the main thread.
+
+    This is the correct pattern for calling async libraries from within
+    sync code that may itself be invoked from an async server context.
+    """
+    async def _async_synthesize() -> None:
+        import edge_tts  # lazy import — keeps startup clean if not installed
+        communicate = edge_tts.Communicate(text=text, voice=voice)
+        await communicate.save(file_path)
+
+    # asyncio.run() always creates a *new* event loop — safe inside a thread
+    asyncio.run(_async_synthesize())
+
+
+def _synthesize_with_edge_tts(text: str, language: str, file_path: str) -> None:
+    """
+    Synthesize speech using Microsoft Edge TTS and write MP3 to *file_path*.
+
+    Voice selection: EDGE_TTS_VOICE_MAP[language] or DEFAULT_EDGE_TTS_VOICE.
+    Execution: spawns a ThreadPoolExecutor worker so asyncio.run() won't clash
+    with the running server event loop.
+
+    Raises on any failure so the caller can fall back to gTTS.
+    """
+    # Resolve voice — use primary language tag (before any '-' suffix)
+    lang_primary = language.split("-")[0].lower()
+    voice = EDGE_TTS_VOICE_MAP.get(lang_primary, DEFAULT_EDGE_TTS_VOICE)
+    logger.info("[EDGE_TTS] Using voice '%s' for language '%s'", voice, language)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_run_edge_tts_in_thread, text, voice, file_path)
+        # Raise immediately if synthesis failed
+        future.result(timeout=15)  # 15-second hard cap
+
+
+# ===========================================================================
+# GTTS FALLBACK (only if edge-tts fails)
+# ===========================================================================
+
+def _synthesize_with_gtts(text: str, language: str, file_path: str) -> None:
+    """Synthesize speech using gTTS (slow fallback — 5–7 s)."""
+    from gtts import gTTS  # lazy import
+    tts = gTTS(text=text, lang=language, slow=False)
+    tts.save(file_path)
+
+
+# ===========================================================================
+# PUBLIC API
+# ===========================================================================
+
 def synthesize_speech_to_mp3(text: str, language: str) -> str:
     """
-    Synthesizes speech from text and saves it as an MP3 file.
-    Uses Google Text-to-Speech (gTTS) to generate audio.
-    Returns a unique identifier that can be used to retrieve the file.
-    
+    Synthesize speech from *text* and save as MP3.
+
+    Backend priority:
+      1. edge-tts  (~200 ms, Microsoft Edge TTS — free, no API key)
+      2. gTTS      (~5-7 s,  fallback only)
+
+    Markdown and emoji stripping MUST have been applied to *text* before
+    calling this function (see normalize_markdown_to_text).
+
     Args:
-        text: Preprocessed text to convert to speech
-        language: ISO language code for TTS voice selection
-        
+        text:     Preprocessed plain text (no markdown, no emoji).
+        language: ISO 639-1 language code (e.g. 'en', 'de').
+
     Returns:
-        Unique identifier (UUID) for the generated audio file
-        
+        UUID string — use to retrieve the generated .mp3 file.
+
     Raises:
-        AppError: If speech synthesis or file saving fails
+        AppError: when both backends fail.
     """
-    logger.info(f"Starting speech synthesis for language: {language}")
-    
-    if not text or len(text.strip()) == 0:
+    logger.info("[TTS] synthesize_speech_to_mp3 — language=%s, len=%d", language, len(text))
+
+    if not text or not text.strip():
         raise AppError(
             code="INVALID_INPUT",
             message="Text is empty, cannot generate speech",
-            http_status=400
+            http_status=400,
         )
-    
+
+    # Generate unique ID and file path
+    audio_id = str(uuid.uuid4())
+    temp_dir = Path(config.TTS_TEMP_DIR)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    file_path = str(temp_dir / f"{audio_id}.mp3")
+
+    # ── PRIMARY: edge-tts ────────────────────────────────────────────────────
+    edge_error: Optional[Exception] = None
     try:
-        # Generate unique ID for this audio file
-        audio_id = str(uuid.uuid4())
-        
-        # Ensure TTS temp directory exists
-        temp_dir = Path(config.TTS_TEMP_DIR)
-        temp_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Generate file path
-        file_path = temp_dir / f"{audio_id}.mp3"
-        
-        logger.info(f"Generating speech using gTTS for {len(text)} characters")
-        
-        # Generate speech using gTTS
-        # gTTS automatically handles the language parameter
-        tts = gTTS(text=text, lang=language, slow=False)
-        
-        # Save to MP3 file
-        tts.save(str(file_path))
-        
-        logger.info(f"Speech synthesis complete, saved to: {file_path}")
-        logger.info(f"Audio ID: {audio_id}")
-        
+        logger.info("[TTS] Attempting edge-tts synthesis (%d chars)", len(text))
+        _synthesize_with_edge_tts(text, language, file_path)
+        logger.info("[TTS] edge-tts synthesis complete → audio_id=%s", audio_id)
         return audio_id
-        
-    except Exception as e:
-        logger.error(f"Speech synthesis failed: {str(e)}", exc_info=True)
+    except Exception as exc:
+        edge_error = exc
+        logger.warning(
+            "[TTS] edge-tts failed (%s: %s) — falling back to gTTS",
+            type(exc).__name__, exc,
+        )
+
+    # ── FALLBACK: gTTS ───────────────────────────────────────────────────────
+    try:
+        logger.info("[TTS] Attempting gTTS synthesis (%d chars)", len(text))
+        _synthesize_with_gtts(text, language, file_path)
+        logger.info("[TTS] gTTS synthesis complete (fallback) → audio_id=%s", audio_id)
+        return audio_id
+    except Exception as gtts_exc:
+        logger.error(
+            "[TTS] Both backends failed. edge-tts: %s | gTTS: %s",
+            edge_error, gtts_exc,
+        )
         raise AppError(
             code="TTS_GENERATION_FAILED",
-            message=f"Failed to generate speech: {str(e)}",
-            http_status=500
+            message=f"Failed to generate speech (edge-tts: {edge_error}; gTTS: {gtts_exc})",
+            http_status=500,
         )

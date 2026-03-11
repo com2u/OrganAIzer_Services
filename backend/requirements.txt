@@ -13,6 +13,9 @@ python-multipart==0.0.20
 python-dotenv==1.0.0
 
 # Text-to-Speech
+# Primary: edge-tts — Microsoft Edge TTS, free, no API key, ~200 ms latency
+edge-tts>=6.1.0
+# Fallback: gTTS — Google TTS, slower (~5-7 s), kept as backup
 gTTS==2.4.0
 
 # Language detection
