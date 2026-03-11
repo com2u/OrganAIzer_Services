@@ -198,17 +198,27 @@ export default function ExecutiveAgent({ onPageChange }: Props = {}) {
     vmStreamRef.current = null;
   }, []);
 
+  // Guard: prevent concurrent reconnect attempts
+  const reconnectingRef = useRef(false);
+
   const connectVoiceWS = useCallback(() => {
+    // Already connected or connecting — skip to prevent reconnect storm
+    if (reconnectingRef.current) return;
+    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+    reconnectingRef.current = true;
     setWsStatus('connecting');
     const wsBase = toWsBase(API_BASE_URL);
-    // Use the same provider logic as text chat: prefer Gmail/Google, fall back to Outlook/Microsoft
-    const wsProvider = (!googleConnected && microsoftConnected) ? 'outlook' : 'gmail';
-    const url = `${wsBase}/api/voice/stream?session_id=${SESSION_ID}&user_id=default_user&provider=${wsProvider}`;
+    // FIX: was `provider=` — backend expects `calendar_provider=` and `mail_provider=`
+    // With wrong param names FastAPI used defaults (google/gmail) for all users
+    const calProv  = (!googleConnected && microsoftConnected) ? 'outlook' : 'google';
+    const mailProv = (!googleConnected && microsoftConnected) ? 'outlook' : 'gmail';
+    const url = `${wsBase}/api/voice/stream?session_id=${SESSION_ID}&user_id=default_user&calendar_provider=${calProv}&mail_provider=${mailProv}`;
     addDebug('ws:connecting', { url });
     const ws = new WebSocket(url);
     wsRef.current = ws;
 
     ws.onopen = () => {
+      reconnectingRef.current = false;
       setWsStatus('open');
       addDebug('ws:open');
     };
@@ -222,10 +232,15 @@ export default function ExecutiveAgent({ onPageChange }: Props = {}) {
             setWsStatus('open');
             addDebug('ws:ready');
             break;
-          case 'state':
-            setVoiceState(data.state as VoiceState);
+          case 'state': {
+            // Validate before applying — unknown states break voiceColor/voiceLabel/voiceEmoji
+            const VALID: VoiceState[] = ['idle', 'listening', 'thinking', 'speaking'];
+            if (VALID.includes(data.state as VoiceState)) {
+              setVoiceState(data.state as VoiceState);
+            }
             addDebug('state', data.state);
             break;
+          }
           case 'stt.partial':
             setPartialTranscript(data.text ?? '');
             break;
@@ -257,11 +272,17 @@ export default function ExecutiveAgent({ onPageChange }: Props = {}) {
                 : `${API_BASE_URL}${data.audio_url}`;
               const audio = new Audio(fullUrl);
               audioRef.current = audio;
+              // Defensive: ensure UI shows "speaking" even if state:speaking WS frame was
+              // delayed or missed (race condition between TTS synthesis and state broadcast)
+              setVoiceState('speaking');
               audio.onended = () => {
                 setVoiceState('idle');
                 addDebug('tts:ended');
               };
-              audio.play().catch(e => addDebug('tts:play_err', String(e)));
+              audio.play().catch(e => {
+                setVoiceState('idle');
+                addDebug('tts:play_err', String(e));
+              });
               addDebug('tts.audio', { url: fullUrl });
             }
             break;
@@ -301,11 +322,14 @@ export default function ExecutiveAgent({ onPageChange }: Props = {}) {
     };
 
     ws.onclose = ev => {
+      reconnectingRef.current = false;
       setWsStatus('disconnected');
       addDebug('ws:close', { code: ev.code });
-      if (voiceModeRef.current) setTimeout(connectVoiceWS, 2000);
+      // Only reconnect if still in voice mode AND not a user-initiated close
+      if (voiceModeRef.current && ev.code !== 1000) setTimeout(connectVoiceWS, 2000);
     };
     ws.onerror = () => {
+      reconnectingRef.current = false;
       setWsStatus('error');
       addDebug('ws:error');
     };
@@ -338,6 +362,24 @@ export default function ExecutiveAgent({ onPageChange }: Props = {}) {
     addDebug('interrupt:sent');
   }, [addDebug]);
 
+  // Detect best supported MIME at call-time (Safari needs audio/mp4, others prefer opus)
+  const getSupportedMime = (): string => {
+    const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
+    for (const t of candidates) {
+      if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(t)) return t;
+    }
+    return '';
+  };
+
+  // Prevent double-confirm: a ref that is set synchronously on first click,
+  // before the async handleSend resolves, so a second click in the same tick is blocked.
+  const confirmingRef = useRef(false);
+  const handleConfirm = useCallback((answer: string) => {
+    if (confirmingRef.current || loading) return;
+    confirmingRef.current = true;
+    handleSend(answer).finally(() => { confirmingRef.current = false; });
+  }, [handleSend, loading]);
+
   const startVmSpeaking = useCallback(async () => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     // Interrupt any ongoing TTS
@@ -347,7 +389,10 @@ export default function ExecutiveAgent({ onPageChange }: Props = {}) {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       vmStreamRef.current = stream;
-      const mr = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      // FIX: was hardcoded 'audio/webm' — throws DOMException on Safari (unsupported)
+      const chosenMime = getSupportedMime();
+      const recOpts: MediaRecorderOptions = chosenMime ? { mimeType: chosenMime } : {};
+      const mr = new MediaRecorder(stream, recOpts);
       vmMediaRecorderRef.current = mr;
       mr.ondataavailable = e => {
         if (e.data.size > 0 && wsRef.current?.readyState === WebSocket.OPEN) {
@@ -580,10 +625,12 @@ export default function ExecutiveAgent({ onPageChange }: Props = {}) {
               </div>
 
               {/* ── Confirmation quick-reply buttons ───────────────────── */}
+              {/* Uses handleConfirm (not handleSend) to prevent double-submit race:    */}
+              {/* confirmingRef is set synchronously before the async fetch begins.     */}
               {msg.role === 'assistant' && msg.actionNeeded === 'confirmation' && (
                 <div className="flex gap-2 mt-2 px-1">
                   <button
-                    onClick={() => handleSend('yes')}
+                    onClick={() => handleConfirm('yes')}
                     disabled={loading}
                     className="px-4 py-1.5 bg-green-600 text-white text-xs font-medium
                                rounded-full hover:bg-green-700 disabled:opacity-50 transition-colors"
@@ -591,7 +638,7 @@ export default function ExecutiveAgent({ onPageChange }: Props = {}) {
                     ✓ Ja
                   </button>
                   <button
-                    onClick={() => handleSend('no')}
+                    onClick={() => handleConfirm('no')}
                     disabled={loading}
                     className="px-4 py-1.5 bg-gray-500 text-white text-xs font-medium
                                rounded-full hover:bg-gray-600 disabled:opacity-50 transition-colors"

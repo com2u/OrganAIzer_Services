@@ -1,4 +1,4 @@
-  """
+"""
 Executive Agent Service - Core Intelligence Layer
 
 This is the brain of the OrganAIzer platform. Provides human-like, contextual,
@@ -676,16 +676,28 @@ Remember: You're not just executing commands - you're an intelligent companion w
             raw_provider = action_data.get("provider", "google")
             provider = _normalize_provider(raw_provider)
 
-            # Build start datetime (ISO 8601)
-            start_datetime_str = f"{date}T{time_str}:00"
+            # Build start datetime — ALWAYS timezone-aware to avoid Google/Outlook
+            # storing the event in UTC instead of the user's local timezone.
+            # Without pytz.localize(), "2026-03-12T20:00:00" is treated as UTC
+            # by the Google Calendar API, shifting the event by UTC offset hours.
+            tz_name = os.getenv("TIMEZONE", "Europe/Berlin")
+            try:
+                tz_obj = pytz.timezone(tz_name)
+            except Exception:
+                tz_obj = pytz.UTC
 
-            # Build end datetime
+            start_dt_naive = datetime.fromisoformat(f"{date}T{time_str}:00")
+            start_dt_aware = tz_obj.localize(start_dt_naive)
+            start_datetime_str = start_dt_aware.isoformat()
+
+            # Build end datetime (also timezone-aware)
             if end_time:
-                end_datetime_str = f"{date}T{end_time}:00"
+                end_dt_naive = datetime.fromisoformat(f"{date}T{end_time}:00")
+                end_dt_aware = tz_obj.localize(end_dt_naive)
+                end_datetime_str = end_dt_aware.isoformat()
             else:
-                start_dt = datetime.fromisoformat(start_datetime_str)
-                end_dt = start_dt + timedelta(minutes=duration)
-                end_datetime_str = end_dt.isoformat()
+                end_dt_aware = start_dt_aware + timedelta(minutes=duration)
+                end_datetime_str = end_dt_aware.isoformat()
 
             # ── Idempotency: compute deterministic request_id ─────────────────
             tz_name = os.getenv("TIMEZONE", "UTC")
