@@ -5,7 +5,7 @@ Handles chat completions with various AI models.
 
 import logging
 import os
-import requests
+import httpx
 from typing import List, Optional
 from core.config import config
 from core.error_handling import AppError
@@ -55,7 +55,7 @@ class ChatService:
             messages = []
             
             # Add conversation history if provided
-            MAX_HISTORY = 6
+            MAX_HISTORY = 10  # must match ConversationMemory.MAX_HISTORY
             if request.conversation_history:
                trimmed_history = request.conversation_history[-MAX_HISTORY:]
                messages.extend([
@@ -85,15 +85,16 @@ class ChatService:
                 "temperature": request.temperature,
                 "max_tokens": min(request.max_tokens or SAFE_MAX_TOKENS, SAFE_MAX_TOKENS)
             }
-            logger.warning(f"[OPENROUTER DEBUG] request.max_tokens={request.max_tokens}")
-            logger.warning(f"[OPENROUTER DEBUG] payload.max_tokens={payload['max_tokens']}")
-            logger.warning(f"[OPENROUTER DEBUG] model={payload['model']}")
+            logger.debug(f"[OPENROUTER] request.max_tokens={request.max_tokens}")
+            logger.debug(f"[OPENROUTER] payload.max_tokens={payload['max_tokens']}")
+            logger.debug(f"[OPENROUTER] model={payload['model']}")
             
             logger.info(f"Sending request to OpenRouter with {len(messages)} messages")
             
-            # Make API request
-            response = requests.post(self.api_url, headers=headers, json=payload)
-            
+            # Make API request (async — does not block the event loop)
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(self.api_url, headers=headers, json=payload)
+
             # Handle error responses
             if response.status_code != 200:
                 error_detail = response.text
@@ -103,7 +104,7 @@ class ChatService:
                     message=f"OpenRouter API returned status {response.status_code}",
                     details={"error": error_detail}
                 )
-            
+
             result = response.json()
             
             # Extract response
@@ -125,7 +126,7 @@ class ChatService:
                 usage=usage
             )
             
-        except requests.exceptions.RequestException as e:
+        except httpx.RequestError as e:
             logger.error(f"API request failed: {str(e)}", exc_info=True)
             raise AppError(
                 code="API_REQUEST_FAILED",
@@ -169,12 +170,10 @@ class ChatService:
             }
             
             logger.info("Fetching available models from OpenRouter")
-            
-            # Make API request
 
-            
-
-            response = requests.get(self.models_url, headers=headers)
+            # Make API request (async — does not block the event loop)
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(self.models_url, headers=headers)
             response.raise_for_status()
             
             result = response.json()
@@ -196,7 +195,7 @@ class ChatService:
                 models=models
             )
             
-        except requests.exceptions.RequestException as e:
+        except httpx.RequestError as e:
             logger.error(f"Failed to fetch models: {str(e)}", exc_info=True)
             raise AppError(
                 code="API_REQUEST_FAILED",

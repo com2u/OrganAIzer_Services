@@ -362,7 +362,7 @@ class ExecutiveAgent:
 
         # Optional slot decline
         if intent_type == IntentType.DECLINE_OPTIONAL:
-            return await self._handle_decline_optional()
+            return await self._handle_decline_optional(user_id, _cal, _mail)
 
         # Provider selection
         if intent_type == IntentType.SELECT_SENDER_ACCOUNT:
@@ -1248,16 +1248,51 @@ Remember: You're not just executing commands - you're an intelligent companion w
                 "type": "info"
             }
     
-    async def _handle_decline_optional(self) -> Dict[str, Any]:
-        """Handle user declining optional information."""
+    async def _handle_decline_optional(
+        self,
+        user_id: str,
+        calendar_provider: str,
+        mail_provider: str,
+    ) -> Dict[str, Any]:
+        """
+        Handle user declining an optional slot.
+
+        Clears the last question type and re-dispatches to the appropriate
+        task handler so it can check for remaining required slots or advance
+        to confirmation — rather than leaving the workflow in a dead-end.
+        """
         logger.info(f"[AGENT] Handling decline of optional: {self.memory.last_question_type}")
-        
-        # Continue with rest of flow
-        return {
-            "message": "Got it! Proceeding without that. What else would you like to add?",
-            "success": True,
-            "type": "acknowledge"
-        }
+        self.memory.last_question_type = None
+
+        active_task = self.memory.get_active_task()
+        if not active_task:
+            return {
+                "message": "Got it! What would you like to do?",
+                "success": True,
+                "type": "acknowledge",
+            }
+
+        task_type    = active_task.get("type", "")
+        existing_data = active_task.get("data", {})
+
+        # Re-dispatch with the slots already collected so the handler can
+        # evaluate what's still missing or move straight to confirmation.
+        if task_type == "calendar_event":
+            return await self._handle_calendar_event_creation(
+                user_message="", extracted_slots=existing_data,
+                user_id=user_id, provider=calendar_provider,
+            )
+        elif task_type in ("send_email", "draft_email"):
+            return await self._handle_send_email(
+                user_message="", extracted_slots=existing_data,
+                user_id=user_id, provider=mail_provider,
+            )
+        else:
+            return {
+                "message": "Got it! Proceeding without that. What else would you like to add?",
+                "success": True,
+                "type": "acknowledge",
+            }
     
     async def _handle_sender_selection(self, extracted_slots: Dict[str, Any]) -> Dict[str, Any]:
         """Handle email sender account selection."""
@@ -1394,10 +1429,10 @@ Remember: You're not just executing commands - you're an intelligent companion w
         
         # Ask user if they want to abandon current task
         return {
-            "message": f"It looks like you want to switch topics. Should I save the current {task_type} task as a draft, or would you like to cancel it and start fresh?",
+            "message": f"It looks like you want to switch topics. Would you like to cancel the current {task_type} task and start fresh?",
             "success": True,
             "type": "clarification",
-            "action_needed": "confirm_topic_switch"
+            "action_needed": "confirm_topic_switch",
         }
     
     # ── Draft modification (slot correction) ─────────────────────────────────
