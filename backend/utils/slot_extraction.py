@@ -1016,22 +1016,30 @@ class SlotExtractor:
         slots["unread_only"] = any(kw in msg for kw in unread_kws)
 
         # ── Sender filter ────────────────────────────────────────────────────
-        # "from John", "emails from sarah", "what did john email me"
-        sender_match = re.search(
-            r'(?:from|emails?\s+from|mail\s+from|what\s+did\s+)([A-Za-z][A-Za-z\s]{1,40})(?:\s+email|\s+send|\s+write|@|\s*$)',
-            msg
-        )
-        if sender_match:
-            sender_raw = sender_match.group(1).strip()
-            # filter out generic words
-            generic = {"me", "my", "i", "the", "a", "any", "do", "have", "give"}
-            if sender_raw not in generic:
-                slots["sender_filter"] = sender_raw
-
-        # Also check for email address in sender position
+        # Check for email address first (highest precision)
         email_match = re.search(r'\bfrom\s+([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[a-zA-Z]{2,})', msg)
         if email_match:
             slots["sender_filter"] = email_match.group(1)
+        else:
+            # Match name patterns: "from John", "emails from sarah", "sent by Alex",
+            # "messages from Bob", "what did john email me", "john sent me"
+            sender_match = re.search(
+                r'(?:from|emails?\s+from|mails?\s+from|messages?\s+from|sent\s+by|what\s+did\s+)'
+                r'([A-Za-z][A-Za-z\s]{1,40}?)'
+                r'(?:\s+(?:email|send|write|sent|today|yesterday|last|this|week|month|ago)|@|\s*$)',
+                msg,
+            )
+            if sender_match:
+                sender_raw = sender_match.group(1).strip()
+                # Strip trailing time/quantity words that regex may have captured
+                _TIME_WORDS = {"today", "yesterday", "last", "this", "week", "month", "ago", "recent", "recently", "sent"}
+                parts = sender_raw.split()
+                while parts and parts[-1].lower() in _TIME_WORDS:
+                    parts.pop()
+                sender_raw = " ".join(parts).strip()
+                generic = {"me", "my", "i", "the", "a", "any", "do", "have", "give", "you", "did"}
+                if sender_raw and sender_raw.lower() not in generic:
+                    slots["sender_filter"] = sender_raw
 
         # ── Date filter ───────────────────────────────────────────────────────
         if "yesterday" in msg:

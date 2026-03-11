@@ -857,8 +857,13 @@ async def google_gmail_send(
 
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
 
+        send_body: dict = {"raw": raw}
+        if request.thread_id:
+            # Keep the reply inside the same Gmail thread
+            send_body["threadId"] = request.thread_id
+
         service = build("gmail", "v1", credentials=credentials)
-        sent = service.users().messages().send(userId="me", body={"raw": raw}).execute()
+        sent = service.users().messages().send(userId="me", body=send_body).execute()
 
         logger.info(f"✅ Gmail sent: user={user_id}, to={to_list}, msg_id={sent.get('id')}")
         return MailSendResponse(
@@ -1491,19 +1496,28 @@ async def microsoft_mail_send(
         content_type = "HTML" if request.html else "Text"
         content = request.html if request.html else request.body
 
-        message: dict = {
-            "subject": request.subject,
-            "body": {"contentType": content_type, "content": content},
-            "toRecipients": [{"emailAddress": {"address": e}} for e in to_list],
-        }
-        if cc_list:
-            message["ccRecipients"] = [{"emailAddress": {"address": e}} for e in cc_list]
-        if bcc_list:
-            message["bccRecipients"] = [{"emailAddress": {"address": e}} for e in bcc_list]
+        if request.reply_to_id:
+            # Use the Graph /reply endpoint — preserves conversation thread
+            _ms_request(
+                "POST",
+                f"/me/messages/{request.reply_to_id}/reply",
+                access_token,
+                user_id=user_id,
+                json={"comment": content},
+            )
+        else:
+            message: dict = {
+                "subject": request.subject,
+                "body": {"contentType": content_type, "content": content},
+                "toRecipients": [{"emailAddress": {"address": e}} for e in to_list],
+            }
+            if cc_list:
+                message["ccRecipients"] = [{"emailAddress": {"address": e}} for e in cc_list]
+            if bcc_list:
+                message["bccRecipients"] = [{"emailAddress": {"address": e}} for e in bcc_list]
+            _ms_request("POST", "/me/sendMail", access_token, user_id=user_id, json={"message": message, "saveToSentItems": True})
 
-        _ms_request("POST", "/me/sendMail", access_token, user_id=user_id, json={"message": message, "saveToSentItems": True})
-
-        logger.info(f"✅ Outlook email sent: user={user_id}, to={to_list}, subject='{request.subject}'")
+        logger.info(f"✅ Outlook email sent: user={user_id}, to={to_list}, subject='{request.subject}', reply_to_id={request.reply_to_id}")
         return MailSendResponse(
             success=True,
             message=f"Email sent successfully via Outlook to {', '.join(to_list)}",

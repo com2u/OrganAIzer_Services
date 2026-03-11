@@ -64,6 +64,9 @@ class MailSendRequest(BaseModel):
     html: Optional[str] = Field(None, description="Optional HTML body (overrides plain-text rendering)")
     cc: Optional[Union[str, List[str]]] = Field(None, description="CC recipients")
     bcc: Optional[Union[str, List[str]]] = Field(None, description="BCC recipients")
+    # Reply threading — set ONE of these when replying:
+    thread_id: Optional[str] = Field(None, description="Gmail thread ID — keeps reply in same thread")
+    reply_to_id: Optional[str] = Field(None, description="Outlook message ID to reply to (uses Graph /reply endpoint)")
 
     def to_list(self) -> List[str]:
         """Normalize `to` to a list."""

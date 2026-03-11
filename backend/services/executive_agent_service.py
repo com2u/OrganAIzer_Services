@@ -972,6 +972,8 @@ Remember: You're not just executing commands - you're an intelligent companion w
             html = action_data.get("html")
             cc = action_data.get("cc")
             bcc = action_data.get("bcc")
+            thread_id = action_data.get("thread_id")       # Gmail reply threading
+            reply_to_id = action_data.get("reply_to_id")   # Outlook reply threading
 
             # Normalise provider → "google" or "outlook"
             raw_provider = action_data.get("provider", "gmail")
@@ -989,6 +991,10 @@ Remember: You're not just executing commands - you're an intelligent companion w
                 payload["cc"] = cc
             if bcc:
                 payload["bcc"] = bcc
+            if thread_id:
+                payload["thread_id"] = thread_id
+            if reply_to_id:
+                payload["reply_to_id"] = reply_to_id
 
             # Choose endpoint based on provider
             base_url = os.getenv("BACKEND_URL", "http://localhost:8000")
