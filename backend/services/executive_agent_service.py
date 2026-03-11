@@ -310,6 +310,10 @@ class ExecutiveAgent:
                 calendar_provider=calendar_provider,
             )
 
+            # Stamp the detected intent onto the response so the API endpoint
+            # can include it in the standardized envelope without re-deriving it.
+            response.setdefault("intent", intent_type)
+
             # Add agent response to memory
             self.memory.add_message("assistant", response["message"])
 
@@ -324,6 +328,7 @@ class ExecutiveAgent:
                 "message": "I apologize, but I encountered an error processing your request. Please try rephrasing or contact support if the issue persists.",
                 "success": False,
                 "type": "error",
+                "intent": "GENERAL_MESSAGE",
                 "error": str(e)
             }
     
@@ -1271,7 +1276,7 @@ Remember: You're not just executing commands - you're an intelligent companion w
             return {
                 "message": f"✅ Great! I'll use {provider.title()}. What else do you need for this email?",
                 "success": True,
-                "type": "ack nowledge"
+                "type": "acknowledge"
             }
         
         return {

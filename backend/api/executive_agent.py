@@ -34,18 +34,41 @@ class ChatRequest(BaseModel):
 
 
 class ChatResponse(BaseModel):
-    """Executive Agent chat response."""
+    """
+    Standardized Executive Agent chat response envelope.
+
+    All fields are always present so the frontend can rely on a consistent
+    contract without defensive null checks on every field.
+
+    Canonical task_state values:
+      IDLE        — no active task
+      COLLECTING  — gathering required slots (active_task.status = collecting)
+      CONFIRMING  — all slots ready, waiting for yes/no (awaiting_confirmation)
+      EXECUTING   — running provider API call
+      COMPLETED   — action succeeded and task cleared
+      FAILED      — action failed (pending_action preserved for retry)
+    """
+    # ── Core ────────────────────────────────────────────────────────────────
     message: str
     success: bool
     type: Optional[str] = None
     data: Optional[dict] = None
-    action_needed: Optional[str] = None
     error: Optional[str] = None
-    # State Machine Information
-    agent_state: Optional[str] = None  # IDLE, EMAIL_FLOW, CALENDAR_FLOW, etc.
-    active_task: Optional[dict] = None  # Current active task details
-    pending_action: Optional[dict] = None  # Pending action awaiting confirmation
-    last_action: Optional[dict] = None  # Last completed action from history
+
+    # ── Standardized envelope fields ─────────────────────────────────────
+    intent: str = "GENERAL_MESSAGE"          # IntentType constant from IntentRouter
+    task_state: str = "IDLE"                 # Canonical FSM state (see docstring)
+    actions: list = []                       # Reserved: structured action list
+    follow_up: str = ""                      # Suggested follow-up question/prompt
+
+    # ── Action signalling ───────────────────────────────────────────────
+    action_needed: Optional[str] = None      # "confirmation" → show yes/no buttons
+
+    # ── Session state (debug / advanced clients) ────────────────────────
+    agent_state: Optional[str] = None        # Legacy compound state string
+    active_task: Optional[dict] = None
+    pending_action: Optional[dict] = None
+    last_action: Optional[dict] = None
 
 
 class SessionInfoResponse(BaseModel):
@@ -107,40 +130,59 @@ async def chat_with_agent(request: ChatRequest):
             calendar_provider=request.calendar_provider or "google",
         )
         
-        # CRITICAL: Add state machine information to response
-        active_task = agent.memory.get_active_task()
+        # ── Collect session state ─────────────────────────────────────────
+        active_task    = agent.memory.get_active_task()
         pending_action = agent.memory.get_pending_action()
-        last_action = agent.memory.get_last_action()
-        
-        # Determine agent state
+        last_action    = agent.memory.get_last_action()
+
+        # ── Canonical task_state (IDLE|COLLECTING|CONFIRMING|EXECUTING|COMPLETED|FAILED) ──
+        _status_to_task_state = {
+            "collecting":            "COLLECTING",
+            "awaiting_confirmation": "CONFIRMING",
+            "executing":             "EXECUTING",
+            "completed":             "COMPLETED",
+            "failed":                "FAILED",
+            "cancelled":             "IDLE",
+        }
+        if active_task:
+            raw_status = active_task.get("status", "")
+            task_state = _status_to_task_state.get(raw_status, "IDLE")
+        elif response.get("type") in ("calendar_created", "email_sent"):
+            task_state = "COMPLETED"
+        elif response.get("type") == "error" and not response.get("success"):
+            task_state = "FAILED"
+        else:
+            task_state = "IDLE"
+
+        # ── Legacy compound agent_state string ────────────────────────────
         agent_state = "IDLE"
         if active_task and agent.memory.is_task_locked():
-            task_type = active_task.get("type", "")
+            task_type   = active_task.get("type", "")
             task_status = active_task.get("status", "")
-            
             if task_type in ["draft_email", "send_email"]:
-                if task_status == "collecting":
-                    agent_state = "EMAIL_COLLECTING"
-                elif task_status == "awaiting_confirmation":
-                    agent_state = "EMAIL_DRAFT_READY"
-                else:
-                    agent_state = f"EMAIL_FLOW_{task_status.upper()}"
+                agent_state = "EMAIL_COLLECTING" if task_status == "collecting" else (
+                    "EMAIL_DRAFT_READY" if task_status == "awaiting_confirmation"
+                    else f"EMAIL_FLOW_{task_status.upper()}"
+                )
             elif task_type == "calendar_event":
-                if task_status == "collecting":
-                    agent_state = "CALENDAR_COLLECTING"
-                elif task_status == "awaiting_confirmation":
-                    agent_state = "CALENDAR_CONFIRM"
-                else:
-                    agent_state = f"CALENDAR_FLOW_{task_status.upper()}"
+                agent_state = "CALENDAR_COLLECTING" if task_status == "collecting" else (
+                    "CALENDAR_CONFIRM" if task_status == "awaiting_confirmation"
+                    else f"CALENDAR_FLOW_{task_status.upper()}"
+                )
             else:
                 agent_state = f"{task_type.upper()}_{task_status.upper()}"
-        
-        # Add state to response
-        response["agent_state"] = agent_state
-        response["active_task"] = active_task
+
+        # ── Build full standardized envelope ──────────────────────────────
+        response["task_state"]     = task_state
+        response["agent_state"]    = agent_state
+        response["active_task"]    = active_task
         response["pending_action"] = pending_action
-        response["last_action"] = last_action
-        
+        response["last_action"]    = last_action
+        # intent was stamped onto the response dict by process_message
+        response.setdefault("intent", "GENERAL_MESSAGE")
+        response.setdefault("actions", [])
+        response.setdefault("follow_up", "")
+
         return ChatResponse(**response)
         
     except Exception as e:

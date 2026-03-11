@@ -161,7 +161,7 @@ export default function ExecutiveAgent({ onPageChange }: Props = {}) {
 
     try {
       const data = await agentChat(text, SESSION_ID, 'default_user', calendarProvider, mailProvider);
-      const assistantText = data.message || '(keine Antwort)';
+      const assistantText = data.message || '(no response)';
 
       let audioUrl: string | undefined;
       if (autoSpeak) {
@@ -171,14 +171,16 @@ export default function ExecutiveAgent({ onPageChange }: Props = {}) {
       const assistantMsg: Message = {
         id: makeId(), role: 'assistant', content: assistantText,
         timestamp: new Date(), audioUrl,
-        // Capture backend structured response type + action_needed for special rendering
+        // Use canonical task_state from standardized envelope; fall back to
+        // action_needed for backward compat with any cached responses.
         responseType: data.type ?? undefined,
-        actionNeeded: data.action_needed ?? undefined,
+        actionNeeded: data.task_state === 'CONFIRMING' ? 'confirmation'
+          : (data.action_needed ?? undefined),
       };
       setMessages(prev => [...prev, assistantMsg]);
       if (audioUrl) playAudio(audioUrl);
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'Unbekannter Fehler';
+      const msg = e instanceof Error ? e.message : 'Unknown error';
       setError(msg);
       setMessages(prev => [
         ...prev,

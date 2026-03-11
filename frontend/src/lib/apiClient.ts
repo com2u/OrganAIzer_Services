@@ -21,31 +21,55 @@ function authHeaders(extra: Record<string, string> = {}): Record<string, string>
 
 // ── Executive Agent chat ─────────────────────────────────────────────────────
 
+/**
+ * Standardized Executive Agent response envelope.
+ * Every field is always present in the backend response.
+ *
+ * task_state canonical values:
+ *   IDLE        — no active task
+ *   COLLECTING  — gathering required slots
+ *   CONFIRMING  — all slots ready, waiting for yes/no
+ *   EXECUTING   — running provider API call
+ *   COMPLETED   — action succeeded
+ *   FAILED      — action failed (details in error field)
+ */
 export interface AgentChatResponse {
-  /** Human-readable reply text — always present */
+  // ── Core ────────────────────────────────────────────────────────────────
   message: string;
   success: boolean;
   /**
-   * Structured response type from the Executive Agent.
+   * Response type from the Executive Agent.
    * Key values: calendar_confirmation, calendar_created, calendar_list,
    * email_confirmation, email_sent, email_list, provider_not_connected,
-   * calendar_slot_request, email_slot_request, knowledge_answer, error
+   * calendar_slot_request, email_slot_request, chat, acknowledge, error
    */
   type?: string;
   /** Structured payload (event details, email list, etc.) */
   data?: Record<string, unknown>;
-  /** Current agent FSM state */
-  agent_state?: string;
-  active_task?: unknown;
-  /** Pending action awaiting user confirmation */
-  pending_action?: unknown;
-  last_action?: unknown;
+  error?: string;
+
+  // ── Standardized envelope ───────────────────────────────────────────────
+  /** IntentType constant: CALENDAR_CREATE, EMAIL_READ, GENERAL_MESSAGE, etc. */
+  intent: string;
+  /** Canonical FSM state — use this instead of agent_state for UI decisions */
+  task_state: 'IDLE' | 'COLLECTING' | 'CONFIRMING' | 'EXECUTING' | 'COMPLETED' | 'FAILED';
+  /** Reserved for future structured action list */
+  actions: unknown[];
+  /** Suggested follow-up question/prompt to show the user */
+  follow_up: string;
+
+  // ── Action signalling ───────────────────────────────────────────────────
   /**
-   * When set, the frontend should prompt the user to act.
    * "confirmation" → show yes/no quick-reply buttons
-   * "slot_request" → user must supply missing info (date, recipient, etc.)
+   * "slot_request" → user must supply missing info
    */
   action_needed?: string | null;
+
+  // ── Session state (debug / advanced use) ───────────────────────────────
+  agent_state?: string;
+  active_task?: unknown;
+  pending_action?: unknown;
+  last_action?: unknown;
 }
 
 export async function agentChat(
