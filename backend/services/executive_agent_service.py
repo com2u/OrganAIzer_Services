@@ -1,4 +1,4 @@
-"""
+  """
 Executive Agent Service - Core Intelligence Layer
 
 This is the brain of the OrganAIzer platform. Provides human-like, contextual,
@@ -27,6 +27,7 @@ import hashlib
 import logging
 import os
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
@@ -64,6 +65,8 @@ class ConversationMemory:
     last_question_type: Optional[str] = None
     # Remembered provider preference — set after successful execution, used next time
     preferred_provider: Optional[str] = None
+    # Last clarification message sent — used to detect and break stuck loops (group 10)
+    last_clarification_message: Optional[str] = None
     created_at: datetime = field(default_factory=datetime.now)
     last_activity: datetime = field(default_factory=datetime.now)
     
@@ -1503,14 +1506,44 @@ Remember: You're not just executing commands - you're an intelligent companion w
         if "provider" in updates:
             updates["provider"] = _normalize_provider(updates["provider"])
 
-        # If NLU found nothing, ask user to rephrase (don't silently discard)
+        # If NLU found nothing, detect general edit intent and ask what to change
         if not updates:
             logger.warning("[AGENT] _handle_modify_draft: NLU found no updates for: '%s'", user_message)
+
+            # ── Group 10: edit-intent detection ──────────────────────────────
+            # "No, I would like you to edit this event" → transition to collecting,
+            # ask user what specifically to change.  Prevent repeating the same
+            # clarification twice in a row to avoid infinite loops.
+            _EDIT_RE = re.compile(
+                r"\b(edit|modify|update|adjust|fix|change\s*it|change\s*this|"
+                r"i\s+want\s+to|i\s+would\s+like\s+to|i\s*'d\s+like\s+to|"
+                r"please\s+edit|please\s+change|please\s+modify)\b",
+                re.IGNORECASE,
+            )
+            if _EDIT_RE.search(user_message):
+                self.memory.clear_pending_action()
+                self.memory.update_task_status("collecting")
+                ask_msg = "What would you like to change? (e.g. title, time, date, or calendar provider)"
+                if self.memory.last_clarification_message == ask_msg:
+                    # Already asked exactly this — give detailed examples to break the loop
+                    ask_msg = (
+                        "I'm ready to update the event. Please tell me specifically:\n"
+                        "- **Title**: say `call it <new title>`\n"
+                        "- **Time**: say `change time to 14:00`\n"
+                        "- **Date**: say `make it tomorrow`\n"
+                        "- **Calendar**: say `use Google` or `use Outlook`"
+                    )
+                self.memory.last_clarification_message = ask_msg
+                logger.info("[AGENT] Edit intent detected — asking what to change")
+                return {"message": ask_msg, "success": True, "type": "edit_prompt"}
+
+            # No edit intent either — ask to rephrase
+            self.memory.last_clarification_message = None
             return {
                 "message": (
                     "I'm not sure what you'd like to change. Could you rephrase?\n\n"
                     "Examples:\n"
-                    "- `call it 'I will see'`\n"
+                    "- `call it 'Sprint Review'`\n"
                     "- `use outlook`\n"
                     "- `at 14:00`\n"
                     "- `make it tomorrow`"
@@ -1518,6 +1551,9 @@ Remember: You're not just executing commands - you're an intelligent companion w
                 "success": True,
                 "type": "clarification",
             }
+
+        # Real updates found — reset clarification loop tracker
+        self.memory.last_clarification_message = None
 
         # Patch task data
         merged = {**current_data, **updates}
@@ -1596,7 +1632,23 @@ Remember: You're not just executing commands - you're an intelligent companion w
             all_slots["title"] = "Meeting"
             missing_slots.remove("title")
             logger.info("[ORCHESTRATION] Using default title: 'Meeting'")
-        
+
+        # ── Group 9: Suspicious STT title — ask user to confirm before proceeding ──
+        if all_slots.get("title_needs_confirmation") and not all_slots.get("title_confirmed"):
+            current_title = all_slots.get("title", "Meeting")
+            self.memory.set_active_task(task_type="calendar_event", data=all_slots, status="collecting")
+            self.memory.last_question_type = "title_confirm"
+            logger.warning("[AGENT] Suspicious STT title '%s' — asking user to confirm", current_title)
+            return {
+                "message": (
+                    f"I heard the event title as **\"{current_title}\"**, but that might not be right.\n\n"
+                    "Please say the title again clearly, or reply **yes** if it's correct."
+                ),
+                "success": True,
+                "type": "calendar_slot_request",
+                "data": {"missing_slot": "title_confirm", "current_slots": all_slots},
+            }
+
         # Default date to today if not provided
         if "date" in missing_slots:
             all_slots["date"] = get_current_date_str()
