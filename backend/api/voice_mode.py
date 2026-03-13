@@ -59,7 +59,19 @@ DEV_MODE        = os.getenv("VOICE_DEBUG", "false").lower() in ("true", "1", "ye
 
 # Thread pool for CPU-bound and blocking-I/O work (ffmpeg + Whisper).
 # Using a dedicated pool avoids starving asyncio tasks on the default executor.
-_cpu_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="voice-worker")
+#
+# LATENCY SPIKE ROOT CAUSES (Bug #7):
+#   1. max_workers=2 means a second concurrent STT request queues behind the first.
+#      With Whisper base on CPU (~10-14 s) + ffmpeg (~1-5 s on Windows due to AV
+#      scanning of temp files), a queued request can see 14+ s BEFORE ffmpeg even
+#      starts.  Increasing to 4 workers halves the likely queue depth.
+#   2. Windows AV tools scan every NamedTemporaryFile write — slow on large webm.
+#   3. Repeated reconnects (each AudioRecorder starts fresh) pile up STT tasks in
+#      the same pool.  The interrupt + clear logic mitigates this at the WS layer,
+#      but the worker threads still finish their inflight work.
+#   4. Whisper's first call after startup pays the torch warm-up penalty even with
+#      preload — subsequent calls on the same thread are faster.
+_cpu_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="voice-worker")
 
 # ── Session registry for interrupt support ────────────────────────────────────
 # Maps session_id → {"interrupted": bool}
@@ -267,6 +279,45 @@ def _set_interrupt(session_id: str) -> None:
     _session_registry[session_id]["interrupted"] = True
 
 
+# ── Low-information / partial transcript guard (Fix #6) ──────────────────────
+
+_FILLER_WORDS = frozenset({
+    "uh", "um", "hmm", "hm", "erm", "er", "ah", "oh",
+    "so", "well", "like", "okay", "right", "yeah",
+})
+
+def _is_low_information_transcript(transcript: str) -> bool:
+    """
+    Return True when the transcript is too fragmentary to warrant a full AI call.
+
+    Catches:
+    - Pure filler: "uh", "um", "hmm"
+    - Incomplete trailing filler: "Hello, can you uh"  (≤ 6 words, ends with filler)
+    - All-filler utterances: "well uh um"
+
+    Does NOT filter:
+    - Valid short commands: "yes", "no", "cancel", "hello"
+    - Sentences that end with a meaningful word even if short
+    """
+    if not transcript:
+        return True
+    words = transcript.split()
+    cleaned = [w.lower().rstrip(".,!?;:") for w in words]
+
+    # Pure filler word(s) only
+    informative = [w for w in cleaned if w not in _FILLER_WORDS]
+    if not informative:
+        logger.info("[VOICE] ⚠ all-filler transcript: %r — skipping AI", transcript)
+        return True
+
+    # Ends with a filler AND the full utterance is short → incomplete fragment
+    if cleaned and cleaned[-1] in _FILLER_WORDS and len(words) <= 6:
+        logger.info("[VOICE] ⚠ trailing-filler transcript: %r — skipping AI", transcript)
+        return True
+
+    return False
+
+
 # ── Main WebSocket handler ────────────────────────────────────────────────────
 
 @router.websocket("/stream")
@@ -416,6 +467,20 @@ async def voice_stream(
                     logger.info("[VOICE] ⚠ no speech detected  ws=%s", ws_session_id)
                     continue
 
+                # ── Fix #6: Discard low-information / trailing-filler transcripts ─
+                # "Hello, can you uh" → skip AI, return to idle cleanly.
+                # This prevents unstable state from partial utterances while still
+                # forwarding real short commands like "yes", "no", "cancel".
+                if _is_low_information_transcript(transcript):
+                    logger.info(
+                        "[VOICE] ⚠ low-info transcript skipped: %r  ws=%s",
+                        transcript[:60], ws_session_id,
+                    )
+                    await _send(websocket, "stt", status="no_speech",
+                                reason="low_information_transcript")
+                    await _send(websocket, "state", state="idle")
+                    continue
+
                 logger.info(
                     "[VOICE] transcript_ready len=%d preview=%r  ws=%s",
                     len(transcript), transcript[:40], ws_session_id,
@@ -440,12 +505,21 @@ async def voice_stream(
                 t0_ai = time.monotonic()
                 try:
                     agent   = ExecutiveAgent(session_id=session_id)
+                    # FIX #3: WebSocket URL params (calendar_provider / mail_provider)
+                    # are treated as *connection context hints* only — not as forced
+                    # provider values. The agent resolves the provider through:
+                    #   1. Explicit mention in the user's message
+                    #   2. session memory.preferred_provider (set on first confirmed action)
+                    #   3. Ask the user — "Which account, Google or Microsoft?"
+                    # Passing them here as API params would silently pre-fill the slot
+                    # and bypass the "ask user" requirement, making voice behavior
+                    # differ from text mode.  They remain available in `calendar_provider`
+                    # / `mail_provider` locals for logging (Section 8 below).
                     ai_resp = await agent.process_message(
                         user_message=transcript,
                         user_id=user_id,
-                        provider=calendar_provider,
-                        calendar_provider=calendar_provider,
-                        mail_provider=mail_provider,
+                        # calendar_provider and mail_provider intentionally NOT forwarded.
+                        # preferred_provider from session memory is used instead.
                     )
                     reply_text = ai_resp.get("message", "") or ""
                 except Exception as exc:
@@ -470,14 +544,21 @@ async def voice_stream(
                 await _send(websocket, "ai.response.text", text=reply_text)
 
                 # ── SECTION 8: Voice structured logging ───────────────────────
+                # FIX #1: _active_task may be None when no task is present (e.g.,
+                # after a completed action or a pure chat response).  All accesses
+                # must be null-guarded to prevent AttributeError crashes.
                 _voice_intent = ai_resp.get("intent", "UNKNOWN")
-                _active_task = agent.memory.get_active_task()
+                _active_task  = agent.memory.get_active_task()
                 _voice_task_state = (
                     _active_task.get("status", "IDLE").upper()
                     if _active_task else "IDLE"
                 )
+                # FIX #1: safe two-step extraction — (_active_task or {}) safely
+                # handles None; the inner (.get("data") or {}) handles missing key
+                # and explicit None stored in the "data" field.
+                _task_data     = (_active_task or {}).get("data") or {}
                 _voice_provider = (
-                    (_active_task.get("data", {}) or {}).get("provider")
+                    _task_data.get("provider")
                     or agent.memory.preferred_provider
                     or (calendar_provider or mail_provider or "unresolved")
                 )

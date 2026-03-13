@@ -1395,13 +1395,44 @@ class SlotExtractor:
         slots: Dict[str, Any] = {}
 
         # ── Count extraction ─────────────────────────────────────────────────
-        # "last 3 emails", "show me 5 emails", "last 10"
-        count_match = re.search(r'\b(?:last|show|get|fetch|read)?\s*(\d+)\s+(?:emails?|messages?|mails?)\b', msg)
+        # FIX #4: Support both numeric ("3") and word-based ("three", "two") counts
+        # so voice-transcribed phrases like "last two emails" are handled correctly.
+        _WORD_TO_INT: Dict[str, int] = {
+            "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+            "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+            "a couple": 2, "a few": 3, "a handful": 5,
+        }
+
+        # Digit-based: "last 3 emails", "show me 5 emails"
+        count_match = re.search(
+            r'\b(?:last|show|get|fetch|read|next)?\s*(\d+)\s+(?:emails?|messages?|mails?)\b', msg
+        )
         if count_match:
             slots["count"] = int(count_match.group(1))
         else:
-            # "my last emails" without explicit number
-            slots["count"] = 5  # safe default
+            # Word-based: "last two emails", "show me three messages"
+            # Check multi-word first ("a couple of", "a few"), then single-word
+            word_count_found = False
+            for phrase in ("a couple", "a few", "a handful"):
+                if re.search(r'\b' + re.escape(phrase) + r'\s+(?:of\s+)?(?:emails?|messages?|mails?)\b', msg):
+                    slots["count"] = _WORD_TO_INT[phrase]
+                    logger.info("[EMAIL_READ_SLOTS] count from phrase '%s': %d", phrase, slots["count"])
+                    word_count_found = True
+                    break
+            if not word_count_found:
+                word_count_match = re.search(
+                    r'\b(?:last|show|get|fetch|read|next)?\s*'
+                    r'(one|two|three|four|five|six|seven|eight|nine|ten)'
+                    r'\s+(?:emails?|messages?|mails?)\b',
+                    msg,
+                )
+                if word_count_match:
+                    word = word_count_match.group(1)
+                    slots["count"] = _WORD_TO_INT.get(word, 5)
+                    logger.info("[EMAIL_READ_SLOTS] count from word '%s': %d", word, slots["count"])
+                else:
+                    # "my last emails" without explicit number
+                    slots["count"] = 5  # safe default
 
         # ── Unread filter ────────────────────────────────────────────────────
         unread_kws = ["unread", "new email", "new message", "new emails", "any new"]

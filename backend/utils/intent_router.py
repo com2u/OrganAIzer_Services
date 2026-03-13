@@ -745,10 +745,21 @@ class IntentRouter:
     
     @staticmethod
     def _is_confirm_intent(message: str) -> bool:
-        """Check if message is a confirmation."""
-        # Exact match or starts with keyword
+        """
+        Check if message is a confirmation.
+
+        FIX #2: Voice transcripts often add trailing punctuation that exact-match
+        fails on: "yes." / "Yes." → "yes", "yes, please." → "yes, please".
+        Strip trailing punctuation before matching, and also accept
+        `keyword + ","` as a prefix (handles "yes, please", "okay, go ahead").
+        """
+        import re as _re
+        # Strip trailing punctuation and whitespace
+        stripped = _re.sub(r'[.,!?;:\s]+$', '', message).strip()
         return any(
-            message == keyword or message.startswith(keyword + " ")
+            stripped == keyword
+            or stripped.startswith(keyword + " ")
+            or stripped.startswith(keyword + ",")
             for keyword in IntentRouter.CONFIRM_KEYWORDS
         )
     

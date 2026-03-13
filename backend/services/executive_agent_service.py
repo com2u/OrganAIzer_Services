@@ -1663,6 +1663,33 @@ class ExecutiveAgent:
         # Real updates found — reset clarification loop tracker
         self.memory.last_clarification_message = None
 
+        # ── FIX #5: Loop-guard — detect "same content" repeat ─────────────────
+        # When the user is in awaiting_confirmation and repeats the SAME slots
+        # that are already in the draft (e.g. says the whole request again), NLU
+        # will extract non-empty updates that are identical to current_data.  This
+        # used to silently re-dispatch → confirmation → same loop.
+        #
+        # Behaviour:
+        #  a) If ALL extracted slots already match current_data exactly → treat as
+        #     an implicit confirmation and execute the pending action.
+        #  b) If some slots differ → apply only the changed ones, re-dispatch.
+        if active_task.get("status") == "awaiting_confirmation" and updates:
+            changed_keys = {k: v for k, v in updates.items()
+                            if current_data.get(k) != v}
+            if not changed_keys:
+                # No actual change — user repeated the same draft. Confirm it.
+                logger.info(
+                    "[AGENT] FIX#5 Same-content repeat during awaiting_confirmation "
+                    "— treating as implicit confirmation"
+                )
+                return await self._handle_confirmation(user_id, calendar_provider)
+            # Only patch the genuinely changed keys
+            updates = changed_keys
+            logger.info(
+                "[AGENT] FIX#5 Partial update during awaiting_confirmation — "
+                "only changed keys: %s", list(changed_keys.keys())
+            )
+
         # Patch task data
         merged = {**current_data, **updates}
         logger.info("[AGENT] Patching task '%s' with %s", task_type, updates)
