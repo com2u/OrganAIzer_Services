@@ -76,19 +76,26 @@ export async function agentChat(
   message: string,
   sessionId = 'default',
   userId = 'default_user',
-  calendarProvider = 'google',
-  mailProvider = 'gmail',
+  // null = omit from request → backend applies its own resolution hierarchy
+  // (explicit user mention → session preferred_provider → clarification question).
+  // Only pass a real value when the UI has definitively locked a provider.
+  calendarProvider: string | null = null,
+  mailProvider: string | null = null,
 ): Promise<AgentChatResponse> {
+  // Build payload — exclude provider fields when null so the backend knows
+  // it must resolve the provider itself (EXEC_PROVIDER_DECISION rules).
+  const body: Record<string, unknown> = {
+    message,
+    session_id: sessionId,
+    user_id: userId,
+  };
+  if (calendarProvider) body.calendar_provider = calendarProvider;
+  if (mailProvider)     body.mail_provider     = mailProvider;
+
   const res = await fetch(`${API_BASE_URL}/api/agent/chat`, {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({
-      message,
-      session_id: sessionId,
-      user_id: userId,
-      calendar_provider: calendarProvider,
-      mail_provider: mailProvider,
-    }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));

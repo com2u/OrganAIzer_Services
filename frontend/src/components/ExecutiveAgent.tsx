@@ -146,11 +146,19 @@ export default function ExecutiveAgent({ onPageChange }: Props = {}) {
   // ── Text-chat send ──────────────────────────────────────────────────────────
 
   const handleSend = useCallback(async (text: string) => {
-    // Derive provider from real connection state:
-    //   Microsoft only  → use outlook for both calendar and mail
-    //   Google only, or both, or neither → use google/gmail (will give 401 if neither connected)
-    const calendarProvider = (!googleConnected && microsoftConnected) ? 'outlook' : 'google';
-    const mailProvider     = (!googleConnected && microsoftConnected) ? 'outlook' : 'gmail';
+    // Provider resolution — only send when exactly ONE provider is connected.
+    // When both or neither are connected, send null so the backend applies its
+    // own resolution hierarchy and asks the user if needed (EXEC_PROVIDER_DECISION).
+    let calendarProvider: string | null = null;
+    let mailProvider:     string | null = null;
+    if (googleConnected && !microsoftConnected) {
+      calendarProvider = 'google';
+      mailProvider     = 'gmail';
+    } else if (microsoftConnected && !googleConnected) {
+      calendarProvider = 'outlook';
+      mailProvider     = 'outlook';
+    }
+    // Both connected or neither connected → null → backend asks user which to use
 
     const userMsg: Message = {
       id: makeId(), role: 'user', content: text, timestamp: new Date(),
@@ -208,11 +216,20 @@ export default function ExecutiveAgent({ onPageChange }: Props = {}) {
     reconnectingRef.current = true;
     setWsStatus('connecting');
     const wsBase = toWsBase(API_BASE_URL);
-    // FIX: was `provider=` — backend expects `calendar_provider=` and `mail_provider=`
-    // With wrong param names FastAPI used defaults (google/gmail) for all users
-    const calProv  = (!googleConnected && microsoftConnected) ? 'outlook' : 'google';
-    const mailProv = (!googleConnected && microsoftConnected) ? 'outlook' : 'gmail';
-    const url = `${wsBase}/api/voice/stream?session_id=${SESSION_ID}&user_id=default_user&calendar_provider=${calProv}&mail_provider=${mailProv}`;
+    // Provider resolution for voice WS — only lock a provider when exactly ONE
+    // integration is connected. When ambiguous, omit params so the backend
+    // applies its own EXEC_PROVIDER_DECISION hierarchy (may ask the user).
+    const wsParams: string[] = [
+      `session_id=${SESSION_ID}`,
+      `user_id=default_user`,
+    ];
+    if (googleConnected && !microsoftConnected) {
+      wsParams.push('calendar_provider=google', 'mail_provider=gmail');
+    } else if (microsoftConnected && !googleConnected) {
+      wsParams.push('calendar_provider=outlook', 'mail_provider=outlook');
+    }
+    // Both or neither connected → omit → backend will ask the user
+    const url = `${wsBase}/api/voice/stream?${wsParams.join('&')}`;
     addDebug('ws:connecting', { url });
     const ws = new WebSocket(url);
     wsRef.current = ws;

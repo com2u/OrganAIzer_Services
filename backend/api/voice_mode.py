@@ -468,12 +468,51 @@ async def voice_stream(
                 )
 
                 await _send(websocket, "ai.response.text", text=reply_text)
+
+                # ── SECTION 8: Voice structured logging ───────────────────────
+                _voice_intent = ai_resp.get("intent", "UNKNOWN")
+                _active_task = agent.memory.get_active_task()
+                _voice_task_state = (
+                    _active_task.get("status", "IDLE").upper()
+                    if _active_task else "IDLE"
+                )
+                _voice_provider = (
+                    (_active_task.get("data", {}) or {}).get("provider")
+                    or agent.memory.preferred_provider
+                    or (calendar_provider or mail_provider or "unresolved")
+                )
+
+                logger.info(
+                    "[VOICE_TRANSCRIPT] session=%s ws=%s text=%r",
+                    session_id, ws_session_id, transcript[:200],
+                )
+                logger.info(
+                    "[VOICE_INTENT] session=%s ws=%s intent=%s",
+                    session_id, ws_session_id, _voice_intent,
+                )
+                logger.info(
+                    "[VOICE_TASK_STATE] session=%s ws=%s state=%s task_type=%s",
+                    session_id, ws_session_id, _voice_task_state,
+                    _active_task.get("type", "none") if _active_task else "none",
+                )
+                logger.info(
+                    "[VOICE_PROVIDER_DECISION] session=%s ws=%s provider=%s"
+                    " calendar_param=%s mail_param=%s preferred=%s",
+                    session_id, ws_session_id, _voice_provider,
+                    calendar_provider, mail_provider,
+                    agent.memory.preferred_provider,
+                )
+                # ── End Section 8 logging ─────────────────────────────────────
+
                 await _send_debug(websocket, {
                     "event": "ai_complete",
                     "reply_preview": reply_text[:120],
                     "ai_latency_ms": time_to_ai_ms,
                     "total_latency_ms": total_latency_ms,
                     "response_type": ai_resp.get("type"),
+                    "intent": _voice_intent,
+                    "task_state": _voice_task_state,
+                    "provider": _voice_provider,
                 })
 
                 if _is_interrupted(session_id):

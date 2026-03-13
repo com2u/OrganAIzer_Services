@@ -82,6 +82,10 @@ class ConversationMemory:
     last_email_message_id: Optional[str] = None
     last_email_subject: Optional[str] = None
 
+    # Conversation continuation tracking (Section 7)
+    last_action_type: Optional[str] = None   # "email_read" | "calendar_read" | etc.
+    last_provider: Optional[str] = None      # last successfully used provider
+
     def add_message(self, role: str, content: str):
         """Add message to conversation history."""
         self.conversation_history.append({
@@ -563,6 +567,12 @@ class ExecutiveAgent:
     def _build_intelligent_system_prompt(self) -> str:
         """
         Build the system prompt for the LLM.
+
+        SECTION 1 FIX: The assistant is a GENERAL-INTELLIGENCE executive assistant.
+        It can discuss ANY topic — history, science, geography, technology, business,
+        philosophy, daily conversation — AND also manage calendars and emails.
+        It must NEVER say it is limited to email/calendar tasks.
+
         Natural assistant persona — no markdown, no emojis, direct and friendly.
         """
         current_date = self.current_datetime.strftime("%A, %B %d, %Y")
@@ -570,24 +580,26 @@ class ExecutiveAgent:
         tomorrow = (self.current_datetime + timedelta(days=1)).strftime("%Y-%m-%d")
 
         return (
-            "You are a smart, concise executive assistant. "
-            "You manage calendars and emails. "
-            "You respond in plain natural English — no markdown, no emojis, no lists. "
-            "You are direct, friendly, and efficient. "
-            "When something is unclear you ask one short question.\n\n"
+            "You are a smart, versatile executive assistant with broad general intelligence. "
+            "You can discuss ANY topic: history, science, geography, technology, business, "
+            "philosophy, daily conversation, current events, and much more. "
+            "You also manage calendars and emails via integrated tools when the user asks for productivity actions.\n\n"
             f"Today is {current_date}. Current time: {current_time}. Tomorrow: {tomorrow}.\n\n"
-            "Rules:\n"
-            "- Keep responses to 1-2 sentences when possible.\n"
-            "- Never use markdown (no **, no ##, no - bullet lists).\n"
-            "- Never use emojis.\n"
+            "Behavior rules:\n"
+            "- For general knowledge and conversational questions: respond naturally and helpfully "
+            "using your full knowledge — do NOT say you are limited to email/calendar.\n"
+            "- For productivity actions (create event, send email, read calendar, etc.): "
+            "guide the user through the appropriate workflow.\n"
+            "- Keep responses concise, direct, and friendly — 1-3 sentences when possible.\n"
+            "- No markdown formatting (no **, no ##, no bullet lists).\n"
+            "- No emojis.\n"
             "- Ask only one clarifying question at a time.\n"
             "- Never repeat back everything the user just said word for word.\n"
-            "- If the user asks about something outside calendar or email, respond with: "
-            "'I can help with your calendar and emails, but not [topic].'\n"
-            "- When a provider is not connected, say: "
+            "- When a productivity provider (Google/Outlook) is not connected, say: "
             "'Your [Provider] account isn't connected yet. You can link it in the Integrations page.'\n"
-            "- Confirmation required before creating events or sending emails.\n"
-            "- Always ask 'Which account — Google or Microsoft?' if the user hasn't specified a provider."
+            "- Confirmation is required before creating events or sending emails.\n"
+            "- Ask 'Which account — Google or Microsoft?' only when the user wants a productivity "
+            "action and hasn't specified a provider."
         )
     
     def _build_contextual_user_prompt(self, current_message: str) -> str:
@@ -1723,11 +1735,18 @@ class ExecutiveAgent:
         required_slots = ["title", "date", "time"]
         missing_slots = [slot for slot in required_slots if not all_slots.get(slot)]
         
-        # Default title if not provided
+        # SECTION 3 FIX: NEVER default title to "Meeting" silently.
+        # If no title was extracted, ask the user explicitly.
         if "title" in missing_slots:
-            all_slots["title"] = "Meeting"
-            missing_slots.remove("title")
-            logger.info("[ORCHESTRATION] Using default title: 'Meeting'")
+            self.memory.set_active_task(task_type="calendar_event", data=all_slots, status="collecting")
+            self.memory.last_question_type = "title"
+            logger.info("[EXEC_EVENT_TITLE_EXTRACTED] No title extracted — asking user for title")
+            return {
+                "message": "What should I call this event?",
+                "success": True,
+                "type": "calendar_slot_request",
+                "data": {"missing_slot": "title", "current_slots": all_slots},
+            }
 
         # ── Group 9: Suspicious STT title — ask user to confirm before proceeding ──
         if all_slots.get("title_needs_confirmation") and not all_slots.get("title_confirmed"):
@@ -3056,29 +3075,43 @@ async def _handle_calendar_delete(self, user_message: str, user_id: str, provide
 
 
 async def _handle_out_of_scope(self, user_message: str) -> Dict[str, Any]:
-    """Gracefully decline out-of-scope requests."""
-    logger.info("[AGENT] Handling out-of-scope")
-    msg_lower = user_message.lower()
-    if "weather" in msg_lower or "temperature" in msg_lower:
-        topic = "weather checks"
-    elif "news" in msg_lower:
-        topic = "news"
-    elif any(w in msg_lower for w in ["stock", "bitcoin", "crypto"]):
-        topic = "financial data"
-    elif any(w in msg_lower for w in ["recipe", "food", "restaurant", "order food"]):
-        topic = "restaurants or recipes"
-    elif any(w in msg_lower for w in ["translate", "translation"]):
-        topic = "translations"
-    elif any(w in msg_lower for w in ["flight", "hotel", "travel", "uber", "taxi"]):
-        topic = "travel bookings"
-    else:
-        topic = "that"
-    return {
-        "message": f"I can help with your calendar and emails, but not {topic}.",
-        "success": False,
-        "type": "out_of_scope",
-        "data": {"topic": topic},
-    }
+    """
+    SECTION 1 FIX: Route truly out-of-scope requests to LLM for graceful response.
+
+    The OUT_OF_SCOPE_PATTERNS have been drastically reduced to only external action
+    APIs (ordering food/uber, device control). For those, we still let the LLM
+    respond naturally explaining the limitation — no hard-coded refusals.
+    """
+    logger.info("[AGENT] Handling out-of-scope — routing to LLM for graceful response")
+
+    # Let the LLM respond naturally, acknowledging the limitation without being rude
+    system_prompt = self._build_intelligent_system_prompt()
+    user_prompt = self._build_contextual_user_prompt(user_message)
+
+    from models.chat import ChatRequest, ChatMessage
+    chat_request = ChatRequest(
+        prompt=user_prompt,
+        conversation_history=[ChatMessage(role="system", content=system_prompt)],
+        temperature=0.7,
+        max_tokens=300,
+    )
+
+    try:
+        llm_response = await self.chat_service.chat_completion(chat_request)
+        return {
+            "message": llm_response.response,
+            "success": True,
+            "type": "chat",
+            "data": {},
+        }
+    except Exception as e:
+        logger.warning("[AGENT] LLM fallback in out-of-scope failed: %s", e)
+        return {
+            "message": "I'm not able to help with that specific request, but I can assist with your calendar, emails, and general questions.",
+            "success": False,
+            "type": "out_of_scope",
+            "data": {},
+        }
 
 
 # Inject new methods into ExecutiveAgent

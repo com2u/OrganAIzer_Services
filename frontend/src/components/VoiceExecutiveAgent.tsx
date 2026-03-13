@@ -78,7 +78,11 @@ function VoiceExecutiveAgent() {
 
   // ── Build WebSocket URL ─────────────────────────────────────────────────────
   const getWsUrl = useCallback((): string => {
-    const params = `session_id=${sessionId}&user_id=voice_user&calendar_provider=google&mail_provider=gmail`;
+    // Do NOT hard-lock calendar_provider / mail_provider here.
+    // Omitting them lets the Executive Agent apply its own provider resolution
+    // hierarchy (explicit user mention → session preference → clarification).
+    // The backend will ask the user "Google or Microsoft?" when ambiguous.
+    const params = `session_id=${sessionId}&user_id=voice_user`;
     if (API_BASE_URL) {
       // Convert http(s):// → ws(s)://
       const wsBase = API_BASE_URL

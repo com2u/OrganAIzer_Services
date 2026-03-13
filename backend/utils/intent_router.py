@@ -173,12 +173,17 @@ class IntentRouter:
     ]
 
     # ── Out-of-scope patterns ─────────────────────────────────────────────────
+    # SECTION 1 FIX: Only flag things that require external action APIs we don't have.
+    # General knowledge questions (history, science, geography, etc.) MUST go to
+    # GENERAL_MESSAGE so the LLM can answer them. Never block knowledge queries.
     OUT_OF_SCOPE_PATTERNS = [
-        "weather", "temperature", "news", "stocks", "bitcoin",
-        "translate", "calculate", "math", "recipe", "directions",
-        "map", "navigate", "play music", "set alarm", "timer",
-        "sports", "score", "movie", "restaurant", "order food",
-        "uber", "taxi", "flight", "hotel", "book a hotel",
+        # External booking/ordering services that require third-party APIs
+        "order food", "order pizza", "order uber", "book uber", "book a taxi",
+        "book a flight", "book a hotel", "book a restaurant", "make a reservation",
+        "call a cab", "hail a taxi",
+        # Device control that we genuinely cannot do
+        "play music", "set alarm", "set a timer", "set the timer",
+        "turn on the lights", "turn off the lights",
     ]
 
     # ── Calendar intent detection patterns ────────────────────────────────────

@@ -409,6 +409,66 @@ class SlotExtractor:
         if re.match(r'^me\s+(a|an|the)\s+', title_lower):
             return True
 
+        # SECTION 3 FIX: Date/time-only expressions must NEVER become event titles.
+        # Examples that must be blocked:
+        #   "Friday at 9"        — day + time
+        #   "tomorrow at 9"      — relative date + time
+        #   "at 9"               — bare time
+        #   "9am"                — bare time
+        #   "9:00"               — bare time (24h)
+        if SlotExtractor._is_datetime_only_expression(title_lower):
+            logger.info("[TITLE_EXTRACT] ❌ Title '%s' rejected — it is a datetime expression", title_lower)
+            return True
+
+        return False
+
+    @staticmethod
+    def _is_datetime_only_expression(title_lower: str) -> bool:
+        """
+        Return True if the title consists solely of a date/time expression.
+
+        SECTION 3: Prevents date/time phrases from being silently used as
+        event titles — e.g. "Friday at 9", "tomorrow at 9am", "at 9".
+
+        Validated patterns:
+          - Pure time:         "9am", "9:00", "14:30", "at 9", "at 9pm"
+          - Weekday + time:    "friday at 9", "monday at 14:00"
+          - Relative + time:   "tomorrow at 9", "today at 3pm"
+          - Bare weekday:      "friday", "saturday"  (caught earlier but belt+susp.)
+          - Bare time keyword: "morning", "afternoon", "evening", "noon"
+        """
+        import re  # already imported at module level but kept for clarity
+
+        # Pure numeric time: "9:00", "14:30"
+        if re.fullmatch(r'\d{1,2}:\d{2}', title_lower):
+            return True
+
+        # Time with am/pm: "9am", "9pm", "9:30am"
+        if re.fullmatch(r'\d{1,2}(?::\d{2})?\s*(?:am|pm)', title_lower):
+            return True
+
+        # "at X" patterns: "at 9", "at 9am", "at 14:30"
+        if re.fullmatch(r'at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?', title_lower):
+            return True
+
+        # Weekday + "at" + time: "friday at 9", "friday at 9am"
+        _weekdays = r'(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)'
+        if re.fullmatch(_weekdays + r'\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?', title_lower):
+            return True
+
+        # Relative + "at" + time: "tomorrow at 9", "today at 3pm"
+        _relative = r'(?:today|tomorrow|tonight|yesterday)'
+        if re.fullmatch(_relative + r'\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?', title_lower):
+            return True
+
+        # Bare relative: "tomorrow", "today", "tonight"
+        if re.fullmatch(_relative, title_lower):
+            return True
+
+        # Time keywords only: "morning", "afternoon", "evening", "noon", "night"
+        if title_lower in {'morning', 'afternoon', 'evening', 'noon', 'night', 'midnight'}:
+            return True
+
         return False
 
     @staticmethod
