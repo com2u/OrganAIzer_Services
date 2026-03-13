@@ -274,8 +274,8 @@ async def voice_stream(
     websocket:         WebSocket,
     session_id:        str = Query("default"),
     user_id:           str = Query("default_user"),
-    calendar_provider: str = Query("google"),
-    mail_provider:     str = Query("gmail"),
+    calendar_provider: Optional[str] = Query(None),  # None → agent asks user
+    mail_provider:     Optional[str] = Query(None),   # None → agent asks user
 ):
     """
     WebSocket endpoint: realtime voice conversation with Executive AI.

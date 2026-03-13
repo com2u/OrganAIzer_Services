@@ -56,6 +56,16 @@ class CalendarEventCreateRequest(BaseModel):
     attendees: Optional[List[str]] = Field(None, description="List of attendee email addresses")
 
 
+class CalendarEventUpdateRequest(BaseModel):
+    """Request to partially update a calendar event (all fields optional — PATCH semantics)."""
+    summary: Optional[str] = Field(None, description="New event title/summary")
+    description: Optional[str] = Field(None, description="New event description")
+    start: Optional[str] = Field(None, description="New event start time (ISO 8601)")
+    end: Optional[str] = Field(None, description="New event end time (ISO 8601)")
+    location: Optional[str] = Field(None, description="New event location")
+    attendees: Optional[List[str]] = Field(None, description="New list of attendee email addresses")
+
+
 class MailSendRequest(BaseModel):
     """Request to send email."""
     to: Union[str, List[str]] = Field(..., description="Recipient email address(es) - string or list")

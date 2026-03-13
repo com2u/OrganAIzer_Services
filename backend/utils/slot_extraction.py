@@ -214,91 +214,133 @@ class SlotExtractor:
             return title
         
         # PRIORITY 2: "call it X" / "name it X" / "rename it to X" patterns
+        # INTEGRITY FIX: search on original `message` to preserve user casing exactly.
         explicit_patterns = [
             r'call it\s+(.+?)(?:\s*;|\s*$)',
             r'name it\s+(.+?)(?:\s*;|\s*$)',
             r'rename it to\s+(.+?)(?:\s*;|\s*$)',
             r'title:\s*(.+?)(?:\s*;|\s*$)',
         ]
-        
         for pattern in explicit_patterns:
-            match = re.search(pattern, message_lower)
+            match = re.search(pattern, message, re.IGNORECASE)
             if match:
                 title = match.group(1).strip()
-                # Remove trailing punctuation
                 title = re.sub(r'[;,.]$', '', title).strip()
-                
-                # Validate length
                 if len(title) > 80:
                     title = title[:80]
-                
-                # Validate not garbage
+                # INTEGRITY: Do NOT apply .title() — preserve exact user wording
                 if len(title) > 0 and not SlotExtractor._is_garbage_title(title):
-                    logger.info(f"[TITLE_EXTRACT] Found explicit title pattern: '{title}'")
-                    return title.title()
-        
+                    logger.info("[TITLE_EXTRACT] INTEGRITY: exact title from explicit pattern: '%s'", title)
+                    return title
+
         # PRIORITY 3: "called X" pattern
         # "event called Strategy Sync"
-        called_match = re.search(r'(?:event|meeting)\s+called\s+(.+?)(?:\s+at|\s+on|\s+for|\s+tomorrow|\s+today|;|$)', message_lower)
+        # INTEGRITY FIX: search on original `message` to preserve user casing exactly.
+        called_match = re.search(
+            r'(?:event|meeting)\s+called\s+(.+?)(?:\s+at|\s+on|\s+for|\s+tomorrow|\s+today|;|$)',
+            message, re.IGNORECASE,
+        )
         if called_match:
             title = called_match.group(1).strip()
             if len(title) > 80:
                 title = title[:80]
             if not SlotExtractor._is_garbage_title(title):
-                logger.info(f"[TITLE_EXTRACT] Found 'called' pattern: '{title}'")
-                return title.title()
+                logger.info("[TITLE_EXTRACT] INTEGRITY: exact title from 'called' pattern: '%s'", title)
+                return title
         
-        # PRIORITY 4: Title before time marker
+        # PRIORITY 4: "set up a [call|meeting|sync] with X" → "Call with X"
+        call_setup_match = re.search(
+            r'\bset\s+up\s+(?:a\s+)?(?:call|meeting|sync|chat|standup|check.?in)\s+with\s+(.+?)(?:\s+(?:at|on|for|tomorrow|today|next|\d)|;|$)',
+            message_lower,
+        )
+        if call_setup_match:
+            # INTEGRITY: preserve original casing of person name from original message
+            call_setup_match_orig = re.search(
+                r'\bset\s+up\s+(?:a\s+)?(?:call|meeting|sync|chat|standup|check.?in)\s+with\s+(.+?)(?:\s+(?:at|on|for|tomorrow|today|next|\d)|;|$)',
+                message, re.IGNORECASE,
+            )
+            person = call_setup_match_orig.group(1).strip() if call_setup_match_orig else call_setup_match.group(1).strip()
+            if 'call' in message_lower:
+                title_candidate = f"Call with {person}"
+            elif 'sync' in message_lower:
+                title_candidate = f"Sync with {person}"
+            else:
+                title_candidate = f"Meeting with {person}"
+            if not SlotExtractor._is_garbage_title(title_candidate):
+                logger.info("[TITLE_EXTRACT] INTEGRITY: exact title from 'set up call with' pattern: '%s'", title_candidate)
+                return title_candidate
+
+        # PRIORITY 4b: "block X for [title]" — "block two hours tomorrow morning for deep work"
+        # INTEGRITY FIX: use original message casing
+        block_for_match = re.search(
+            r'\bblock\s+.+?\bfor\s+(.+?)(?:\s+(?:on|at|tomorrow|today|next|\d)|;|$)',
+            message, re.IGNORECASE,
+        )
+        if block_for_match:
+            title_candidate = block_for_match.group(1).strip()
+            if len(title_candidate) > 2 and not SlotExtractor._is_garbage_title(title_candidate):
+                logger.info("[TITLE_EXTRACT] INTEGRITY: exact title from 'block for' pattern: '%s'", title_candidate)
+                return title_candidate
+
+        # PRIORITY 5: Title before time marker
         # "Meeting with Chef at 08:00" → extract "Meeting with Chef"
+        # INTEGRITY FIX: use original `message` to preserve casing; do NOT call .title()
         time_markers = [r'\bat\s+\d', r'\b\d+:\d+', r'\b\d+\s*(?:am|pm)', r'\bfrom\s+\d']
         for marker in time_markers:
-            parts = re.split(marker, message, maxsplit=1)
+            parts = re.split(marker, message, maxsplit=1, flags=re.IGNORECASE)
             if len(parts) > 1:
                 potential_title = parts[0].strip()
-                # Remove common prefixes
-                potential_title = re.sub(r'^(?:schedule|add|create|an event|a meeting)\s+(?:a\s+)?(?:an\s+)?(?:event\s+)?(?:meeting\s+)?', '', potential_title, flags=re.IGNORECASE).strip()
-                # Remove semicolons
+                # Strip ONLY the command verb + optional article + optional "event"/"appointment"
+                # IMPORTANT: do NOT strip "meeting" here — it may be part of the actual title
+                # e.g. "Create event Meeting with Chef at 08:00" → we only strip "Create event "
+                potential_title = re.sub(
+                    r'^(?:schedule|set\s+up|block\s+(?:out\s+)?(?:\d+\s+\w+\s+)?|add|create)\s+(?:a\s+|an\s+)?(?:event\s+|appointment\s+)?',
+                    '', potential_title, flags=re.IGNORECASE,
+                ).strip()
                 potential_title = re.sub(r';', '', potential_title).strip()
-                
-                # Validate
                 if len(potential_title) > 2 and len(potential_title) <= 80 and not SlotExtractor._is_garbage_title(potential_title):
-                    logger.info(f"[TITLE_EXTRACT] Found title before time marker: '{potential_title}'")
-                    return potential_title.title()
-        
-        # PRIORITY 5: Title before date marker
-        # "Team meeting tomorrow" → "Team Meeting"
-        date_keywords = ['tomorrow', 'today', 'next week', 'next monday', 'next tuesday', 'next wednesday', 'next thursday', 'next friday', 'next saturday', 'next sunday']
+                    logger.info("[TITLE_EXTRACT] INTEGRITY: exact title before time marker: '%s'", potential_title)
+                    return potential_title  # INTEGRITY: no .title() — preserve user wording
+
+        # PRIORITY 6: Title before date marker
+        # "Team meeting tomorrow" → "Team meeting" (preserve original casing)
+        # INTEGRITY FIX: split on original casing `message`, not message_lower
+        date_keywords = ['tomorrow', 'today', 'next week', 'next monday', 'next tuesday',
+                         'next wednesday', 'next thursday', 'next friday', 'next saturday', 'next sunday']
         for keyword in date_keywords:
             if keyword in message_lower:
-                parts = message_lower.split(keyword, 1)
+                # Split on case-insensitive keyword but keep original text
+                parts = re.split(re.escape(keyword), message, maxsplit=1, flags=re.IGNORECASE)
                 potential_title = parts[0].strip()
-                potential_title = re.sub(r'^(?:schedule|add|create|an event|a meeting)\s+(?:a\s+)?(?:an\s+)?(?:event\s+)?(?:meeting\s+)?', '', potential_title, flags=re.IGNORECASE).strip()
+                potential_title = re.sub(
+                    r'^(?:schedule|set\s+up|block\s+(?:out\s+)?|add|create)\s+(?:a\s+|an\s+)?(?:event\s+|appointment\s+)?',
+                    '', potential_title, flags=re.IGNORECASE,
+                ).strip()
                 potential_title = re.sub(r';', '', potential_title).strip()
-                
-                # Validate
                 if len(potential_title) > 2 and len(potential_title) <= 80 and not SlotExtractor._is_garbage_title(potential_title):
-                    logger.info(f"[TITLE_EXTRACT] Found title before date keyword: '{potential_title}'")
-                    return potential_title.title()
-        
-        # PRIORITY 6: "schedule X" or "add X" or "create X" with strict cleanup
-        match = re.search(r'(?:schedule|add|create)\s+(?:a\s+)?(?:an\s+)?(?:event\s+)?(?:meeting\s+)?(?:with\s+)?(?:for\s+)?(.+?)(?:\s+at|\s+on|\s+for|\s+tomorrow|\s+today|\s+next|;|$)', message_lower)
+                    logger.info("[TITLE_EXTRACT] INTEGRITY: exact title before date keyword: '%s'", potential_title)
+                    return potential_title  # INTEGRITY: no .title()
+
+        # PRIORITY 7: "schedule X" or "add X" or "create X" with strict cleanup
+        # INTEGRITY FIX: use original `message` to preserve casing; do NOT call .title()
+        match = re.search(
+            r'(?:schedule|add|create)\s+(?:a\s+)?(?:an\s+)?(?:event\s+)?(?:meeting\s+)?(?:with\s+)?(?:for\s+)?(.+?)(?:\s+at|\s+on|\s+for|\s+tomorrow|\s+today|\s+next|;|$)',
+            message, re.IGNORECASE,
+        )
         if match:
             title = match.group(1).strip()
-            # Clean up common words
-            title = re.sub(r'\s+(at|on|for|tomorrow|today|next)\s+.*', '', title).strip()
-            
-            # Validate
+            title = re.sub(r'\s+(at|on|for|tomorrow|today|next)\s+.*', '', title, flags=re.IGNORECASE).strip()
             if len(title) > 1 and len(title) <= 80 and not SlotExtractor._is_garbage_title(title):
-                logger.info(f"[TITLE_EXTRACT] Found 'schedule/add' pattern: '{title}'")
-                return title.title()
-        
-        # PRIORITY 7: If message is short and specific, might be a title
+                logger.info("[TITLE_EXTRACT] INTEGRITY: exact title from schedule/add pattern: '%s'", title)
+                return title  # INTEGRITY: no .title()
+
+        # PRIORITY 8: If message is short and specific, might be a title
+        # INTEGRITY: preserve original message casing
         if len(message.split()) <= 5 and not re.search(r'\d|tomorrow|today|next', message_lower):
-            # Check if it's not a question or command
             if not any(message_lower.startswith(word) for word in ['what', 'when', 'where', 'who', 'why', 'how', 'is', 'are', 'can', 'do', 'add', 'schedule', 'create']):
                 if not SlotExtractor._is_garbage_title(message):
-                    logger.info(f"[TITLE_EXTRACT] Using entire message as title: '{message}'")
-                    return message.title()
+                    logger.info("[TITLE_EXTRACT] INTEGRITY: using entire message as title: '%s'", message)
+                    return message  # INTEGRITY: no .title()
         
         # No valid title found
         logger.info("[TITLE_EXTRACT] No valid title found - will default to 'Meeting'")
@@ -737,6 +779,16 @@ class SlotExtractor:
                     days_ahead += 7
                 return (today + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
 
+        # FIX H-04: Bare weekday ("on friday", "friday", "meeting friday") →
+        # next upcoming occurrence. Checked AFTER "next/last/this" prefixes so
+        # those still win. Uses word-boundary regex to avoid partial matches.
+        for day_name, day_num in weekdays.items():
+            if re.search(r'\b' + day_name + r'\b', message_lower):
+                days_ahead = (day_num - today.weekday()) % 7
+                if days_ahead == 0:
+                    days_ahead = 7  # "friday" when today IS friday → next Friday
+                return (today + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+
         # Explicit date formats
         # YYYY-MM-DD
         match = re.search(r'\b(\d{4})-(\d{2})-(\d{2})\b', message)
@@ -753,6 +805,48 @@ class SlotExtractor:
                 return date_obj.strftime("%Y-%m-%d")
             except ValueError:
                 pass
+
+        # FIX H-03: Named month-day parsing ("March 31", "April 5",
+        # "31st March", "31 March", "31st of March").
+        # Resolves to the CURRENT year; if the resulting date is in the past
+        # (i.e. the month already passed this year), it rolls forward to next year.
+        _MONTHS = {
+            'january': 1, 'february': 2, 'march': 3, 'april': 4,
+            'may': 5, 'june': 6, 'july': 7, 'august': 8,
+            'september': 9, 'october': 10, 'november': 11, 'december': 12,
+        }
+        _MONTH_NAMES = '|'.join(_MONTHS.keys())
+        # "March 31" / "March 31st"
+        m = re.search(
+            r'\b(' + _MONTH_NAMES + r')\s+(\d{1,2})(?:st|nd|rd|th)?\b',
+            message_lower,
+        )
+        if not m:
+            # "31 March" / "31st March" / "31st of March"
+            m = re.search(
+                r'\b(\d{1,2})(?:st|nd|rd|th)?(?:\s+of)?\s+(' + _MONTH_NAMES + r')\b',
+                message_lower,
+            )
+            if m:
+                # swap groups so month is always first
+                day_part, month_part = m.group(1), m.group(2)
+            else:
+                day_part = month_part = None
+        else:
+            month_part, day_part = m.group(1), m.group(2)
+
+        if month_part and day_part:
+            try:
+                month_num = _MONTHS[month_part]
+                day_num2 = int(day_part)
+                year = today.year
+                candidate = datetime(year, month_num, day_num2)
+                # If date already passed this year, use next year
+                if candidate.date() < today.date():
+                    candidate = datetime(year + 1, month_num, day_num2)
+                return candidate.strftime("%Y-%m-%d")
+            except ValueError:
+                pass  # invalid day for month (e.g. Feb 31) — fall through
 
         return None
     
@@ -1050,6 +1144,172 @@ class SlotExtractor:
     # =========================================================================
     # EMAIL READ SLOT EXTRACTION
     # =========================================================================
+
+    @staticmethod
+    def extract_calendar_update_slots(message: str) -> Dict[str, Any]:
+        """
+        Extract slots for CALENDAR_UPDATE intent.
+
+        Extracts:
+          - search_query  (str)  : event title/name fragment to find
+          - search_date   (str)  : ISO date to narrow search
+          - search_time   (str)  : HH:MM original time (to match event by start time)
+          - update_type   (str)  : "time" | "title" | "location" | "multi"
+          - new_time      (str)  : new start time HH:MM
+          - new_end_time  (str)  : new end time HH:MM (optional)
+          - new_date      (str)  : new date ISO (optional — for reschedule to different day)
+          - new_title     (str)  : new event title/name
+          - new_location  (str)  : new location
+
+        Examples handled:
+          "Move my 3pm meeting to 4pm"
+            → search_time=15:00, new_time=16:00
+          "Rename lunch with Anna to lunch with Patrick"
+            → search_query="lunch with Anna", new_title="lunch with Patrick"
+          "Change tomorrow's dentist appointment to 11:00"
+            → search_query="dentist appointment", search_date=tomorrow, new_time=11:00
+          "Update the location of my Friday interview to Berlin office"
+            → search_query="friday interview", new_location="Berlin office"
+        """
+        msg_lower = message.lower().strip()
+        today = datetime.now()
+        slots: Dict[str, Any] = {}
+
+        # ── 1. Rename pattern: "rename X to Y" ───────────────────────────────
+        rename_match = re.search(
+            r'\brename\s+(.+?)\s+to\s+(.+?)(?:\s*;|\s*$)',
+            message, re.IGNORECASE,
+        )
+        if rename_match:
+            original = rename_match.group(1).strip()
+            new_name = rename_match.group(2).strip()
+            # Strip leading "my " / "the "
+            original = re.sub(r'^(?:my|the)\s+', '', original, flags=re.IGNORECASE)
+            slots["search_query"] = original
+            slots["new_title"] = new_name
+            slots["update_type"] = "title"
+            logger.info("[CAL_UPDATE_SLOTS] Rename: '%s' → '%s'", original, new_name)
+
+        # ── 2. Location update: "update/change the location of X to Y" ────────
+        if not slots.get("new_location"):
+            loc_match = re.search(
+                r'\b(?:update|change)\s+(?:the\s+)?location(?:\s+of\s+(.+?))?\s+to\s+(.+?)(?:\s*;|\s*$)',
+                message, re.IGNORECASE,
+            )
+            if loc_match:
+                event_ref = loc_match.group(1)
+                new_loc = loc_match.group(2).strip()
+                slots["new_location"] = new_loc
+                if not slots.get("update_type"):
+                    slots["update_type"] = "location"
+                if event_ref and not slots.get("search_query"):
+                    slots["search_query"] = re.sub(
+                        r'^(?:my|the)\s+', '', event_ref.strip(), flags=re.IGNORECASE
+                    )
+                logger.info("[CAL_UPDATE_SLOTS] Location update: event=%r loc='%s'", event_ref, new_loc)
+
+        # ── 3. Time change: "move/reschedule/push/change X [from T1] to T2" ──
+        if not slots.get("new_time"):
+            # Pattern A: "[verb] my NNpm [meeting] to NNpm"
+            time_change = re.search(
+                r'\b(?:move|reschedule|push|push\s+back|change|shift)\s+'
+                r'(?:my\s+)?(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*'
+                r'(?:(?:am|pm)?\s*)?(?:\w+\s*)*?(?:meeting|appointment|event|call|sync)?\s*'
+                r'to\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)',
+                msg_lower, re.IGNORECASE,
+            )
+            if time_change:
+                orig_time_str = time_change.group(1).strip()
+                new_time_str  = time_change.group(2).strip()
+                # Parse "original" time as search_time
+                parsed_orig = SlotExtractor._parse_ampm_time(orig_time_str)
+                parsed_new  = SlotExtractor._parse_ampm_time(new_time_str)
+                if parsed_orig:
+                    slots["search_time"] = parsed_orig
+                if parsed_new:
+                    slots["new_time"] = parsed_new
+                    if not slots.get("update_type"):
+                        slots["update_type"] = "time"
+                logger.info("[CAL_UPDATE_SLOTS] Time shift: %s → %s", parsed_orig, parsed_new)
+
+            # Pattern B: "to NNpm" / "to NN:MM" — used when event identified by name
+            if not slots.get("new_time"):
+                to_time = re.search(
+                    r'\bto\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*(?:;|$)',
+                    msg_lower,
+                )
+                if to_time:
+                    parsed = SlotExtractor._parse_ampm_time(to_time.group(1).strip())
+                    if parsed:
+                        slots["new_time"] = parsed
+                        if not slots.get("update_type"):
+                            slots["update_type"] = "time"
+
+        # ── 4. Event-name search query ────────────────────────────────────────
+        if not slots.get("search_query"):
+            # Generic: "[verb] my [event_name] (from|at|to)..."
+            name_match = re.search(
+                r'\b(?:move|reschedule|change|update|push|shift|cancel|edit)\s+'
+                r'(?:my\s+|the\s+|tomorrow\'?s?\s+|today\'?s?\s+)?'
+                r'(.+?)'
+                r'(?:\s+(?:from|at|to)\b|\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)|\s*;|$)',
+                message, re.IGNORECASE,
+            )
+            if name_match:
+                raw = name_match.group(1).strip()
+                raw = re.sub(r'^(?:my|the)\s+', '', raw, flags=re.IGNORECASE)
+                if len(raw) > 1 and not SlotExtractor._is_garbage_title(raw):
+                    slots["search_query"] = raw
+                    logger.info("[CAL_UPDATE_SLOTS] Event search from verb pattern: '%s'", raw)
+
+        # ── 5. Date search context ────────────────────────────────────────────
+        if "tomorrow" in msg_lower:
+            slots["search_date"] = (today + timedelta(days=1)).strftime("%Y-%m-%d")
+        elif "today" in msg_lower:
+            slots["search_date"] = today.strftime("%Y-%m-%d")
+        else:
+            date_val = SlotExtractor._extract_date(message, msg_lower)
+            if date_val:
+                slots["search_date"] = date_val
+
+        # ── 6. Determine update_type if multi-field ───────────────────────────
+        if not slots.get("update_type"):
+            kinds = sum([
+                1 if slots.get("new_time") else 0,
+                1 if slots.get("new_title") else 0,
+                1 if slots.get("new_location") else 0,
+            ])
+            if kinds > 1:
+                slots["update_type"] = "multi"
+            elif kinds == 1:
+                if slots.get("new_time"):
+                    slots["update_type"] = "time"
+                elif slots.get("new_title"):
+                    slots["update_type"] = "title"
+                elif slots.get("new_location"):
+                    slots["update_type"] = "location"
+
+        logger.info("[CAL_UPDATE_SLOTS] Extracted: %s", slots)
+        return slots
+
+    @staticmethod
+    def _parse_ampm_time(time_str: str) -> Optional[str]:
+        """Parse a spoken time string like '3pm', '15:00', '3:30pm' to HH:MM."""
+        time_str = time_str.strip().lower()
+        m = re.match(r'^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$', time_str)
+        if not m:
+            return None
+        h, mins, ampm = m.group(1), m.group(2), m.group(3)
+        h = int(h)
+        mins = int(mins) if mins else 0
+        if ampm == 'pm' and h < 12:
+            h += 12
+        elif ampm == 'am' and h == 12:
+            h = 0
+        elif ampm is None and h < 8:
+            # Ambiguous bare number < 8 — treat as PM heuristically
+            h += 12
+        return f"{h:02d}:{mins:02d}"
 
     @staticmethod
     def extract_email_read_slots(message: str) -> Dict[str, Any]:

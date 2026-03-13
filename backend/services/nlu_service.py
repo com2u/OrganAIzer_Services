@@ -133,6 +133,10 @@ class NLUExtractor:
             if not NLUExtractor._has_correction_words(msg_lower):
                 return NLUResult(intent="cancel", confidence=0.95, raw_input=message)
 
+        # ── "never mind" / "actually" cancel-or-reset signals ─────────────────
+        if any(kw in msg_lower for kw in ("never mind", "nevermind", "forget it", "scrap it")):
+            return NLUResult(intent="cancel", confidence=1.0, raw_input=message)
+
         # ── SLOT EXTRACTION (bypass existing-slot guards) ─────────────────────
         updates: Dict[str, Any] = {}
 
@@ -147,10 +151,25 @@ class NLUExtractor:
         time_val = NLUExtractor._extract_time(msg, msg_lower)
         if time_val:
             updates["time"] = time_val
+            updates["start_time"] = time_val
 
         date_val = NLUExtractor._extract_date(msg_lower)
         if date_val:
             updates["date"] = date_val
+
+        duration_delta = NLUExtractor._extract_duration_delta(msg, msg_lower, current_slots)
+        if duration_delta is not None:
+            updates["duration"] = duration_delta
+
+        attendee = NLUExtractor._extract_attendee(msg)
+        if attendee:
+            # Append to existing attendees list or create new one
+            existing = current_slots.get("attendees") or []
+            if isinstance(existing, list):
+                if attendee not in existing:
+                    updates["attendees"] = existing + [attendee]
+            else:
+                updates["attendees"] = [attendee]
 
         if task_type in ("send_email", "draft_email"):
             subject = NLUExtractor._extract_subject(msg)
@@ -281,6 +300,83 @@ class NLUExtractor:
         m = re.search(r"(?:subject|re|regarding)\s*:\s*(.+?)(?:\n|$|\.)", msg, re.IGNORECASE)
         if m:
             return m.group(1).strip()
+        return None
+
+    @staticmethod
+    def _extract_duration_delta(
+        msg: str,
+        msg_lower: str,
+        current_slots: Dict[str, Any],
+    ) -> Optional[int]:
+        """
+        Extract duration corrections including deltas.
+
+        Handles:
+        - Absolute: "make it two hours" / "change to 90 minutes" → absolute value
+        - Additive:  "add 30 more minutes" / "add another 30 min" → current + 30
+        - Additive:  "push it back an hour" / "push back 30 minutes" → adjust start_time
+        - Relative:  "add 30 more minutes" → current_duration + 30
+
+        Returns new absolute duration in minutes, or None if no pattern matched.
+        """
+        # ── Additive delta patterns ───────────────────────────────────────────
+        # "add 30 more minutes", "add another hour", "add 30 minutes more"
+        add_match = re.search(
+            r'\badd\s+(?:another\s+|more\s+)?(\d+)\s*(?:more\s+)?(?:minutes?|mins?)\b',
+            msg_lower,
+        )
+        if add_match:
+            delta = int(add_match.group(1))
+            current_dur = current_slots.get("duration", 60)
+            return int(current_dur) + delta
+
+        add_hour_match = re.search(
+            r'\badd\s+(?:another\s+|more\s+)?(\d+|an?|one|two|three)\s*(?:more\s+)?hours?\b',
+            msg_lower,
+        )
+        if add_hour_match:
+            raw = add_hour_match.group(1)
+            word_map = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3}
+            h = word_map.get(raw, None) or (int(raw) if raw.isdigit() else 1)
+            current_dur = current_slots.get("duration", 60)
+            return int(current_dur) + h * 60
+
+        # ── Absolute duration ─────────────────────────────────────────────────
+        # "make it two hours", "change to 90 minutes", "actually make it 2 hours"
+        abs_match = re.search(
+            r'(?:make\s+it|change\s+(?:to|it\s+to)|set\s+(?:it\s+)?to)\s+'
+            r'(\d+(?:\.\d+)?|one|two|three|four|five|an?)\s*(hours?|minutes?|mins?|hrs?)',
+            msg_lower,
+        )
+        if abs_match:
+            raw_num, unit = abs_match.group(1), abs_match.group(2)
+            word_map = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
+            num = word_map.get(raw_num) or float(raw_num)
+            if "hour" in unit or "hr" in unit:
+                return int(num * 60)
+            return int(num)
+
+        return None
+
+    @staticmethod
+    def _extract_attendee(msg: str) -> Optional[str]:
+        """
+        Extract an attendee to add.
+
+        Patterns:
+        - "invite john@company.com"
+        - "add john@company.com"
+        - "also invite john@company.com"
+        - "include sarah@example.com"
+        """
+        invite_match = re.search(
+            r'\b(?:invite|add|include|also\s+invite|cc)\s+'
+            r'([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})\b',
+            msg,
+            re.IGNORECASE,
+        )
+        if invite_match:
+            return invite_match.group(1)
         return None
 
     @staticmethod

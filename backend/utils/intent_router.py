@@ -42,11 +42,19 @@ class IntentType:
     # Dedicated calendar intents
     CALENDAR_CREATE = "CALENDAR_CREATE"
     CALENDAR_LIST = "CALENDAR_LIST"
+    CALENDAR_UPDATE = "CALENDAR_UPDATE"
+    CALENDAR_DELETE = "CALENDAR_DELETE"
     # Draft correction — user says "no, use outlook" / "no, call it X" / "make it 21:00"
     MODIFY_DRAFT = "MODIFY_DRAFT"
     # Reading intents (no write, no confirmation needed)
     EMAIL_READ = "EMAIL_READ"
     CALENDAR_READ = "CALENDAR_READ"
+    # Email write intents
+    EMAIL_SEND = "EMAIL_SEND"
+    EMAIL_REPLY = "EMAIL_REPLY"
+    EMAIL_FORWARD = "EMAIL_FORWARD"
+    # Out-of-scope
+    OUT_OF_SCOPE = "OUT_OF_SCOPE"
 
 
 class IntentRouter:
@@ -65,14 +73,17 @@ class IntentRouter:
         "yes", "y", "yep", "yeah", "yup", "sure",
         "send it", "create it", "add it", "schedule it",
         "looks good", "confirm", "approve", "go ahead",
-        "do it", "okay", "ok", "please"
+        "do it", "okay", "ok", "please", "sounds good",
+        "perfect", "great", "absolutely", "definitely",
+        "let's do it", "go for it", "make it happen",
     ]
-    
+
     CANCEL_KEYWORDS = [
         "cancel", "stop", "abort", "never mind", "nevermind",
-        "forget it", "don't", "no don't", "quit"
+        "forget it", "don't", "no don't", "quit", "nope",
+        "drop it", "discard", "scrap it", "not anymore",
     ]
-    
+
     DECLINE_OPTIONAL_KEYWORDS = [
         "no", "no thanks", "no thank you", "none", "nope",
         "skip", "not needed", "no one", "nobody", "nothing"
@@ -105,6 +116,70 @@ class IntentRouter:
         r'google\s+cale?ndar?|gmail\s+calendar|google|gmail)\b',
         re.IGNORECASE,
     )
+
+    # ── Calendar UPDATE patterns ──────────────────────────────────────────────
+    CALENDAR_UPDATE_PATTERNS = [
+        # Time-change patterns
+        "move my", "reschedule my", "reschedule the", "change my meeting",
+        "push back my", "push my meeting", "delay my meeting",
+        "move the meeting", "change the time of", "shift my meeting",
+        "change time to", "move it to", "push it to", "reschedule to",
+        "update my meeting", "change my appointment",
+        # Title-change / rename patterns
+        "rename my", "rename the", "rename lunch", "rename meeting",
+        "rename appointment", "rename event", "change the name",
+        "change the title", "update the title", "update the name",
+        # Location-change patterns
+        "update the location", "change the location", "change location to",
+        "update location of", "move the location",
+        # Possessive date patterns like "change tomorrow's dentist"
+        "change tomorrow's", "change today's", "update tomorrow's", "update today's",
+        # Generic update
+        "update the event", "update my event", "update my appointment",
+        "update my calendar", "edit my meeting", "edit my event",
+        "edit the event", "edit the meeting",
+    ]
+
+    # ── Calendar DELETE patterns ──────────────────────────────────────────────
+    CALENDAR_DELETE_PATTERNS = [
+        "cancel my meeting", "cancel my appointment", "cancel the meeting",
+        "delete the event", "delete my event", "remove the meeting",
+        "remove the event", "remove my appointment", "delete my meeting",
+        "cancel the appointment", "cancel the event",
+    ]
+
+    # ── Email SEND patterns ──────────────────────────────────────────────────
+    EMAIL_SEND_PATTERNS = [
+        "shoot an email", "shoot a quick email", "shoot a note",
+        "send an email to", "send a message to", "email to",
+        "compose an email", "write an email to", "write to",
+        "drop a note to", "drop an email to", "fire off an email",
+        "dash off an email to", "message to", "reach out to",
+        "let them know", "tell them that",
+    ]
+
+    # ── Email REPLY patterns ──────────────────────────────────────────────────
+    EMAIL_REPLY_PATTERNS = [
+        "reply to", "respond to", "write back to", "reply and say",
+        "respond and say", "reply back", "get back to",
+        "reply to his", "reply to her", "reply to their",
+        "reply to the email", "answer the email",
+    ]
+
+    # ── Email FORWARD patterns ────────────────────────────────────────────────
+    EMAIL_FORWARD_PATTERNS = [
+        "forward", "fwd", "forward the email", "forward this email",
+        "pass along", "send along to",
+    ]
+
+    # ── Out-of-scope patterns ─────────────────────────────────────────────────
+    OUT_OF_SCOPE_PATTERNS = [
+        "weather", "temperature", "news", "stocks", "bitcoin",
+        "translate", "calculate", "math", "recipe", "directions",
+        "map", "navigate", "play music", "set alarm", "timer",
+        "sports", "score", "movie", "restaurant", "order food",
+        "uber", "taxi", "flight", "hotel", "book a hotel",
+    ]
 
     # ── Calendar intent detection patterns ────────────────────────────────────
     CALENDAR_CREATE_PATTERNS = [
@@ -173,7 +248,49 @@ class IntentRouter:
         "do i have anything at", "do i have a meeting at",
         "events this week", "events next week",
         "what's next", "what is next",
+        # Natural week-overview queries
+        "what does my week look like", "what's my week look like",
+        "what does the week look like", "week look like",
+        "how does my week look",
     ]
+
+    @staticmethod
+    def _detect_email_send_intent(message: str) -> bool:
+        """Detect if message is a request to SEND/COMPOSE an email."""
+        for pattern in IntentRouter.EMAIL_SEND_PATTERNS:
+            if pattern in message:
+                return True
+        # "email to <address>" pattern
+        if re.search(r'\bemail\s+to\s+\w', message):
+            return True
+        # "email <name>" e.g. "email anna about the report"
+        if re.search(r'\bemail\s+[A-Z][a-z]', message):
+            return True
+        return False
+
+    @staticmethod
+    def _detect_email_reply_intent(message: str) -> bool:
+        """Detect if message is a request to REPLY to an email."""
+        for pattern in IntentRouter.EMAIL_REPLY_PATTERNS:
+            if pattern in message:
+                return True
+        return False
+
+    @staticmethod
+    def _detect_email_forward_intent(message: str) -> bool:
+        """Detect if message is a request to FORWARD an email."""
+        for pattern in IntentRouter.EMAIL_FORWARD_PATTERNS:
+            if pattern in message:
+                return True
+        return False
+
+    @staticmethod
+    def _detect_out_of_scope(message: str) -> bool:
+        """Detect if message is completely out of scope."""
+        for pattern in IntentRouter.OUT_OF_SCOPE_PATTERNS:
+            if pattern in message:
+                return True
+        return False
 
     @staticmethod
     def _detect_email_read_intent(message: str) -> bool:
@@ -182,6 +299,11 @@ class IntentRouter:
 
         Returns True if EMAIL_READ intent is detected.
         """
+        # Make sure it's not a SEND/REPLY/FORWARD intent first
+        send_indicators = ["send", "draft", "write", "compose", "reply", "respond", "forward"]
+        if any(v in message for v in send_indicators):
+            return False
+
         for pattern in IntentRouter.EMAIL_READ_PATTERNS:
             if pattern in message:
                 return True
@@ -194,10 +316,7 @@ class IntentRouter:
         if re.search(r'\b(email|emails|inbox|mail)\b', message):
             read_verbs = ["what", "show", "list", "check", "read", "any", "do i have", "have i", "summarize"]
             if any(v in message for v in read_verbs):
-                # Make sure it's not a SEND intent
-                send_indicators = ["send", "draft", "write", "compose", "reply", "forward"]
-                if not any(v in message for v in send_indicators):
-                    return True
+                return True
 
         return False
 
@@ -214,21 +333,46 @@ class IntentRouter:
         """
         Detect calendar-specific intents from free text.
 
-        Returns IntentType.CALENDAR_CREATE, CALENDAR_LIST, CALENDAR_READ, or None.
+        Returns CALENDAR_CREATE, CALENDAR_UPDATE, CALENDAR_DELETE, CALENDAR_LIST, CALENDAR_READ, or None.
 
         Detection order:
+        0. DELETE patterns — "cancel my meeting with Sarah"
+        0b. UPDATE patterns — "move my 10am to 11", "reschedule my meeting"
         1. Regex CREATE check  — catches "create ME an event", typos, flexible phrasing
         2. String CREATE patterns — legacy exact-phrase matches (backward compat)
-        3. LIST patterns  — upgrade to CALENDAR_READ when date modifier present
-        4. READ patterns  — richer date/time queries
-
-        The regex check (step 1) is intentionally placed BEFORE the string patterns
-        so that "create me an event on my outlook calender …" is caught even though
-        none of the legacy patterns contain the word "me".
+        3. Natural create patterns — "set up a call", "block time for"
+        4. LIST patterns  — upgrade to CALENDAR_READ when date modifier present
+        5. READ patterns  — richer date/time queries
         """
+        # ── Step 0: DELETE patterns (checked first — most specific intent) ──
+        for pattern in IntentRouter.CALENDAR_DELETE_PATTERNS:
+            if pattern in message:
+                logger.debug("[CALENDAR_INTENT] CALENDAR_DELETE: '%s'", message[:80])
+                return IntentType.CALENDAR_DELETE
+
+        # ── Step 0b: UPDATE patterns ─────────────────────────────────────────
+        for pattern in IntentRouter.CALENDAR_UPDATE_PATTERNS:
+            if pattern in message:
+                logger.debug("[CALENDAR_INTENT] CALENDAR_UPDATE: '%s'", message[:80])
+                return IntentType.CALENDAR_UPDATE
+
+        # Also catch "move my Xam to Y" / "move my Xpm meeting to Y" patterns
+        if re.search(r'\bmove\s+my\s+\d{1,2}(?::\d{2})?\s*(am|pm)', message):
+            return IntentType.CALENDAR_UPDATE
+
+        # "rename [event] to [new name]" — catch rename without explicit prefix
+        if re.search(r'\brename\b.{1,60}\bto\b', message, re.IGNORECASE):
+            return IntentType.CALENDAR_UPDATE
+
+        # "change [event] to [new time/value]"
+        if re.search(r'\bchange\s+\w.{2,50}\bto\s+\d', message, re.IGNORECASE):
+            return IntentType.CALENDAR_UPDATE
+
+        # Tomorrow's / today's event change
+        if re.search(r"\b(tomorrow|today)'?s\b.{3,50}\bto\b", message, re.IGNORECASE):
+            return IntentType.CALENDAR_UPDATE
+
         # ── Step 1: Regex-based CREATE detection (PRIMARY) ─────────────────
-        # Handles flexible phrasing: "create me an event", "add me a meeting",
-        # "book a quick appointment", etc.
         if IntentRouter._CALENDAR_CREATE_RE.search(message):
             logger.debug("[CALENDAR_INTENT] Regex-matched CALENDAR_CREATE: '%s'", message[:80])
             return IntentType.CALENDAR_CREATE
@@ -236,20 +380,30 @@ class IntentRouter:
         # ── Step 2: String-based CREATE patterns (FALLBACK) ────────────────
         for pattern in IntentRouter.CALENDAR_CREATE_PATTERNS:
             if pattern in message:
-                # Extra guard: "till"/"until" only triggers CREATE when a time is present
                 if pattern in ("till ", "until "):
                     if not re.search(r'\d{1,2}[:\.]?\d{0,2}\s*(till|until)', message):
                         continue
                 return IntentType.CALENDAR_CREATE
 
-        # ── Step 3: LIST patterns (upgrade to READ when date modifier present) ─
+        # ── Step 3: Natural CREATE patterns not covered by regex ─────────────
+        # "set up a call with X", "set up a meeting with X"
+        if re.search(r'\bset\s+up\s+(?:a\s+)?(?:call|meeting|chat|sync|standup|check.?in)\b', message, re.IGNORECASE):
+            return IntentType.CALENDAR_CREATE
+        # "block X hours/minutes for Y" / "block time for Y"
+        if re.search(r'\bblock\s+(?:out\s+)?(?:\d+\s+(?:hours?|minutes?|hrs?|mins?)|\btime\b)\b', message, re.IGNORECASE):
+            return IntentType.CALENDAR_CREATE
+        # "schedule a call/sync/chat"
+        if re.search(r'\bschedule\s+(?:a\s+)?(?:call|sync|chat|standup|check.?in)\b', message, re.IGNORECASE):
+            return IntentType.CALENDAR_CREATE
+
+        # ── Step 4: LIST patterns (upgrade to READ when date modifier present) ─
         for pattern in IntentRouter.CALENDAR_LIST_PATTERNS:
             if pattern in message:
                 if IntentRouter._CALENDAR_DATE_MODIFIERS.search(message):
                     return IntentType.CALENDAR_READ
                 return IntentType.CALENDAR_LIST
 
-        # ── Step 4: READ patterns (richer date/time queries) ───────────────
+        # ── Step 5: READ patterns (richer date/time queries) ───────────────
         for pattern in IntentRouter.CALENDAR_READ_PATTERNS:
             if pattern in message:
                 return IntentType.CALENDAR_READ
@@ -486,12 +640,53 @@ class IntentRouter:
                 }
 
         # =================================================================
-        # PRIORITY 6: READ INTENTS + CALENDAR INTENT DETECTION (no locked task)
-        # Runs before GENERAL_MESSAGE so read/calendar phrases are never
-        # dropped into LLM reasoning.
+        # PRIORITY 6: READ/WRITE INTENTS + CALENDAR (no locked task)
+        # Runs before GENERAL_MESSAGE so phrases are never dropped into LLM.
         # =================================================================
 
-        # EMAIL_READ — detected first to avoid calendar overlap
+        # Out-of-scope detection — respond gracefully, not with confusion
+        if IntentRouter._detect_out_of_scope(message_lower):
+            logger.info("[INTENT_ROUTER] ✓ OUT_OF_SCOPE detected")
+            return {
+                "intent_type": IntentType.OUT_OF_SCOPE,
+                "extracted_slots": {},
+                "normalized_message": message,
+                "confidence": 0.90,
+                "reasoning": "Out-of-scope topic detected",
+            }
+
+        # EMAIL write intents — checked before read so "reply" etc. don't fall through
+        if IntentRouter._detect_email_forward_intent(message_lower):
+            logger.info("[INTENT_ROUTER] ✓ EMAIL_FORWARD detected")
+            return {
+                "intent_type": IntentType.EMAIL_FORWARD,
+                "extracted_slots": {},
+                "normalized_message": message,
+                "confidence": 0.90,
+                "reasoning": "Email forward intent detected",
+            }
+
+        if IntentRouter._detect_email_reply_intent(message_lower):
+            logger.info("[INTENT_ROUTER] ✓ EMAIL_REPLY detected")
+            return {
+                "intent_type": IntentType.EMAIL_REPLY,
+                "extracted_slots": {},
+                "normalized_message": message,
+                "confidence": 0.92,
+                "reasoning": "Email reply intent detected",
+            }
+
+        if IntentRouter._detect_email_send_intent(message_lower):
+            logger.info("[INTENT_ROUTER] ✓ EMAIL_SEND detected")
+            return {
+                "intent_type": IntentType.EMAIL_SEND,
+                "extracted_slots": {},
+                "normalized_message": message,
+                "confidence": 0.92,
+                "reasoning": "Email send/compose intent detected",
+            }
+
+        # EMAIL_READ — checked after write intents
         if IntentRouter._detect_email_read_intent(message_lower):
             logger.info("[INTENT_ROUTER] ✓ EMAIL_READ detected")
             return {
@@ -517,7 +712,7 @@ class IntentRouter:
                     )
 
             logger.info("[CALENDAR_INTENT] ✓ %s detected (provider=%s)",
-                        cal_intent, cal_slots.get("provider", "<ask later>"))
+                        cal_intent, cal_slots.get("provider", "<infer>"))
             logger.info("[INTENT_ROUTER] ✓ %s detected", cal_intent)
             return {
                 "intent_type": cal_intent,
@@ -533,7 +728,7 @@ class IntentRouter:
         # =================================================================
         # DEFAULT: GENERAL_MESSAGE
         # =================================================================
-        
+
         logger.info("[INTENT_ROUTER] ✓ GENERAL_MESSAGE (default)")
         return {
             "intent_type": IntentType.GENERAL_MESSAGE,

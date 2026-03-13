@@ -21,16 +21,22 @@ router = APIRouter()
 # ==============================================================================
 
 class ChatRequest(BaseModel):
-    """Request to chat with the Executive Agent."""
+    """Request to chat with the Executive Agent.
+
+    Provider fields are intentionally Optional[str] = None (no defaults).
+    When None, the Executive Agent MUST ask the user which provider to use
+    (EXEC_PROVIDER_DECISION rule). Setting a value here means the caller /
+    UI has already locked a provider in the active session.
+    """
     message: str
     session_id: Optional[str] = "default"
     user_id: Optional[str] = "default_user"
-    # Legacy single-provider field – kept for backward compat but ignored
-    # when the specific fields below are provided.
+    # Legacy single-provider field – kept for backward compat.
     provider: Optional[str] = None
-    # Separate provider fields – preferred over legacy `provider`
-    mail_provider: Optional[str] = "gmail"       # gmail | outlook
-    calendar_provider: Optional[str] = "google"  # google | outlook
+    # Separate provider fields. MUST default to None so provider clarification
+    # is triggered when the UI has no session-locked provider.
+    mail_provider: Optional[str] = None       # gmail | outlook — None → ask user
+    calendar_provider: Optional[str] = None  # google | outlook — None → ask user
 
 
 class ChatResponse(BaseModel):
@@ -121,13 +127,15 @@ async def chat_with_agent(request: ChatRequest):
         # Initialize Executive Agent with session
         agent = ExecutiveAgent(session_id=request.session_id)
         
-        # Process message – use dedicated provider fields; fall back to legacy `provider`
+        # Process message – pass providers as-is (None allowed).
+        # None ⟹ agent MUST ask user "Which account — Google or Microsoft?"
+        # A non-None value means the UI/session has already locked a provider.
         response = await agent.process_message(
             user_message=request.message,
             user_id=request.user_id,
-            provider=request.provider or "google",
-            mail_provider=request.mail_provider or "gmail",
-            calendar_provider=request.calendar_provider or "google",
+            provider=request.provider,            # None is intentional
+            mail_provider=request.mail_provider,  # None → triggers clarification
+            calendar_provider=request.calendar_provider,  # None → triggers clarification
         )
         
         # ── Collect session state ─────────────────────────────────────────

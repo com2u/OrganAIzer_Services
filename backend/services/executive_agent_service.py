@@ -65,13 +65,23 @@ class ConversationMemory:
     last_question_type: Optional[str] = None
     # Remembered provider preference — set after successful execution, used next time
     preferred_provider: Optional[str] = None
+    # Current user_id — stored on each process_message() call so sub-handlers
+    # (e.g. provider-selection re-dispatch) can access it without an extra param.
+    current_user_id: Optional[str] = None
     # Last clarification message sent — used to detect and break stuck loops (group 10)
     last_clarification_message: Optional[str] = None
     created_at: datetime = field(default_factory=datetime.now)
     last_activity: datetime = field(default_factory=datetime.now)
     
-    MAX_HISTORY = 10  # Keep last 10 messages for context
-    
+    MAX_HISTORY = 20  # Keep last 20 messages for context (needed for context memory)
+
+    # Context memory for email flows
+    last_email_sender: Optional[str] = None    # e.g. "Patrick"
+    last_email_sender_address: Optional[str] = None
+    last_email_thread_id: Optional[str] = None
+    last_email_message_id: Optional[str] = None
+    last_email_subject: Optional[str] = None
+
     def add_message(self, role: str, content: str):
         """Add message to conversation history."""
         self.conversation_history.append({
@@ -176,6 +186,13 @@ class ConversationMemory:
 # For multi-instance deployments replace with Redis / a shared DB.
 _CALENDAR_IDEMPOTENCY_STORE: Dict[str, str] = {}
 
+# FIX C-01: asyncio.Lock to make idempotency check + store atomic across
+# await boundaries.  Without this, two simultaneous "yes" confirmations for
+# the same event both pass the cache-miss check before either one stores the
+# result, creating duplicate calendar events.
+import asyncio as _asyncio
+_CALENDAR_IDEMPOTENCY_LOCK = _asyncio.Lock()
+
 def _compute_calendar_request_id(
     user_id: str,
     title: str,
@@ -249,9 +266,9 @@ class ExecutiveAgent:
         self,
         user_message: str,
         user_id: str = "default_user",
-        provider: str = "google",          # legacy field – kept for backward compat
-        mail_provider: str = "gmail",      # provider used for email actions
-        calendar_provider: str = "google", # provider used for calendar actions
+        provider: Optional[str] = None,          # legacy field – kept for backward compat
+        mail_provider: Optional[str] = None,      # provider used for email actions
+        calendar_provider: Optional[str] = None, # provider used for calendar actions
     ) -> Dict[str, Any]:
         """
         MAIN ENTRY POINT: Process user message with full intelligence pipeline.
@@ -285,6 +302,10 @@ class ExecutiveAgent:
         logger.info(f"\n{'='*80}")
         logger.info(f"[AGENT] Processing message: '{user_message}'")
         logger.info(f"[AGENT] User: {user_id} | mail_provider: {mail_provider} | calendar_provider: {calendar_provider}")
+
+        # Store user_id in session memory so provider-selection re-dispatch handlers
+        # can retrieve it without requiring an extra parameter.
+        self.memory.current_user_id = user_id
 
         try:
             # Add user message to memory
@@ -341,19 +362,20 @@ class ExecutiveAgent:
         user_message: str,
         extracted_slots: Dict[str, Any],
         user_id: str,
-        mail_provider: str = "gmail",
-        calendar_provider: str = "google",
+        mail_provider: Optional[str] = None,
+        calendar_provider: Optional[str] = None,
         # Accept legacy single-provider arg too for any internal call-sites
-        provider: str = None,
+        provider: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Route to appropriate intent handler based on intent type.
 
         Uses mail_provider for email operations, calendar_provider for calendar ops.
         """
-        # Derive convenient single-provider fallback (legacy support)
-        _mail = mail_provider or provider or "gmail"
-        _cal  = calendar_provider or provider or "google"
+        # Derive providers — None propagates to handlers which will request
+        # clarification when no provider can be resolved from message or session.
+        _mail = mail_provider or provider   # None → triggers clarification in handler
+        _cal  = calendar_provider or provider  # None → triggers clarification in handler
 
         # Confirmation handling
         if intent_type == IntentType.CONFIRM_ACTION:
@@ -412,6 +434,33 @@ class ExecutiveAgent:
                 return await self._handle_modify_draft(user_message, extracted_slots, user_id, _cal, _mail)
             return await self._handle_slot_filling(user_message, extracted_slots, user_id, _cal)
 
+        # New email write intents
+        if intent_type == IntentType.EMAIL_SEND:
+            logger.info("[AGENT] ✓ Email send intent detected (EMAIL_SEND)")
+            return await self._handle_send_email(user_message, extracted_slots, user_id, _mail)
+
+        if intent_type == IntentType.EMAIL_REPLY:
+            logger.info("[AGENT] ✓ Email reply intent detected (EMAIL_REPLY)")
+            return await self._handle_email_reply(user_message, user_id, _mail)
+
+        if intent_type == IntentType.EMAIL_FORWARD:
+            logger.info("[AGENT] ✓ Email forward intent detected (EMAIL_FORWARD)")
+            return await self._handle_email_forward(user_message, user_id, _mail)
+
+        # New calendar mutation intents
+        if intent_type == IntentType.CALENDAR_UPDATE:
+            logger.info("[AGENT] ✓ Calendar update intent detected (CALENDAR_UPDATE)")
+            return await self._handle_calendar_update(user_message, user_id, _cal)
+
+        if intent_type == IntentType.CALENDAR_DELETE:
+            logger.info("[AGENT] ✓ Calendar delete intent detected (CALENDAR_DELETE)")
+            return await self._handle_calendar_delete(user_message, user_id, _cal)
+
+        # Out-of-scope topics
+        if intent_type == IntentType.OUT_OF_SCOPE:
+            logger.info("[AGENT] ✓ Out-of-scope detected")
+            return await self._handle_out_of_scope(user_message)
+
         # Topic switch during active task
         if intent_type == IntentType.SWITCH_TOPIC:
             return await self._handle_topic_switch(user_message, user_id, _cal)
@@ -424,8 +473,8 @@ class ExecutiveAgent:
         user_message: str,
         extracted_slots: Dict[str, Any],
         user_id: str,
-        mail_provider: str = "gmail",
-        calendar_provider: str = "google",
+        mail_provider: Optional[str] = None,
+        calendar_provider: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Handle general messages with intent detection for calendar/email operations.
@@ -513,56 +562,33 @@ class ExecutiveAgent:
     
     def _build_intelligent_system_prompt(self) -> str:
         """
-        Build enhanced system prompt for LLM with intelligence guidelines.
-        
-        This is CRITICAL for AI behavior - defines:
-        - Personality and tone
-        - Capabilities
-        - Knowledge domains
-        - Safety protocols
+        Build the system prompt for the LLM.
+        Natural assistant persona — no markdown, no emojis, direct and friendly.
         """
         current_date = self.current_datetime.strftime("%A, %B %d, %Y")
         current_time = self.current_datetime.strftime("%H:%M")
-        
-        return f"""You are the OrganAIzer Executive Agent, an intelligent, professional, and helpful AI assistant.
+        tomorrow = (self.current_datetime + timedelta(days=1)).strftime("%Y-%m-%d")
 
-CURRENT CONTEXT:
-- Date: {current_date}
-- Time: {current_time}
-- Timezone: {self.timezone}
-
-YOUR PERSONALITY:
-- Professional yet approachable
-- Intelligent and knowledgeable
-- Calm and reassuring
-- Concise but not robotic
-- Adaptable in tone (formal for business, friendly for casual chat)
-
-YOUR CAPABILITIES:
-1. **Calendar Management**: Create, modify, and query calendar events
-2. **Email Management**: Read, summarize, draft, and send emails  
-3. **Knowledge Companion**: Answer questions about history, geography, science, current events, etc.
-4. **Productivity Assistant**: Help with planning, reminders, and organization
-
-CRITICAL RULES:
-1. **Dynamic Dates**: When user says "tomorrow", use {(self.current_datetime + timedelta(days=1)).strftime("%Y-%m-%d")}. Never use hardcoded years like 2024.
-2. **Confirmation Required**: NEVER send emails or create calendar events without explicit user confirmation.
-3. **Ambiguity Handling**: If request is unclear, ask smart clarifying questions.
-4. **Context Awareness**: Remember what was discussed earlier in the conversation.
-5. **Professional Tone for Work**: Use professional language for emails and calendar events.
-6. **Friendly Tone for Chat**: Be conversational and witty for general questions.
-
-RESPONSE STYLE:
-- For calendar/email: Clear, structured, professional
-- For knowledge queries: Concise, informative, occasionally witty
-- For errors: Helpful, guide user to solution
-
-EXAMPLE GOOD RESPONSES:
-- Calendar: "I'll create a meeting titled 'Strategy Session' for tomorrow at 2 PM. Should I add this to your Google Calendar or Outlook?"
-- Email: "I've drafted an email to your boss about the delay. Would you like to review it before sending?"
-- Knowledge: "World War 2 ended in 1945 with the surrender of Japan. The war reshaped global politics and led to the formation of the UN. Quite the historical pivot point!"
-
-Remember: You're not just executing commands - you're an intelligent companion who understands context, anticipates needs, and communicates professionally."""
+        return (
+            "You are a smart, concise executive assistant. "
+            "You manage calendars and emails. "
+            "You respond in plain natural English — no markdown, no emojis, no lists. "
+            "You are direct, friendly, and efficient. "
+            "When something is unclear you ask one short question.\n\n"
+            f"Today is {current_date}. Current time: {current_time}. Tomorrow: {tomorrow}.\n\n"
+            "Rules:\n"
+            "- Keep responses to 1-2 sentences when possible.\n"
+            "- Never use markdown (no **, no ##, no - bullet lists).\n"
+            "- Never use emojis.\n"
+            "- Ask only one clarifying question at a time.\n"
+            "- Never repeat back everything the user just said word for word.\n"
+            "- If the user asks about something outside calendar or email, respond with: "
+            "'I can help with your calendar and emails, but not [topic].'\n"
+            "- When a provider is not connected, say: "
+            "'Your [Provider] account isn't connected yet. You can link it in the Integrations page.'\n"
+            "- Confirmation required before creating events or sending emails.\n"
+            "- Always ask 'Which account — Google or Microsoft?' if the user hasn't specified a provider."
+        )
     
     def _build_contextual_user_prompt(self, current_message: str) -> str:
         """
@@ -611,6 +637,8 @@ Remember: You're not just executing commands - you're an intelligent companion w
             return await self._execute_calendar_event_creation(action_data, user_id)
         elif action_type == "send_email":
             return await self._execute_email_send(action_data, user_id)
+        elif action_type == "update_calendar_event":
+            return await self._execute_calendar_update(action_data, user_id)
         else:
             logger.warning(f"[ORCHESTRATION] Unknown action type: {action_type}")
             self.memory.clear_pending_action()
@@ -676,31 +704,55 @@ Remember: You're not just executing commands - you're an intelligent companion w
             raw_provider = action_data.get("provider", "google")
             provider = _normalize_provider(raw_provider)
 
-            # Build start datetime — ALWAYS timezone-aware to avoid Google/Outlook
-            # storing the event in UTC instead of the user's local timezone.
-            # Without pytz.localize(), "2026-03-12T20:00:00" is treated as UTC
-            # by the Google Calendar API, shifting the event by UTC offset hours.
+            # FIX M-06: Use ONE tz_name value for BOTH timezone localization
+            # AND the idempotency hash. The original code had two os.getenv()
+            # calls with DIFFERENT defaults ("Europe/Berlin" vs "UTC"), meaning
+            # the hash used a different timezone than the event was created with.
             tz_name = os.getenv("TIMEZONE", "Europe/Berlin")
             try:
                 tz_obj = pytz.timezone(tz_name)
             except Exception:
                 tz_obj = pytz.UTC
+                tz_name = "UTC"
 
+            # FIX H-01: Guard pytz.localize() against already-aware datetimes
+            # (e.g. if time_str ever contains "+01:00") and catch DST-ambiguous
+            # times (e.g. "02:30" on the clock-change night in Europe/Berlin).
             start_dt_naive = datetime.fromisoformat(f"{date}T{time_str}:00")
-            start_dt_aware = tz_obj.localize(start_dt_naive)
+            if start_dt_naive.tzinfo is not None:
+                # Already timezone-aware — use as-is
+                start_dt_aware = start_dt_naive
+            else:
+                try:
+                    start_dt_aware = tz_obj.localize(start_dt_naive, is_dst=None)
+                except Exception:
+                    # AmbiguousTimeError or NonExistentTimeError during DST transition
+                    # → fall back to non-DST interpretation (the later/canonical offset)
+                    start_dt_aware = tz_obj.localize(start_dt_naive, is_dst=False)
+                    logger.warning(
+                        "[ORCHESTRATION] DST-ambiguous time '%sT%s' — using is_dst=False",
+                        date, time_str,
+                    )
             start_datetime_str = start_dt_aware.isoformat()
 
             # Build end datetime (also timezone-aware)
             if end_time:
                 end_dt_naive = datetime.fromisoformat(f"{date}T{end_time}:00")
-                end_dt_aware = tz_obj.localize(end_dt_naive)
+                if end_dt_naive.tzinfo is not None:
+                    end_dt_aware = end_dt_naive
+                else:
+                    try:
+                        end_dt_aware = tz_obj.localize(end_dt_naive, is_dst=None)
+                    except Exception:
+                        end_dt_aware = tz_obj.localize(end_dt_naive, is_dst=False)
                 end_datetime_str = end_dt_aware.isoformat()
             else:
                 end_dt_aware = start_dt_aware + timedelta(minutes=duration)
                 end_datetime_str = end_dt_aware.isoformat()
 
-            # ── Idempotency: compute deterministic request_id ─────────────────
-            tz_name = os.getenv("TIMEZONE", "UTC")
+            # ── FIX C-01: Atomic idempotency check-call-store using asyncio.Lock ──
+            # Without the lock, two simultaneous "yes" confirmations both pass the
+            # cache-miss check before either stores the result → duplicate events.
             request_id = _compute_calendar_request_id(
                 user_id=user_id,
                 title=title,
@@ -710,34 +762,41 @@ Remember: You're not just executing commands - you're an intelligent companion w
             )
             logger.info("[IDEMPOTENCY] request_id=%s", request_id)
 
-            # Check if we already completed this exact request
-            if request_id in _CALENDAR_IDEMPOTENCY_STORE:
-                cached_event_id = _CALENDAR_IDEMPOTENCY_STORE[request_id]
-                logger.info(
-                    "[IDEMPOTENCY] Duplicate request detected – returning cached "
-                    "event_id=%s (no API call made)", cached_event_id
-                )
-                self.memory.clear_pending_action()
-                self.memory.clear_active_task()
-                return {
-                    "message": (
-                        f"✅ This event was already created!\n\n"
-                        f"**{title}**\n"
-                        f"- 📅 Date: {date}\n"
-                        f"- 🕐 Start: {start_datetime_str}\n"
-                        f"- 🕑 End: {end_datetime_str}\n"
-                        f"- 📆 Calendar: {provider.title()} Calendar\n"
-                        f"- 🆔 Event ID: `{cached_event_id}` (existing)"
-                    ),
-                    "success": True,
-                    "type": "calendar_created",
-                    "data": {
-                        "event_id": cached_event_id,
-                        "start": start_datetime_str,
-                        "end": end_datetime_str,
-                        "idempotent": True,
-                    },
-                }
+            async with _CALENDAR_IDEMPOTENCY_LOCK:
+                # Re-check inside the lock — another coroutine may have stored it
+                # between our pre-lock check and acquiring the lock.
+                if request_id in _CALENDAR_IDEMPOTENCY_STORE:
+                    cached_event_id = _CALENDAR_IDEMPOTENCY_STORE[request_id]
+                    logger.info(
+                        "[IDEMPOTENCY] Duplicate request detected (inside lock) – returning cached "
+                        "event_id=%s (no API call made)", cached_event_id
+                    )
+                    self.memory.clear_pending_action()
+                    self.memory.clear_active_task()
+                    return {
+                        "message": (
+                            f"✅ This event was already created!\n\n"
+                            f"**{title}**\n"
+                            f"- 📅 Date: {date}\n"
+                            f"- 🕐 Start: {start_datetime_str}\n"
+                            f"- 🕑 End: {end_datetime_str}\n"
+                            f"- 📆 Calendar: {provider.title()} Calendar\n"
+                            f"- 🆔 Event ID: `{cached_event_id}` (existing)"
+                        ),
+                        "success": True,
+                        "type": "calendar_created",
+                        "data": {
+                            "event_id": cached_event_id,
+                            "start": start_datetime_str,
+                            "end": end_datetime_str,
+                            "idempotent": True,
+                        },
+                    }
+
+                # ── Placeholder sentinel — prevents a second concurrent request
+                # from seeing a "miss" while the first is still awaiting the API.
+                _CALENDAR_IDEMPOTENCY_STORE[request_id] = "__pending__"
+            # Lock released — proceed with API call
 
             # Build request payload (omit None fields to keep it clean)
             from models.integrations import CalendarEventCreateRequest
@@ -804,6 +863,8 @@ Remember: You're not just executing commands - you're an intelligent companion w
                         "event_id found in response body: %s",
                         response_status, response_body_text[:300]
                     )
+                    # FIX: Remove the "__pending__" sentinel so a retry can proceed
+                    _CALENDAR_IDEMPOTENCY_STORE.pop(request_id, None)
                     return {
                         "message": (
                             "❌ The calendar API returned a success status but did not "
@@ -849,18 +910,11 @@ Remember: You're not just executing commands - you're an intelligent companion w
                 self.memory.clear_pending_action()
                 self.memory.clear_active_task()
 
-                # Build human-readable success message with proof
-                success_msg = (
-                    f"✅ Calendar event created successfully!\n\n"
-                    f"**{event_summary}**\n"
-                    f"- 📅 Date: {date}\n"
-                    f"- 🕐 Start: {event_start}\n"
-                    f"- 🕑 End: {event_end}\n"
-                    f"- 📆 Calendar: {provider.title()} Calendar\n"
-                    f"- 🆔 Event ID: `{event_id}`"
-                )
-                if html_link:
-                    success_msg += f"\n- 🔗 [Open in Calendar]({html_link})"
+                # Natural success message — no markdown, no emojis
+                _date_lbl = _format_date_natural(date) if date else date
+                _start_raw = str(event_start)
+                _time_lbl = _format_time_natural(_start_raw.split("T")[1][:5]) if "T" in _start_raw else _start_raw
+                success_msg = f"Done. {event_summary} is on your calendar for {_date_lbl} at {_time_lbl}."
 
                 return {
                     "message": success_msg,
@@ -1058,14 +1112,9 @@ Remember: You're not just executing commands - you're an intelligent companion w
                 self.memory.clear_pending_action()
                 self.memory.clear_active_task()
 
-                success_msg = (
-                    f"✅ Email sent successfully!\n\n"
-                    f"- 📧 **To:** {to_email}\n"
-                    f"- 📝 **Subject:** {subject}\n"
-                    f"- 📨 **Provider:** {provider.title()}"
-                )
-                if message_id:
-                    success_msg += f"\n- 🆔 **Message ID:** `{message_id}`"
+                # Natural success message
+                _to_name = to_email.split("@")[0].capitalize() if to_email and "@" in to_email else (to_email or "them")
+                success_msg = f"Done, email sent to {_to_name}."
 
                 return {
                     "message": success_msg,
@@ -1178,51 +1227,77 @@ Remember: You're not just executing commands - you're an intelligent companion w
             missing_slot = missing_slots[0]
             if missing_slot == "to_email":
                 return {
-                    "message": "📧 I'd be happy to send an email! Who should I send it to? (Please provide the email address)",
+                    "message": "Who should I send it to?",
                     "success": True,
                     "type": "email_slot_request",
                     "data": {"missing_slot": "to_email", "current_slots": all_slots},
                 }
             elif missing_slot == "subject":
-                to_display = all_slots.get("to_email", "the recipient")
-                return {
-                    "message": f"📧 Got it — sending to **{to_display}**. What should the subject line be?",
-                    "success": True,
-                    "type": "email_slot_request",
-                    "data": {"missing_slot": "subject", "current_slots": all_slots},
-                }
+                if all_slots.get("body"):
+                    body_words = (all_slots["body"] or "").split()[:5]
+                    all_slots["subject"] = " ".join(body_words).rstrip(".,!?")
+                    logger.info("[ORCHESTRATION] Subject inferred from body: '%s'", all_slots["subject"])
+                else:
+                    return {
+                        "message": "What's it about?",
+                        "success": True,
+                        "type": "email_slot_request",
+                        "data": {"missing_slot": "subject", "current_slots": all_slots},
+                    }
             elif missing_slot == "body":
                 return {
-                    "message": "📧 Almost there! What should the body of the email say?",
+                    "message": "What should the message say?",
                     "success": True,
                     "type": "email_slot_request",
                     "data": {"missing_slot": "body", "current_slots": all_slots},
                 }
 
-        # STEP 3: Check provider preference
+        # STEP 3: Resolve email provider.
+        # Order: (1) explicit message slot  (2) session preferred_provider
+        #        (3) API-supplied provider param  (4) MUST ASK — no silent default
         if not all_slots.get("provider"):
-            logger.info("[ORCHESTRATION] Email provider not specified - using default 'gmail'")
-            # Default to gmail so we don't block the flow with an extra question
-            all_slots["provider"] = provider if provider else "gmail"
+            if self.memory.preferred_provider:
+                all_slots["provider"] = self.memory.preferred_provider
+                logger.info(
+                    "[EXEC_PROVIDER_DECISION] Email: pre-filled from session "
+                    "preferred_provider='%s'", self.memory.preferred_provider,
+                )
+            elif provider:
+                all_slots["provider"] = provider
+                logger.info(
+                    "[EXEC_PROVIDER_DECISION] Email: pre-filled from API param '%s'", provider,
+                )
+
+        if not all_slots.get("provider"):
+            logger.info(
+                "[EXEC_PROVIDER_DECISION] Email: provider unknown — "
+                "requesting mandatory user clarification"
+            )
+            self.memory.set_active_task(
+                task_type="send_email",
+                data=all_slots,
+                status="collecting",
+            )
+            return {
+                "message": "Which account would you like to use — Google or Microsoft?",
+                "success": True,
+                "type": "provider_clarification",
+                "data": {"missing_slot": "provider", "current_slots": all_slots},
+            }
+
+        logger.info(
+            "[EXEC_PROVIDER_DECISION] Email: resolved provider='%s'",
+            all_slots.get("provider"),
+        )
 
         # STEP 4: All slots present – request confirmation
         logger.info("[ORCHESTRATION] All email slots collected - requesting confirmation")
 
-        body_preview = (all_slots.get("body", "") or "")[:200]
-        if len(all_slots.get("body", "") or "") > 200:
-            body_preview += "..."
-
-        confirmation_msg = (
-            f"📧 **Ready to send your email:**\n\n"
-            f"- **To:** {all_slots['to_email']}\n"
-            f"- **Subject:** {all_slots['subject']}\n"
-            f"- **Provider:** {all_slots['provider'].title()}\n"
-            f"- **Message:** {body_preview}"
-        )
-        if all_slots.get("cc"):
-            confirmation_msg += f"\n- **CC:** {all_slots['cc']}"
-
-        confirmation_msg += "\n\nShould I send this email? (yes/no)"
+        to_display = all_slots["to_email"]
+        to_name = to_display.split("@")[0].capitalize() if "@" in to_display else to_display
+        subj_display = all_slots.get("subject", "")
+        prov_label_e = "Outlook" if _normalize_provider(all_slots.get("provider", "gmail")) == "microsoft" else "Gmail"
+        confirmation_msg = f'Send "{subj_display}" to {to_name} via {prov_label_e}. Want me to go ahead?'
 
         # Set pending action
         self.memory.set_pending_action(
@@ -1258,13 +1333,13 @@ Remember: You're not just executing commands - you're an intelligent companion w
         
         if active_task or pending_action:
             return {
-                "message": "No problem! I've cancelled that. What else can I help you with?",
+                "message": "Cancelled. Anything else?",
                 "success": True,
                 "type": "cancellation"
             }
         else:
             return {
-                "message": "There's nothing active to cancel right now. How can I assist you?",
+                "message": "Nothing to cancel. What can I help you with?",
                 "success": True,
                 "type": "info"
             }
@@ -1316,55 +1391,64 @@ Remember: You're not just executing commands - you're an intelligent companion w
             }
     
     async def _handle_sender_selection(self, extracted_slots: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle email sender account selection."""
+        """Handle email sender account selection — lock provider and re-dispatch workflow."""
         provider = extracted_slots.get("provider")
-        
         if not provider:
             return {
                 "message": "I didn't catch that. Would you like to use Gmail or Outlook?",
                 "success": False,
-                "type": "clarification"
+                "type": "clarification",
             }
-        
-        # Update active task with provider
+        logger.info(
+            "[EXEC_PROVIDER_DECISION] Email provider selected by user: '%s' — locking in session",
+            provider,
+        )
+        # Lock provider into session memory so it persists across turns
+        self.memory.preferred_provider = _normalize_provider(provider)
         if self.memory.active_task:
+            task_data = dict(self.memory.active_task.get("data", {}))
+            task_data["provider"] = provider
             self.memory.update_task_data({"provider": provider})
-            return {
-                "message": f"✅ Great! I'll use {provider.title()}. What else do you need for this email?",
-                "success": True,
-                "type": "acknowledge"
-            }
-        
+            task_type = self.memory.active_task.get("type", "")
+            if task_type in ("send_email", "draft_email"):
+                user_id = self.memory.current_user_id or "default_user"
+                return await self._handle_send_email("", task_data, user_id, provider)
         return {
-            "message": f"Noted - {provider.title()} selected. What would you like to do?",
+            "message": f"Got it — using {_normalize_provider(provider).title()}. What would you like to do?",
             "success": True,
-            "type": "acknowledge"
+            "type": "acknowledge",
         }
-    
+
     async def _handle_calendar_provider_selection(self, extracted_slots: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle calendar provider selection."""
+        """Handle calendar provider selection — lock provider and re-dispatch to creation workflow."""
         provider = extracted_slots.get("provider")
-        
         if not provider:
             return {
                 "message": "I didn't catch that. Would you like to use Google Calendar or Outlook Calendar?",
                 "success": False,
-                "type": "clarification"
+                "type": "clarification",
             }
-        
-        # Update active task with provider
+        logger.info(
+            "[EXEC_PROVIDER_DECISION] Calendar provider selected by user: '%s' — locking in session",
+            provider,
+        )
+        # Lock provider into session memory so it persists across turns
+        self.memory.preferred_provider = _normalize_provider(provider)
         if self.memory.active_task:
+            task_data = dict(self.memory.active_task.get("data", {}))
+            task_data["provider"] = provider
             self.memory.update_task_data({"provider": provider})
-            return {
-                "message": f"✅ Perfect! I'll add it to your {provider.title()} Calendar. Ready to create the event?",
-                "success": True,
-                "type": "acknowledge"
-            }
-        
+            task_type = self.memory.active_task.get("type", "")
+            if task_type == "calendar_event":
+                user_id = self.memory.current_user_id or "default_user"
+                return await self._handle_calendar_event_creation("", task_data, user_id, provider)
         return {
-            "message": f"Noted - {provider.title()} Calendar selected. What would you like to do?",
+            "message": (
+                f"Got it — using {_normalize_provider(provider).title()} Calendar. "
+                "Describe the event and I'll set it up."
+            ),
             "success": True,
-            "type": "acknowledge"
+            "type": "acknowledge",
         }
     
     async def _handle_slot_filling(
@@ -1689,20 +1773,21 @@ Remember: You're not just executing commands - you're an intelligent companion w
                         "Could you clarify the time? Did you mean AM or PM?"
                     )
                     return {
-                        "message": f"⏰ {hint}",
+                        "message": hint,
                         "success": True,
                         "type": "calendar_slot_request",
                         "data": {"missing_slot": "time", "current_slots": all_slots}
                     }
+                date_label_q = _format_date_natural(all_slots.get("date", ""))
                 return {
-                    "message": f"📅 I'm creating an event '{all_slots.get('title')}' on {all_slots.get('date')}. What time should it be?",
+                    "message": f"What time on {date_label_q}?",
                     "success": True,
                     "type": "calendar_slot_request",
                     "data": {"missing_slot": "time", "current_slots": all_slots}
                 }
             else:
                 return {
-                    "message": f"I need more information. What {missing_slot} would you like?",
+                    "message": "What should I call it?",
                     "success": True,
                     "type": "calendar_slot_request",
                     "data": {"missing_slot": missing_slot, "current_slots": all_slots}
@@ -1725,22 +1810,33 @@ Remember: You're not just executing commands - you're an intelligent companion w
                 )
 
         if not all_slots.get("provider"):
-            logger.info("[ORCHESTRATION] Provider not specified - asking user")
-            
-            # Create active task
+            # Provider is not known — MUST ask the user (no silent default allowed)
+            logger.info(
+                "[EXEC_PROVIDER_DECISION] Calendar: provider unknown — "
+                "requesting mandatory user clarification"
+            )
             self.memory.set_active_task(
                 task_type="calendar_event",
                 data=all_slots,
-                status="collecting"
+                status="collecting",
             )
-            
             return {
-                "message": f"📅 Perfect! I'll create '{all_slots['title']}' on {all_slots['date']} at {all_slots['time']}.\n\nWhich calendar should I use? (Google Calendar / Outlook Calendar)",
+                "message": "Which account would you like to use — Google or Microsoft?",
                 "success": True,
-                "type": "calendar_provider_request",
-                "data": all_slots
+                "type": "provider_clarification",
+                "data": {"missing_slot": "provider", "current_slots": all_slots},
             }
-        
+
+        logger.info(
+            "[EXEC_PROVIDER_DECISION] Calendar: resolved provider='%s'",
+            all_slots.get("provider"),
+        )
+        # Log finalized event title for integrity tracking
+        logger.info(
+            "[EXEC_EVENT_TITLE_EXTRACTED] Locked title='%s' for user=%s",
+            all_slots.get("title", "(none)"), user_id,
+        )
+
         # STEP 5: All slots present — pre-check provider connection, then request confirmation
         logger.info("[ORCHESTRATION] All slots collected - pre-checking provider connection")
 
@@ -1755,11 +1851,8 @@ Remember: You're not just executing commands - you're an intelligent companion w
             )
             return {
                 "message": (
-                    f"⚠️ Your **{provider_label}** account is not connected yet.\n\n"
-                    f"Please connect it first via the **Integrations** page, then retry.\n\n"
-                    f"Your event details are saved. Once connected you can either:\n"
-                    f"- say **`use google`** to switch to Google Calendar, or\n"
-                    f"- say **`yes`** to create it with {provider_label}."
+                    f"Your {provider_label} account isn't connected yet. "
+                    "You can link it in the Integrations page."
                 ),
                 "success": False,
                 "type": "provider_not_connected",
@@ -1773,23 +1866,24 @@ Remember: You're not just executing commands - you're an intelligent companion w
             all_slots["duration"] = 60
             logger.info("[ORCHESTRATION] Default duration applied: 60 minutes")
 
-        # Format confirmation message
-        confirmation_msg = f"""📅 **Ready to create your calendar event:**
-
-- **Title:** {all_slots['title']}
-- **Date:** {all_slots['date']}
-- **Time:** {all_slots['time']}
-- **Calendar:** {all_slots['provider'].title()}"""
+        # Build natural confirmation — no markdown, no emojis
+        date_label_c = _format_date_natural(all_slots.get("date", ""))
+        time_label_c = _format_time_natural(all_slots.get("time") or all_slots.get("start_time", ""))
+        dur_val = all_slots.get("duration", 60)
+        try:
+            dur_val = int(dur_val)
+        except Exception:
+            dur_val = 60
+        provider_label_c = "Outlook Calendar" if selected_provider == "microsoft" else "Google Calendar"
 
         if all_slots.get("end_time"):
-            confirmation_msg += f"\n- **End Time:** {all_slots['end_time']}"
-        elif all_slots.get("duration"):
-            confirmation_msg += f"\n- **Duration:** {all_slots['duration']} minutes"
-        
-        if all_slots.get("location"):
-            confirmation_msg += f"\n- **Location:** {all_slots['location']}"
-        
-        confirmation_msg += "\n\nShould I create this event? (yes/no)"
+            end_label_c = _format_time_natural(all_slots["end_time"])
+            time_range_c = f"{time_label_c} to {end_label_c}"
+        else:
+            time_range_c = f"{time_label_c} for {_format_duration_natural(dur_val)}"
+
+        title_c = all_slots["title"]
+        confirmation_msg = f"Got it — {title_c} on {date_label_c} at {time_range_c} on {provider_label_c}. Shall I create it?"
         
         # Set pending action
         self.memory.set_pending_action(
@@ -1836,7 +1930,19 @@ Remember: You're not just executing commands - you're an intelligent companion w
 
         logger.info("[ORCHESTRATION] Starting calendar list events workflow")
 
-        normalized_provider = _normalize_provider(provider)
+        # ── Mandatory provider guard ──────────────────────────────────────────
+        if not provider and not self.memory.preferred_provider:
+            logger.info("[EXEC_PROVIDER_DECISION] Calendar list: provider unknown — asking user")
+            return {
+                "message": "Which account would you like to use — Google or Microsoft?",
+                "success": True,
+                "type": "provider_clarification",
+                "data": {"missing_slot": "provider"},
+            }
+        resolved_list_provider = provider or self.memory.preferred_provider
+
+        normalized_provider = _normalize_provider(resolved_list_provider)
+        logger.info("[EXEC_PROVIDER_DECISION] Calendar list: resolved provider='%s'", normalized_provider)
         message_lower = user_message.lower()
 
         # ── Date range from message ───────────────────────────────────────────
@@ -2180,7 +2286,19 @@ Remember: You're not just executing commands - you're an intelligent companion w
 
         logger.info("[ORCHESTRATION] Starting calendar read workflow")
 
-        normalized_provider = _normalize_provider(provider)
+        # ── Mandatory provider guard ──────────────────────────────────────────
+        if not provider and not self.memory.preferred_provider:
+            logger.info("[EXEC_PROVIDER_DECISION] Calendar read: provider unknown — asking user")
+            return {
+                "message": "Which account would you like to use — Google or Microsoft?",
+                "success": True,
+                "type": "provider_clarification",
+                "data": {"missing_slot": "provider"},
+            }
+        resolved_read_provider = provider or self.memory.preferred_provider
+
+        normalized_provider = _normalize_provider(resolved_read_provider)
+        logger.info("[EXEC_PROVIDER_DECISION] Calendar read: resolved provider='%s'", normalized_provider)
 
         # STEP 1: Extract slots
         from utils.slot_extraction import SlotExtractor
@@ -2399,6 +2517,580 @@ Remember: You're not just executing commands - you're an intelligent companion w
 
 
 # ==============================================================================
+# NATURAL LANGUAGE FORMATTING HELPERS
+# ==============================================================================
+
+def _format_date_natural(date_str: str) -> str:
+    """Format a YYYY-MM-DD date string into natural language."""
+    try:
+        today = datetime.now().date()
+        d = datetime.strptime(date_str, "%Y-%m-%d").date()
+        if d == today:
+            return "today"
+        if d == today + timedelta(days=1):
+            return "tomorrow"
+        if d == today - timedelta(days=1):
+            return "yesterday"
+        days_ahead = (d - today).days
+        if 2 <= days_ahead <= 6:
+            return d.strftime("%A")  # e.g. "Thursday"
+        return d.strftime("%A, %B %d")  # e.g. "Thursday, March 12"
+    except Exception:
+        return date_str
+
+
+def _format_time_natural(time_str: str) -> str:
+    """Format HH:MM (24-hour) into natural language e.g. '10am', '2:30pm'."""
+    try:
+        parts = time_str.split(":")
+        hour, minute = int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
+        suffix = "am" if hour < 12 else "pm"
+        h12 = hour % 12 or 12
+        if minute == 0:
+            return f"{h12}{suffix}"
+        return f"{h12}:{minute:02d}{suffix}"
+    except Exception:
+        return time_str
+
+
+def _format_duration_natural(minutes: int) -> str:
+    """Format a duration in minutes into natural language."""
+    if minutes == 30:
+        return "30 minutes"
+    if minutes == 60:
+        return "an hour"
+    if minutes == 90:
+        return "an hour and a half"
+    if minutes % 60 == 0:
+        h = minutes // 60
+        return f"{h} hours"
+    h = minutes // 60
+    m = minutes % 60
+    if h > 0:
+        return f"{h} hour{'s' if h > 1 else ''} {m} minutes"
+    return f"{minutes} minutes"
+
+
+# ==============================================================================
+# NEW HANDLER METHODS — injected into ExecutiveAgent
+# ==============================================================================
+
+async def _handle_email_reply(self, user_message: str, user_id: str, provider: str) -> Dict[str, Any]:
+    """Handle EMAIL_REPLY — reply to the last email in context."""
+    logger.info("[AGENT] Handling email reply intent")
+
+    sender = self.memory.last_email_sender
+    sender_address = self.memory.last_email_sender_address
+    thread_id = self.memory.last_email_thread_id
+    subject = self.memory.last_email_subject
+
+    if not sender and not sender_address:
+        m = re.search(r"reply\s+to\s+(\w+)(?:'s|s)?\s+(?:last\s+)?email", user_message, re.IGNORECASE)
+        if m:
+            sender = m.group(1)
+
+    if not sender and not sender_address:
+        return {
+            "message": "Who should I reply to? I don't have a recent email in context.",
+            "success": False,
+            "type": "email_slot_request",
+            "data": {"missing_slot": "sender"},
+        }
+
+    body_m = re.search(r"(?:say|tell\s+(?:them|him|her)|and\s+say)\s+(.+)$", user_message, re.IGNORECASE)
+    body = body_m.group(1).strip() if body_m else user_message
+
+    recipient = sender_address or sender
+    reply_subject = f"Re: {subject}" if subject else "Re: your email"
+
+    slots = {
+        "to_email": recipient,
+        "subject": reply_subject,
+        "body": body,
+        "provider": _normalize_provider(provider),
+    }
+    if thread_id:
+        slots["thread_id"] = thread_id
+
+    return await self._handle_send_email(user_message="", extracted_slots=slots, user_id=user_id, provider=provider)
+
+
+async def _handle_email_forward(self, user_message: str, user_id: str, provider: str) -> Dict[str, Any]:
+    """Handle EMAIL_FORWARD — note that full forwarding is not yet implemented."""
+    logger.info("[AGENT] Handling email forward intent")
+    return {
+        "message": (
+            "Forwarding emails isn't wired up yet. "
+            "You can do it directly from your email client for now."
+        ),
+        "success": False,
+        "type": "not_supported",
+        "data": {"feature": "email_forward"},
+    }
+
+
+async def _handle_calendar_update(self, user_message: str, user_id: str, provider: str) -> Dict[str, Any]:
+    """
+    Handle CALENDAR_UPDATE — full search → select → confirm → PATCH workflow.
+
+    Multi-turn flow:
+    Phase 1 (new intent, no active update task):
+      Extract update params from message → search calendar → present matches
+    Phase 2 (active calendar_update task, status=collecting, has matched_events):
+      User selects which event → confirm changes
+    Phase 3 (active calendar_update task, status=awaiting_confirmation):
+      Execute PATCH
+    """
+    import httpx
+
+    logger.info("[CAL_UPDATE] _handle_calendar_update provider=%r message='%s'", provider, user_message[:80])
+
+    # Resolve provider — session preference > API param > must ask
+    resolved_provider = provider or self.memory.preferred_provider
+    if not resolved_provider:
+        self.memory.set_active_task(
+            task_type="calendar_update",
+            data={"pending_message": user_message},
+            status="collecting",
+        )
+        logger.info("[EXEC_PROVIDER_DECISION] Calendar update: provider unknown — asking user")
+        return {
+            "message": "Which account would you like to use — Google or Microsoft?",
+            "success": True,
+            "type": "provider_clarification",
+            "data": {"missing_slot": "provider"},
+        }
+
+    normalized_provider = _normalize_provider(resolved_provider)
+    logger.info("[EXEC_PROVIDER_DECISION] Calendar update: resolved provider='%s'", normalized_provider)
+
+    # Phase 2 check: active calendar_update task with matched_events list
+    active_task = self.memory.get_active_task()
+    if (active_task and active_task.get("type") == "calendar_update"
+            and active_task.get("data", {}).get("matched_events")
+            and active_task.get("status") == "collecting"):
+        # User is selecting from the event list
+        task_data = active_task.get("data", {})
+        matched = task_data.get("matched_events", [])
+        selected = _parse_event_selection(user_message, matched)
+        if selected is None:
+            return {
+                "message": (
+                    f"Please select an event by number (1–{len(matched)}), "
+                    "or say 'cancel' to start over."
+                ),
+                "success": True,
+                "type": "calendar_update_select",
+                "data": {"matched_events": matched},
+            }
+        # Got a selection — advance to confirmation
+        task_data["selected_event"] = selected
+        task_data.pop("matched_events", None)
+        self.memory.update_task_data(task_data)
+        return _build_update_confirmation(self, selected, task_data, normalized_provider)
+
+    # Phase 1: Fresh intent — extract update params and search calendar
+    from utils.slot_extraction import SlotExtractor
+    update_slots = SlotExtractor.extract_calendar_update_slots(user_message)
+
+    search_query  = update_slots.get("search_query", "")
+    search_date   = update_slots.get("search_date")
+    search_time   = update_slots.get("search_time")
+    new_time      = update_slots.get("new_time")
+    new_title     = update_slots.get("new_title")
+    new_location  = update_slots.get("new_location")
+
+    logger.info(
+        "[CAL_UPDATE] Parsed: query=%r date=%r time=%r new_time=%r new_title=%r new_loc=%r",
+        search_query, search_date, search_time, new_time, new_title, new_location,
+    )
+
+    # If nothing extractable at all, prompt the user
+    if not search_query and not search_time and not new_time and not new_title and not new_location:
+        return {
+            "message": (
+                "What would you like to change? "
+                "Please tell me the event name or time, and what to update "
+                "(e.g. 'Move my 3pm meeting to 4pm' or 'Rename lunch with Anna to lunch with Patrick')."
+            ),
+            "success": True,
+            "type": "calendar_update_prompt",
+            "data": {},
+        }
+
+    # Check provider connection
+    if not self._check_provider_connected(user_id, normalized_provider):
+        provider_label = "Microsoft / Outlook" if normalized_provider == "microsoft" else "Google"
+        return {
+            "message": (
+                f"Your {provider_label} account isn't connected yet. "
+                "You can link it in the Integrations page."
+            ),
+            "success": False,
+            "type": "provider_not_connected",
+            "data": {"provider": normalized_provider},
+        }
+
+    # Search for matching events
+    now = datetime.now()
+    base_url = os.getenv("BACKEND_URL", "http://localhost:8000")
+    endpoint = f"{base_url}/api/integrations/{normalized_provider}/calendar/events"
+
+    if search_date:
+        time_min = f"{search_date}T00:00:00Z"
+        time_max_str = f"{search_date}T23:59:59Z"
+    else:
+        time_min = now.isoformat() + "Z"
+        time_max_str = (now + timedelta(days=14)).isoformat() + "Z"
+
+    params: Dict[str, Any] = {"user_id": user_id, "max_results": 25, "time_min": time_min}
+
+    logger.info("[CAL_UPDATE AUDIT] Search → endpoint=%s params=%s", endpoint, params)
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(endpoint, params=params, timeout=30.0)
+
+        logger.info("[CAL_UPDATE AUDIT] Search ← status=%s body=%s", resp.status_code, resp.text[:200])
+
+        if not resp.is_success:
+            return {
+                "message": f"I couldn't search your calendar (HTTP {resp.status_code}). Please check your connection.",
+                "success": False,
+                "type": "error",
+                "error": f"HTTP {resp.status_code}",
+            }
+
+        all_events = resp.json().get("events", [])
+
+        # Filter by time_max
+        time_max_dt = datetime.fromisoformat(time_max_str.replace("Z", "+00:00"))
+        filtered = []
+        for evt in all_events:
+            try:
+                start_dt = datetime.fromisoformat(evt.get("start", "").replace("Z", "+00:00"))
+                if start_dt <= time_max_dt:
+                    filtered.append(evt)
+            except Exception:
+                filtered.append(evt)
+        all_events = filtered
+
+        # Filter by search_query (fuzzy title match)
+        if search_query:
+            query_lower = search_query.lower()
+            matched = [e for e in all_events if query_lower in (e.get("summary") or "").lower()]
+            if not matched:
+                query_words = [w for w in query_lower.split() if len(w) > 2]
+                matched = [e for e in all_events
+                           if any(w in (e.get("summary") or "").lower() for w in query_words)]
+            if matched:
+                all_events = matched
+
+        # Filter by search_time (original event start hour)
+        if search_time:
+            target_h = int(search_time.split(":")[0])
+            time_filtered = []
+            for evt in all_events:
+                try:
+                    start_dt = datetime.fromisoformat(
+                        evt.get("start", "").replace("Z", "+00:00").replace("+00:00", "")
+                    )
+                    if start_dt.hour == target_h:
+                        time_filtered.append(evt)
+                except Exception:
+                    pass
+            if time_filtered:
+                all_events = time_filtered
+
+        logger.info("[CAL_UPDATE] Found %d matching events", len(all_events))
+
+        if not all_events:
+            qualifier = f" '{search_query}'" if search_query else ""
+            date_hint = f" on {search_date}" if search_date else " in the next 2 weeks"
+            return {
+                "message": (
+                    f"I couldn't find an event{qualifier}{date_hint}. "
+                    "Can you give me more details — the exact name, date, or time?"
+                ),
+                "success": True,
+                "type": "calendar_update_no_match",
+                "data": update_slots,
+            }
+
+        if len(all_events) == 1:
+            # Single match — straight to confirmation
+            selected = all_events[0]
+            task_data = {
+                **update_slots,
+                "selected_event": selected,
+                "provider": normalized_provider,
+                "user_id": user_id,
+            }
+            self.memory.set_active_task(
+                task_type="calendar_update",
+                data=task_data,
+                status="awaiting_confirmation",
+            )
+            return _build_update_confirmation(self, selected, task_data, normalized_provider)
+
+        # Multiple matches — list and ask user to pick
+        lines = [f"I found {len(all_events[:5])} matching events. Which one would you like to update?\n"]
+        for i, evt in enumerate(all_events[:5], 1):
+            summary = evt.get("summary", "Untitled")
+            start_str = evt.get("start", "")
+            try:
+                start_dt = datetime.fromisoformat(start_str.replace("Z", "+00:00").replace("+00:00", ""))
+                time_label = start_dt.strftime("%a %b %d at %H:%M")
+            except Exception:
+                time_label = start_str
+            lines.append(f"  {i}. {summary} — {time_label}")
+
+        task_data = {
+            **update_slots,
+            "matched_events": all_events[:5],
+            "provider": normalized_provider,
+            "user_id": user_id,
+        }
+        self.memory.set_active_task(
+            task_type="calendar_update",
+            data=task_data,
+            status="collecting",
+        )
+        return {
+            "message": "\n".join(lines),
+            "success": True,
+            "type": "calendar_update_select",
+            "data": {"matched_events": all_events[:5]},
+        }
+
+    except httpx.TimeoutException:
+        return {
+            "message": "The calendar service timed out while searching. Please try again.",
+            "success": False,
+            "type": "error",
+            "error": "Timeout",
+        }
+    except Exception as e:
+        logger.error("[CAL_UPDATE] Search error: %s", e, exc_info=True)
+        return {
+            "message": f"Error searching calendar: {e}",
+            "success": False,
+            "type": "error",
+            "error": str(e),
+        }
+
+
+async def _execute_calendar_update(self, action_data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
+    """
+    Execute calendar event PATCH via integration endpoint.
+    Preserves original event duration when only the start time is changed.
+    """
+    import httpx
+
+    logger.info("[CAL_UPDATE] Executing PATCH on calendar event")
+
+    selected_event = action_data.get("selected_event", {})
+    event_id = selected_event.get("id")
+    provider_raw = action_data.get("provider", "google")
+    normalized_provider = _normalize_provider(provider_raw)
+
+    if not event_id:
+        return {
+            "message": "I lost track of which event to update. Please describe it again.",
+            "success": False,
+            "type": "error",
+            "error": "No event_id in pending action",
+        }
+
+    new_time = action_data.get("new_time")
+    new_title = action_data.get("new_title")
+    new_location = action_data.get("new_location")
+
+    # Build ISO datetimes for new start/end if time is changing
+    patch_start: Optional[str] = None
+    patch_end: Optional[str] = None
+
+    if new_time:
+        tz_name = os.getenv("TIMEZONE", "Europe/Berlin")
+        try:
+            tz_obj = pytz.timezone(tz_name)
+        except Exception:
+            tz_obj = pytz.UTC
+            tz_name = "UTC"
+
+        # Use original event date unless a new date was supplied
+        new_date = action_data.get("new_date")
+        if not new_date:
+            orig_start = selected_event.get("start", "")
+            try:
+                orig_start_dt = datetime.fromisoformat(orig_start.replace("Z", "+00:00"))
+                new_date = orig_start_dt.strftime("%Y-%m-%d")
+            except Exception:
+                new_date = datetime.now().strftime("%Y-%m-%d")
+
+        try:
+            start_naive = datetime.fromisoformat(f"{new_date}T{new_time}:00")
+            start_aware = tz_obj.localize(start_naive)
+            patch_start = start_aware.isoformat()
+
+            # Preserve original duration for end time
+            orig_start_str = selected_event.get("start", "")
+            orig_end_str = selected_event.get("end", "")
+            if orig_start_str and orig_end_str:
+                try:
+                    o_start = datetime.fromisoformat(orig_start_str.replace("Z", "+00:00"))
+                    o_end = datetime.fromisoformat(orig_end_str.replace("Z", "+00:00"))
+                    duration = o_end - o_start
+                    patch_end = (start_aware + duration).isoformat()
+                except Exception:
+                    patch_end = (start_aware + timedelta(hours=1)).isoformat()
+            else:
+                patch_end = (start_aware + timedelta(hours=1)).isoformat()
+        except Exception as e:
+            logger.warning("[CAL_UPDATE] Failed to build new datetime: %s", e)
+
+    # Construct the patch payload using CalendarEventUpdateRequest fields
+    payload: Dict[str, Any] = {}
+    if new_title:
+        payload["summary"] = new_title
+    if patch_start:
+        payload["start"] = patch_start
+    if patch_end:
+        payload["end"] = patch_end
+    if new_location:
+        payload["location"] = new_location
+
+    if not payload:
+        return {
+            "message": "Nothing to update — no changes were specified.",
+            "success": False,
+            "type": "error",
+            "error": "Empty patch payload",
+        }
+
+    base_url = os.getenv("BACKEND_URL", "http://localhost:8000")
+    endpoint = f"{base_url}/api/integrations/{normalized_provider}/calendar/events/{event_id}"
+    params = {"user_id": user_id}
+
+    logger.info("[CAL_UPDATE AUDIT] PATCH → %s payload=%s", endpoint, json.dumps(payload))
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.patch(endpoint, json=payload, params=params, timeout=30.0)
+
+        logger.info("[CAL_UPDATE AUDIT] PATCH ← status=%s body=%s",
+                    response.status_code, response.text[:300])
+
+        if response.is_success:
+            updated = response.json()
+            self.memory.clear_pending_action()
+            self.memory.clear_active_task()
+            self.memory.preferred_provider = normalized_provider
+
+            event_summary = updated.get("summary", selected_event.get("summary", "the event"))
+            change_parts = []
+            if new_time:
+                change_parts.append(f"moved to {_format_time_natural(new_time)}")
+            if new_title:
+                change_parts.append(f"renamed to \"{new_title}\"")
+            if new_location:
+                change_parts.append(f"location changed to \"{new_location}\"")
+            changes_str = ", ".join(change_parts) if change_parts else "updated"
+
+            logger.info("[CAL_UPDATE AUDIT] PATCH ✅ event_id=%s summary='%s'", event_id, event_summary)
+            return {
+                "message": f"Done. \"{event_summary}\" has been {changes_str}.",
+                "success": True,
+                "type": "calendar_updated",
+                "data": {**updated, "event_id": event_id},
+            }
+        else:
+            error_body = response.text[:300]
+            logger.error("[CAL_UPDATE AUDIT] PATCH ❌ status=%s body=%s", response.status_code, error_body)
+            return {
+                "message": f"Failed to update the event (HTTP {response.status_code}): {error_body}",
+                "success": False,
+                "type": "error",
+                "error": f"HTTP {response.status_code}",
+                "data": {"pending_action_preserved": True},
+            }
+
+    except httpx.TimeoutException:
+        return {
+            "message": "The calendar service timed out. Please try again.",
+            "success": False,
+            "type": "error",
+            "error": "Timeout",
+        }
+    except Exception as e:
+        logger.error("[CAL_UPDATE] PATCH exception: %s", e, exc_info=True)
+        return {
+            "message": f"Error updating the event: {e}",
+            "success": False,
+            "type": "error",
+            "error": str(e),
+        }
+
+
+async def _handle_calendar_delete(self, user_message: str, user_id: str, provider: str) -> Dict[str, Any]:
+    """Handle CALENDAR_DELETE — ask which event to cancel."""
+    logger.info("[AGENT] Handling calendar delete intent")
+    name_m = re.search(
+        r"(?:cancel|delete|remove)\s+my\s+(?:meeting|appointment|event)\s+with\s+(\w+)",
+        user_message, re.IGNORECASE,
+    )
+    if name_m:
+        event_name = name_m.group(1)
+        return {
+            "message": f"What date is the meeting with {event_name}?",
+            "success": True,
+            "type": "calendar_delete_prompt",
+            "data": {"search_term": event_name},
+        }
+    return {
+        "message": "Which event would you like to cancel? Give me the title or date.",
+        "success": True,
+        "type": "calendar_delete_prompt",
+        "data": {},
+    }
+
+
+async def _handle_out_of_scope(self, user_message: str) -> Dict[str, Any]:
+    """Gracefully decline out-of-scope requests."""
+    logger.info("[AGENT] Handling out-of-scope")
+    msg_lower = user_message.lower()
+    if "weather" in msg_lower or "temperature" in msg_lower:
+        topic = "weather checks"
+    elif "news" in msg_lower:
+        topic = "news"
+    elif any(w in msg_lower for w in ["stock", "bitcoin", "crypto"]):
+        topic = "financial data"
+    elif any(w in msg_lower for w in ["recipe", "food", "restaurant", "order food"]):
+        topic = "restaurants or recipes"
+    elif any(w in msg_lower for w in ["translate", "translation"]):
+        topic = "translations"
+    elif any(w in msg_lower for w in ["flight", "hotel", "travel", "uber", "taxi"]):
+        topic = "travel bookings"
+    else:
+        topic = "that"
+    return {
+        "message": f"I can help with your calendar and emails, but not {topic}.",
+        "success": False,
+        "type": "out_of_scope",
+        "data": {"topic": topic},
+    }
+
+
+# Inject new methods into ExecutiveAgent
+ExecutiveAgent._handle_email_reply = _handle_email_reply
+ExecutiveAgent._handle_email_forward = _handle_email_forward
+ExecutiveAgent._handle_calendar_update = _handle_calendar_update
+ExecutiveAgent._execute_calendar_update = _execute_calendar_update
+ExecutiveAgent._handle_calendar_delete = _handle_calendar_delete
+ExecutiveAgent._handle_out_of_scope = _handle_out_of_scope
+
+
+# ==============================================================================
 # HELPER FUNCTIONS
 # ==============================================================================
 
@@ -2433,6 +3125,80 @@ def _normalize_provider(raw_provider: str) -> str:
 
     logger.warning("[ORCHESTRATION] Unknown provider '%s', defaulting to 'google'", raw_provider)
     return "google"
+
+
+def _parse_event_selection(user_message: str, events: list) -> Optional[dict]:
+    """
+    Parse a user's event selection from a numbered list.
+    Supports: "1", "number 1", "the first one", "first", ordinals, etc.
+    Returns the selected event dict or None if not parseable.
+    """
+    msg = user_message.strip().lower()
+    # Direct numeric: "1", "2", ...
+    m = re.match(r'^(\d+)$', msg)
+    if m:
+        idx = int(m.group(1)) - 1
+        if 0 <= idx < len(events):
+            return events[idx]
+        return None
+    # "number 2", "option 2", "#2"
+    m = re.search(r'(?:number|option|#)\s*(\d+)', msg)
+    if m:
+        idx = int(m.group(1)) - 1
+        if 0 <= idx < len(events):
+            return events[idx]
+    # Ordinal words
+    ordinals = {"first": 0, "second": 1, "third": 2, "fourth": 3, "fifth": 4}
+    for word, idx in ordinals.items():
+        if word in msg and 0 <= idx < len(events):
+            return events[idx]
+    return None
+
+
+def _build_update_confirmation(agent, selected_event: dict, task_data: dict, provider: str) -> dict:
+    """
+    Build the confirmation message for a calendar update and store the pending action.
+    """
+    summary = selected_event.get("summary", "Untitled")
+    start_str = selected_event.get("start", "")
+    try:
+        start_dt = datetime.fromisoformat(start_str.replace("Z", "+00:00").replace("+00:00", ""))
+        orig_time = start_dt.strftime("%H:%M")
+        orig_date = start_dt.strftime("%A, %B %d")
+    except Exception:
+        orig_time = start_str
+        orig_date = ""
+
+    changes = []
+    new_time = task_data.get("new_time")
+    new_title = task_data.get("new_title")
+    new_location = task_data.get("new_location")
+
+    if new_time:
+        changes.append(f"move to {_format_time_natural(new_time)}")
+    if new_title:
+        changes.append(f"rename to \"{new_title}\"")
+    if new_location:
+        changes.append(f"change location to \"{new_location}\"")
+
+    changes_str = ", ".join(changes) if changes else "update"
+    orig_label = f"{orig_date}" + (f" at {_format_time_natural(orig_time)}" if orig_time else "")
+
+    msg = f'"{summary}" ({orig_label}) — {changes_str}. Shall I go ahead?'
+
+    agent.memory.set_pending_action(
+        action_type="update_calendar_event",
+        data={**task_data, "selected_event": selected_event, "provider": provider},
+    )
+    agent.memory.update_task_status("awaiting_confirmation")
+
+    return {
+        "message": msg,
+        "success": True,
+        "type": "calendar_update_confirmation",
+        "data": {"selected_event": selected_event, "changes": task_data},
+        "action_needed": "confirmation",
+    }
 
 
 def get_current_date_str() -> str:

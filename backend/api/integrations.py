@@ -33,6 +33,7 @@ from models.integrations import (
     CalendarEvent,
     CalendarEventsResponse,
     CalendarEventCreateRequest,
+    CalendarEventUpdateRequest,
     MailSendRequest,
     MailSendResponse
 )
@@ -551,7 +552,7 @@ async def google_calendar_create_event(
 @router.patch("/google/calendar/events/{event_id}", response_model=CalendarEvent)
 async def google_calendar_update_event(
     event_id: str,
-    request: CalendarEventCreateRequest,
+    request: CalendarEventUpdateRequest,
     user_id: str = Query("default_user", description="User ID"),
 ):
     """
@@ -1345,7 +1346,7 @@ async def microsoft_calendar_create_event(
 @router.patch("/microsoft/calendar/events/{event_id}", response_model=CalendarEvent)
 async def microsoft_calendar_update_event(
     event_id: str,
-    request: CalendarEventCreateRequest,
+    request: CalendarEventUpdateRequest,
     user_id: str = Query("default_user", description="User ID"),
 ):
     """
