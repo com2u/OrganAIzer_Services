@@ -479,10 +479,12 @@ class ExecutiveAgent:
                 async with httpx.AsyncClient(timeout=30.0) as client:
                     response = await client.get(endpoint, params=params)
                 if response.is_success:
-                    events = response.json()
+                    data = response.json()
+                    # Endpoint returns CalendarEventsResponse: {"events": [...], "total": N}
+                    events_list = data.get("events", data) if isinstance(data, dict) else data
                     self.memory.last_provider = provider
                     self.memory.preferred_provider = provider
-                    return {"events": events, "provider": provider, "count": len(events)}
+                    return {"events": events_list, "provider": provider, "count": len(events_list)}
                 return {"error": f"HTTP {response.status_code}", "events": [], "provider": provider}
             except Exception as e:
                 logger.error("[READ] list_calendar_events error: %s", e)
@@ -702,15 +704,17 @@ class ExecutiveAgent:
         if args.get("new_location"):
             payload["location"] = args["new_location"]
 
-        if args.get("new_start"):
+        if args.get("new_start") or args.get("new_end"):
             try:
-                start_dt = _parse_and_localize(args["new_start"], self.timezone, self.tz_name)
-                payload["start"] = start_dt.isoformat()
+                if args.get("new_start"):
+                    start_dt = _parse_and_localize(args["new_start"], self.timezone, self.tz_name)
+                    payload["start"] = start_dt.isoformat()
+                    # Default end to +1h from new start only when no explicit end given
+                    if not args.get("new_end"):
+                        payload["end"] = (start_dt + timedelta(hours=1)).isoformat()
                 if args.get("new_end"):
                     end_dt = _parse_and_localize(args["new_end"], self.timezone, self.tz_name)
                     payload["end"] = end_dt.isoformat()
-                else:
-                    payload["end"] = (start_dt + timedelta(hours=1)).isoformat()
             except Exception as e:
                 return {"message": f"Invalid time: {e}", "success": False, "type": "error", "intent": "LLM_DRIVEN"}
 
