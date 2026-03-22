@@ -102,19 +102,63 @@ async def get_contacts() -> list[ContactEntry]:
 @router.post("/dial")
 async def dial(request: DialRequest):
     """
-    Initiate an outbound call.
-    Returns 503 until the SIP client is wired up in Phase 3.
+    Initiate an outbound call via the SIP client.
+    Returns 503 if the SIP client is not registered.
     """
-    logger.info("Dial request for %s (%s) — SIP not yet connected",
-                request.number, request.display_name or "")
-    raise HTTPException(
-        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        detail={
-            "code": "SIP_NOT_CONNECTED",
-            "message": (
-                "SIP client is not registered yet. "
-                "Set COMTREXX_SIP_USER, COMTREXX_SIP_PASS, and COMTREXX_EXTENSION "
-                "in backend/.env and restart the server."
-            ),
-        },
+    import threading
+    from fastapi import Request
+
+    if not phone_state.get("registered"):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "SIP_NOT_CONNECTED",
+                "message": (
+                    "SIP client is not registered yet. "
+                    "Set COMTREXX_SIP_USER, COMTREXX_SIP_PASS, and COMTREXX_EXTENSION "
+                    "in backend/.env and restart the server."
+                ),
+            },
+        )
+
+    if phone_state.get("active_call") is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "CALL_IN_PROGRESS", "message": "A call is already active."},
+        )
+
+    # Dispatch via the SIP client stored on app.state
+    from voice.call_handler import handle_call
+    from starlette.requests import Request as StarletteRequest
+
+    # Lazy import to avoid circular dependency at module load
+    try:
+        from main import app as _app
+        sip = getattr(_app.state, "sip_client", None)
+    except Exception:
+        sip = None
+
+    if sip is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "SIP_NOT_READY", "message": "SIP client not initialised."},
+        )
+
+    call = sip.dial(request.number)
+    if call is None:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={"code": "DIAL_FAILED", "message": f"Failed to dial {request.number}."},
+        )
+
+    # Run call handler in a daemon thread
+    t = threading.Thread(
+        target=handle_call,
+        args=(call, phone_state),
+        name=f"ai-call-outbound-{request.number}",
+        daemon=True,
     )
+    t.start()
+
+    logger.info("Outbound call started to %s", request.number)
+    return {"status": "dialing", "number": request.number}

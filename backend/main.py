@@ -34,6 +34,16 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting OrganAIzer Services API")
 
+    # Start AI phone SIP client (non-blocking — runs in daemon threads).
+    # Skips silently if COMTREXX_SIP_USER / PASS / EXTENSION are not set.
+    from voice.sip_client import SIPClient
+    _sip = SIPClient()
+    import threading as _threading
+    _sip_thread = _threading.Thread(target=_sip.start, daemon=True, name="sip-client-start")
+    _sip_thread.start()
+    app.state.sip_client = _sip
+    logger.info("SIP client start dispatched (background thread)")
+
     # Ensure required directories exist
     config.ensure_directories()
     logger.info(f"TTS temporary directory: {config.TTS_TEMP_DIR}")
@@ -59,6 +69,8 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Shutting down OrganAIzer Services API")
+    if hasattr(app.state, "sip_client"):
+        app.state.sip_client.stop()
 
 
 # Create FastAPI application with lifespan handler
