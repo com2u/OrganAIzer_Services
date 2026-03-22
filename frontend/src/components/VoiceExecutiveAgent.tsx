@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { getOrCreateSessionId } from '../lib/session';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -53,7 +54,8 @@ function VoiceExecutiveAgent() {
   });
   const [error, setError]           = useState<string | null>(null);
   const [wsConnected, setWsConnected] = useState(false);
-  const [sessionId]                 = useState(`voice-session-${Date.now()}`);
+  // Use sessionStorage-persisted ID so re-renders / navigation don't start a new context.
+  const [sessionId]                 = useState(() => getOrCreateSessionId());
 
   // Refs – survive re-renders without triggering them
   const wsRef                 = useRef<WebSocket | null>(null);
@@ -368,9 +370,22 @@ function VoiceExecutiveAgent() {
         recorder.start(250); // 250 ms timeslice guarantees EBML header in first chunk
         setState(prev => ({ ...prev, isRecording: true, liveTranscript: 'Listening…' }));
 
-      } catch (err) {
+      } catch (err: unknown) {
         console.error('[VoiceAgent] Microphone access error:', err);
-        setError('Failed to access microphone. Please grant permission.');
+        // Distinguish permission denial from other mic failures so the user
+        // gets actionable guidance rather than a generic message.
+        const domErr = err as DOMException | undefined;
+        if (domErr?.name === 'NotAllowedError' || domErr?.name === 'PermissionDeniedError') {
+          setError(
+            'Microphone access was denied. Please allow microphone access in your browser settings (🔒 icon in the address bar) and try again.'
+          );
+        } else if (domErr?.name === 'NotFoundError' || domErr?.name === 'DevicesNotFoundError') {
+          setError('No microphone found. Please connect a microphone and try again.');
+        } else {
+          setError(`Could not access microphone: ${domErr?.message ?? String(err)}`);
+        }
+        // Always reset recording state so the button re-enables after an error.
+        setState(prev => ({ ...prev, isRecording: false, isTranscribing: false, liveTranscript: '' }));
       }
     }
   };

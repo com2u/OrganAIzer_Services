@@ -36,6 +36,7 @@ import pytz
 from services.chat_service import get_chat_service
 from utils.intent_router import IntentRouter, IntentType
 from utils.slot_extraction import SlotExtractor
+from config.chat_limits import MAX_HISTORY, MAX_HISTORY_TOKENS
 
 logger = logging.getLogger(__name__)
 
@@ -410,7 +411,7 @@ class ExecutiveAgent:
         # Dedicated calendar list intent (from intent router)
         if intent_type == IntentType.CALENDAR_LIST:
             logger.info("[AGENT] ✓ Calendar list intent detected (CALENDAR_LIST)")
-            return await self._handle_calendar_list_events(user_id, _cal, user_message)
+            return await self._handle_calendar_list_events(user_id, extracted_slots.get("provider") or _cal, user_message)
 
         # Email READ intent — read/summarize emails, no write action
         if intent_type == IntentType.EMAIL_READ:
@@ -420,7 +421,7 @@ class ExecutiveAgent:
         # Calendar READ intent — richer date-range queries
         if intent_type == IntentType.CALENDAR_READ:
             logger.info("[AGENT] ✓ Calendar read intent detected (CALENDAR_READ)")
-            return await self._handle_calendar_read(user_message, user_id, _cal)
+            return await self._handle_calendar_read(user_message, user_id, extracted_slots.get("provider") or _cal)
 
         # Draft correction — "no, use outlook" / "no, call it X" / "make it 21:00"
         if intent_type == IntentType.MODIFY_DRAFT:
@@ -536,32 +537,35 @@ class ExecutiveAgent:
         # DEFAULT: LLM CHAT
         # ==========================================
         logger.info("[AGENT] No specific intent - using LLM reasoning")
-        
-        # Build system prompt with current context
+
+        # Build system prompt as first message in history
         system_prompt = self._build_intelligent_system_prompt()
-        
-        # Build user prompt with conversation history
-        user_prompt = self._build_contextual_user_prompt(user_message)
-        
-        # Get LLM response
+
+        # Build proper role-separated history (audit fix: was text-block only)
         from models.chat import ChatRequest, ChatMessage
-        
+
+        history_messages = self._build_history_messages(
+            max_turns=MAX_HISTORY,
+            max_tokens=MAX_HISTORY_TOKENS,
+        )
+
         chat_request = ChatRequest(
-            prompt=user_prompt,
+            prompt=user_message,
             conversation_history=[
-                ChatMessage(role="system", content=system_prompt)
+                ChatMessage(role="system", content=system_prompt),
+                *history_messages,
             ],
             temperature=0.7,
-            max_tokens=1000
+            max_tokens=1000,
         )
-        
+
         llm_response = await self.chat_service.chat_completion(chat_request)
-        
+
         return {
             "message": llm_response.response,
             "success": True,
             "type": "chat",
-            "data": {}
+            "data": {},
         }
     
     def _build_intelligent_system_prompt(self) -> str:
@@ -605,23 +609,75 @@ class ExecutiveAgent:
     def _build_contextual_user_prompt(self, current_message: str) -> str:
         """
         Build user prompt with conversation history for context.
+        Kept as a lightweight fallback used by _handle_out_of_scope only.
+        For the main LLM chat path, use _build_history_messages() instead so
+        that the model receives proper role-separated message objects.
         """
-        # Include last few messages for context
         history_context = ""
         if len(self.memory.conversation_history) > 1:
-            recent_messages = self.memory.conversation_history[-5:-1]  # Last 4 messages before current
+            recent_messages = self.memory.conversation_history[-5:-1]
             history_context = "\n\nRECENT CONVERSATION:\n"
             for msg in recent_messages:
                 role = "User" if msg["role"] == "user" else "You"
                 history_context += f"{role}: {msg['content']}\n"
-        
-        # Include active task context if any
+
         task_context = ""
         if self.memory.active_task:
             task = self.memory.active_task
-            task_context = f"\n\nACTIVE TASK:\nYou are currently helping the user with: {task['type']}\nStatus: {task['status']}\n"
-        
+            task_context = (
+                f"\n\nACTIVE TASK:\nYou are currently helping the user with: "
+                f"{task['type']}\nStatus: {task['status']}\n"
+            )
+
         return f"{history_context}{task_context}\nUser: {current_message}\n\nYour response:"
+
+    def _build_history_messages(self, max_turns: int, max_tokens: int) -> list:
+        """
+        Build a list of ChatMessage objects from ConversationMemory for use as
+        proper role-separated messages in a ChatRequest.
+
+        This replaces the "RECENT CONVERSATION" text-block approach with a
+        structured messages array so the LLM gets accurate speaker attribution.
+
+        Rules:
+        - The current user message is already in memory (added by process_message
+          before this is called), so we exclude it via [:-1].
+        - Apply a hard turn limit (max_turns) first, keeping the newest turns.
+        - Then apply an approximate token budget (max_tokens) trimming from the
+          oldest end only, so the most recent context is always preserved.
+        - Log when trimming occurs so operators can tune the budget.
+        """
+        from models.chat import ChatMessage
+
+        # Exclude the last entry: that is the current user turn, already passed
+        # as ChatRequest.prompt — including it here would duplicate it.
+        history = self.memory.conversation_history[:-1]
+
+        # 1. Hard turn cap (keep newest)
+        if len(history) > max_turns:
+            history = history[-max_turns:]
+
+        # 2. Approximate token budget: 1 token ≈ 4 UTF-8 characters.
+        #    Walk from oldest → newest, dropping messages until the budget fits.
+        kept: list = []
+        used_tokens = 0
+        for msg in reversed(history):
+            msg_tokens = len(msg.get("content", "")) // 4
+            if used_tokens + msg_tokens > max_tokens:
+                break
+            kept.insert(0, msg)
+            used_tokens += msg_tokens
+
+        if len(kept) < len(history):
+            logger.info(
+                "[MEMORY] History trimmed to fit token budget: %d turns kept (was %d)",
+                len(kept), len(history),
+            )
+
+        return [
+            ChatMessage(role=m["role"], content=m["content"])
+            for m in kept
+        ]
     
     async def _handle_confirmation(self, user_id: str, provider: str) -> Dict[str, Any]:
         """
@@ -917,6 +973,17 @@ class ExecutiveAgent:
                 # Remember provider for next calendar event in this session
                 self.memory.preferred_provider = provider
                 logger.info("[MEMORY] preferred_provider updated → '%s'", provider)
+
+                # FIX (Cause B): Store the created event's ID in session context so
+                # a follow-up "rename/move it" request can find the event directly via
+                # events().get(eventId=...) instead of the unreliable events().list() search.
+                _created_id = event_data.get("id")
+                _created_summary = event_data.get("summary", "")
+                if _created_id:
+                    self.memory.context["last_created_event_id"] = _created_id
+                    self.memory.context["last_created_event_summary"] = _created_summary
+                    self.memory.context["last_created_event_provider"] = provider
+                    logger.info("[MEMORY] last_created_event_id stored in context: %s", _created_id)
 
                 # Clear state only on success
                 self.memory.clear_pending_action()
@@ -1432,7 +1499,14 @@ class ExecutiveAgent:
         }
 
     async def _handle_calendar_provider_selection(self, extracted_slots: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle calendar provider selection — lock provider and re-dispatch to creation workflow."""
+        """
+        Handle calendar provider selection — lock provider, CLEAR last_question_type,
+        then re-dispatch to the pending operation (list/read/create) stored in context.
+
+        BUG FIX: previously last_question_type was never cleared here, so every
+        subsequent message stayed in the provider_selection branch of the intent
+        router forever — causing an infinite "Which account?" loop.
+        """
         provider = extracted_slots.get("provider")
         if not provider:
             return {
@@ -1444,20 +1518,59 @@ class ExecutiveAgent:
             "[EXEC_PROVIDER_DECISION] Calendar provider selected by user: '%s' — locking in session",
             provider,
         )
-        # Lock provider into session memory so it persists across turns
-        self.memory.preferred_provider = _normalize_provider(provider)
+        # Lock provider into session memory so it persists across subsequent turns.
+        normalized = _normalize_provider(provider)
+        self.memory.preferred_provider = normalized
+
+        # CRITICAL FIX: Clear the last_question_type flag so the intent router
+        # stops routing all future messages to SELECT_CALENDAR_PROVIDER.
+        self.memory.last_question_type = None
+        logger.info(
+            "[EXEC_PROVIDER_DECISION] Cleared last_question_type — normal routing resumes"
+        )
+
+        user_id = self.memory.current_user_id or "default_user"
+
+        # Re-dispatch to any *active task* (calendar_event create flow)
         if self.memory.active_task:
             task_data = dict(self.memory.active_task.get("data", {}))
             task_data["provider"] = provider
             self.memory.update_task_data({"provider": provider})
             task_type = self.memory.active_task.get("type", "")
             if task_type == "calendar_event":
-                user_id = self.memory.current_user_id or "default_user"
                 return await self._handle_calendar_event_creation("", task_data, user_id, provider)
+
+        # Re-dispatch to a *pending read/list operation* stored in context.
+        # This covers the "What meetings do I have today?" → "Google" → [fetch events] flow.
+        pending_op  = self.memory.context.pop("pending_operation", None)
+        pending_msg = self.memory.context.pop("pending_message", "")
+
+        if pending_op == "calendar_list":
+            logger.info(
+                "[EXEC_PROVIDER_DECISION] Re-dispatching pending calendar_list "
+                "with provider='%s'", normalized
+            )
+            return await self._handle_calendar_list_events(user_id, normalized, pending_msg)
+
+        if pending_op == "calendar_read":
+            logger.info(
+                "[EXEC_PROVIDER_DECISION] Re-dispatching pending calendar_read "
+                "with provider='%s'", normalized
+            )
+            return await self._handle_calendar_read(pending_msg, user_id, normalized)
+
+        if pending_op == "email_read":
+            logger.info(
+                "[EXEC_PROVIDER_DECISION] Re-dispatching pending email_read "
+                "with provider='%s'", normalized
+            )
+            return await self._handle_email_read(pending_msg, user_id, normalized)
+
+        # No pending operation — acknowledge and return to idle
         return {
             "message": (
-                f"Got it — using {_normalize_provider(provider).title()} Calendar. "
-                "Describe the event and I'll set it up."
+                f"Got it — using {normalized.title()} Calendar. "
+                "What would you like to do?"
             ),
             "success": True,
             "type": "acknowledge",
@@ -1979,6 +2092,11 @@ class ExecutiveAgent:
         # ── Mandatory provider guard ──────────────────────────────────────────
         if not provider and not self.memory.preferred_provider:
             logger.info("[EXEC_PROVIDER_DECISION] Calendar list: provider unknown — asking user")
+            self.memory.last_question_type = "provider_selection"
+            # Store the pending operation so _handle_calendar_provider_selection
+            # can immediately re-dispatch once a provider is chosen.
+            self.memory.context["pending_operation"] = "calendar_list"
+            self.memory.context["pending_message"]   = user_message
             return {
                 "message": "Which account would you like to use — Google or Microsoft?",
                 "success": True,
@@ -2335,6 +2453,9 @@ class ExecutiveAgent:
         # ── Mandatory provider guard ──────────────────────────────────────────
         if not provider and not self.memory.preferred_provider:
             logger.info("[EXEC_PROVIDER_DECISION] Calendar read: provider unknown — asking user")
+            self.memory.last_question_type = "provider_selection"
+            self.memory.context["pending_operation"] = "calendar_read"
+            self.memory.context["pending_message"]   = user_message
             return {
                 "message": "Which account would you like to use — Google or Microsoft?",
                 "success": True,
@@ -2776,6 +2897,67 @@ async def _handle_calendar_update(self, user_message: str, user_id: str, provide
             "type": "provider_not_connected",
             "data": {"provider": normalized_provider},
         }
+
+    # ── Fast path: use session context to find recently created event directly ──
+    # After event creation, Google Calendar's eventual consistency can take 1-2s.
+    # If we know the event's ID from context, fetch it with events().get() directly
+    # (our new GET /api/integrations/{provider}/calendar/events/{id} endpoint)
+    # instead of relying on the unreliable events().list() search.
+    _ctx_event_id = self.memory.context.get("last_created_event_id")
+    _ctx_event_summary = self.memory.context.get("last_created_event_summary", "")
+    _ctx_event_provider = self.memory.context.get("last_created_event_provider", normalized_provider)
+    _fast_path_events: Optional[List[Dict[str, Any]]] = None
+
+    # Use the fast path when:
+    #  - there IS a recently created event in context, AND
+    #  - either no search_query, or the query matches the stored summary
+    if _ctx_event_id and (
+        not search_query
+        or search_query.lower() in _ctx_event_summary.lower()
+        or _ctx_event_summary.lower() in search_query.lower()
+    ):
+        logger.info(
+            "[CAL_UPDATE] Fast-path: recently created event (id=%s summary=%r) matches query — "
+            "fetching by ID instead of list()",
+            _ctx_event_id, _ctx_event_summary,
+        )
+        try:
+            _fp_base_url = os.getenv("BACKEND_URL", "http://localhost:8000")
+            _fp_url = f"{_fp_base_url}/api/integrations/{_ctx_event_provider}/calendar/events/{_ctx_event_id}"
+            async with httpx.AsyncClient() as _fp_client:
+                _fp_resp = await _fp_client.get(_fp_url, params={"user_id": user_id}, timeout=15.0)
+            if _fp_resp.is_success:
+                _fast_path_events = [_fp_resp.json()]
+                logger.info("[CAL_UPDATE] Fast-path GET succeeded — using event_id=%s", _ctx_event_id)
+            else:
+                logger.warning(
+                    "[CAL_UPDATE] Fast-path GET status=%s — falling back to list search",
+                    _fp_resp.status_code,
+                )
+        except Exception as _fp_err:
+            logger.warning("[CAL_UPDATE] Fast-path GET failed: %s — falling back to list search", _fp_err)
+
+    if _fast_path_events is not None:
+        # Bypass the list search entirely — jump straight to selection/confirmation logic
+        all_events = _fast_path_events
+        if len(all_events) == 1:
+            selected = all_events[0]
+            task_data = {
+                **update_slots,
+                "selected_event": selected,
+                "provider": _ctx_event_provider,
+                "user_id": user_id,
+            }
+            self.memory.set_active_task(
+                task_type="calendar_update",
+                data=task_data,
+                status="awaiting_confirmation",
+            )
+            return _build_update_confirmation(self, selected, task_data, _ctx_event_provider)
+        # Should not happen with a single event ID, but handle gracefully
+        for i, evt in enumerate(all_events[:5], 1):
+            logger.info("[CAL_UPDATE] Fast-path event %d: %s", i, evt.get("summary"))
+        # Fall through to the standard multi-match flow below
 
     # Search for matching events
     now = datetime.now()

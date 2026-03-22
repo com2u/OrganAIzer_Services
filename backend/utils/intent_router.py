@@ -515,6 +515,30 @@ class IntentRouter:
                     "confidence": 0.5,
                     "reasoning": "In CAL_PROVIDER_SELECT state but no valid provider detected"
                 }
+
+        # PROVIDER_SELECTION context — agent asked "Google or Microsoft?" for a calendar
+        # list/read action.  Route any provider answer directly so "Google" doesn't fall
+        # through to GENERAL_MESSAGE.
+        if last_question_type == "provider_selection":
+            provider = IntentRouter._extract_calendar_provider(message_lower)
+            if provider:
+                logger.info(f"[INTENT_ROUTER] ✓ SELECT_CALENDAR_PROVIDER (provider_selection context): {provider}")
+                return {
+                    "intent_type": IntentType.SELECT_CALENDAR_PROVIDER,
+                    "extracted_slots": {"provider": provider},
+                    "normalized_message": message,
+                    "confidence": 1.0,
+                    "reasoning": f"Provider selection after agent asked which provider: {provider}"
+                }
+            # No valid provider detected — re-ask
+            logger.info("[INTENT_ROUTER] ✓ SELECT_CALENDAR_PROVIDER (provider_selection ctx, invalid)")
+            return {
+                "intent_type": IntentType.SELECT_CALENDAR_PROVIDER,
+                "extracted_slots": {},
+                "normalized_message": message,
+                "confidence": 0.5,
+                "reasoning": "In provider_selection context but no valid provider detected"
+            }
         
         # =================================================================
         # PRIORITY 3: CONFIRMATION vs DECLINE_OPTIONAL
@@ -704,17 +728,17 @@ class IntentRouter:
 
         cal_intent = IntentRouter._detect_calendar_intent(message_lower)
         if cal_intent:
-            # For CREATE intents: extract the provider hint immediately so it is
-            # locked from the very first message (task spec: "no defaults").
+            # Extract provider for ALL calendar intents (not just CREATE).
+            # This ensures "tell me my Google Calendar events" resolves provider=google
+            # immediately without asking the user.
+            from utils.slot_extraction import SlotExtractor
             cal_slots: Dict[str, Any] = {}
-            if cal_intent == IntentType.CALENDAR_CREATE:
-                from utils.slot_extraction import SlotExtractor
-                provider_hint = SlotExtractor._extract_provider(message_lower)
-                if provider_hint:
-                    cal_slots["provider"] = provider_hint
-                    logger.info(
-                        "[CALENDAR_INTENT] ✓ Provider locked from message: %s", provider_hint
-                    )
+            provider_hint = SlotExtractor._extract_provider(message_lower)
+            if provider_hint:
+                cal_slots["provider"] = provider_hint
+                logger.info(
+                    "[CALENDAR_INTENT] ✓ Provider locked from message: %s", provider_hint
+                )
 
             logger.info("[CALENDAR_INTENT] ✓ %s detected (provider=%s)",
                         cal_intent, cal_slots.get("provider", "<infer>"))

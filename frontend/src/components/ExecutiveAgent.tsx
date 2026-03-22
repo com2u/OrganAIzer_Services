@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import ChatComposer from './ChatComposer';
 import { agentChat, ttsGenerate, API_BASE_URL } from '../lib/apiClient';
+import { getOrCreateSessionId } from '../lib/session';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -46,7 +47,9 @@ function toWsBase(apiBase: string): string {
   return `${proto}://${host}`;
 }
 
-const SESSION_ID = `agent-${Date.now()}`;
+// Use sessionStorage-persisted ID so navigation between pages does not lose
+// the backend ConversationMemory for this tab/session.
+const SESSION_ID = getOrCreateSessionId();
 
 // These chips must use English phrases that the backend intent router matches deterministically.
 // German phrases fall through to the LLM general-message handler and never call the calendar/email API.
@@ -145,7 +148,14 @@ export default function ExecutiveAgent({ onPageChange }: Props = {}) {
 
   // ── Text-chat send ──────────────────────────────────────────────────────────
 
+  // Race-condition guard: set synchronously before any await so a second submit
+  // in the same tick (e.g. rapid Enter presses) is blocked before setLoading
+  // has had a chance to re-render with disabled=true.
+  const sendingRef = useRef(false);
+
   const handleSend = useCallback(async (text: string) => {
+    if (sendingRef.current) return;
+    sendingRef.current = true;
     // Provider resolution — only send when exactly ONE provider is connected.
     // When both or neither are connected, send null so the backend applies its
     // own resolution hierarchy and asks the user if needed (EXEC_PROVIDER_DECISION).
@@ -196,6 +206,7 @@ export default function ExecutiveAgent({ onPageChange }: Props = {}) {
       ]);
     } finally {
       setLoading(false);
+      sendingRef.current = false;
     }
   }, [autoSpeak, playAudio, googleConnected, microsoftConnected]);
 
@@ -404,33 +415,64 @@ export default function ExecutiveAgent({ onPageChange }: Props = {}) {
     setVoiceError(null);
     wsRef.current.send(JSON.stringify({ type: 'audio_start' }));
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
       vmStreamRef.current = stream;
       // FIX: was hardcoded 'audio/webm' — throws DOMException on Safari (unsupported)
       const chosenMime = getSupportedMime();
       const recOpts: MediaRecorderOptions = chosenMime ? { mimeType: chosenMime } : {};
       const mr = new MediaRecorder(stream, recOpts);
       vmMediaRecorderRef.current = mr;
+
       mr.ondataavailable = e => {
         if (e.data.size > 0 && wsRef.current?.readyState === WebSocket.OPEN) {
           wsRef.current.send(e.data);
         }
       };
-      mr.start(500);
+
+      // ── FIX: audio_end MUST be sent inside onstop, not in stopVmSpeaking. ──
+      // mr.stop() is async: it flushes the final audio chunk via ondataavailable,
+      // then fires onstop.  Sending audio_end synchronously after stop() causes
+      // it to arrive at the server BEFORE the last audio bytes, so the server
+      // sees an empty buffer and returns stt:no_audio without transcribing.
+      mr.onstop = () => {
+        // Stop mic tracks only after all audio data has been captured.
+        vmStreamRef.current?.getTracks().forEach(t => t.stop());
+        vmStreamRef.current = null;
+        // Now it is safe to tell the server we are done — all chunks arrived first.
+        if (wsRef.current?.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: 'audio_end' }));
+        }
+        addDebug('mic:onstop');
+      };
+
+      // 250 ms timeslice: guarantees EBML header is in the first chunk and
+      // every 250 ms of speech is flushed even for short utterances.
+      // The previous 500 ms timeslice meant <500 ms of speech produced 0 chunks.
+      mr.start(250);
       setIsVoiceRecording(true);
       addDebug('mic:start');
-    } catch {
-      setVoiceError('Mikrofon-Zugriff verweigert');
+    } catch (err) {
+      console.error('[Voice] Microphone access error:', err);
+      setVoiceError('Mikrofon-Zugriff verweigert – bitte Berechtigung erteilen');
     }
   }, [sendInterrupt, addDebug]);
 
   const stopVmSpeaking = useCallback(() => {
-    if (vmMediaRecorderRef.current?.state === 'recording') vmMediaRecorderRef.current.stop();
-    stopVmStream();
-    setIsVoiceRecording(false);
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'audio_end' }));
+    const mr = vmMediaRecorderRef.current;
+    if (mr?.state === 'recording') {
+      // mr.stop() → ondataavailable(final flush) → onstop (sends audio_end + stops stream)
+      // Do NOT call stopVmStream() or send audio_end here — onstop handles both.
+      mr.stop();
+    } else {
+      // Recorder was never started (very fast tap) — clean up and notify server.
+      stopVmStream();
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'audio_end' }));
+      }
     }
+    setIsVoiceRecording(false);
     addDebug('mic:stop');
   }, [stopVmStream, addDebug]);
 

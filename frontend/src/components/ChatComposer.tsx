@@ -53,7 +53,13 @@ export default function ChatComposer({ onSend, disabled = false, onVoiceMode }: 
       streamRef.current = stream;
       chunksRef.current = [];
 
-      const mr = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      // Detect the best supported MIME type at call-time.
+      // Hardcoding 'audio/webm' throws a DOMException on Safari (unsupported).
+      const mimeCandidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
+      const chosenMime = mimeCandidates.find(
+        t => typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(t)
+      ) ?? '';
+      const mr = new MediaRecorder(stream, chosenMime ? { mimeType: chosenMime } : {});
       mediaRecorderRef.current = mr;
 
       mr.ondataavailable = (e) => {

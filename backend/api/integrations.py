@@ -14,6 +14,7 @@ from email.mime.text import MIMEText
 from typing import Optional
 from datetime import datetime, timedelta
 
+import time
 import requests as http_requests
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
@@ -497,7 +498,10 @@ async def google_calendar_create_event(
             calendarId='primary',
             body=event_body
         ).execute()
-        
+
+        # FIX: Wait for Google's eventual consistency so the event is immediately
+        # findable by follow-up list() or get() calls (avoids post-create sync issues).
+        time.sleep(1.5)
         logger.info(f"✅ Created calendar event '{request.summary}' for user {user_id}")
         logger.info(f"📋 Event ID: {created_event.get('id')}")
         
@@ -547,6 +551,65 @@ async def google_calendar_create_event(
                 "details": {"status": "error"}
             }
         )
+
+
+@router.get("/google/calendar/events/{event_id}", response_model=CalendarEvent)
+async def google_calendar_get_event(
+    event_id: str,
+    user_id: str = Query("default_user", description="User ID"),
+):
+    """
+    Fetch a single Google Calendar event by ID using events().get().
+
+    This is the RELIABLE lookup method — avoids eventual-consistency issues
+    that affect events().list() for newly created events.
+    Use this endpoint after creating an event to immediately read it back.
+    """
+    try:
+        token_storage = get_token_storage()
+        token_data = token_storage.load_tokens(user_id, "google")
+        if not token_data:
+            raise HTTPException(
+                status_code=401,
+                detail={"code": "NOT_AUTHENTICATED",
+                        "message": "Google account not connected.",
+                        "action": "CONNECT_GOOGLE"},
+            )
+        credentials = Credentials(
+            token=token_data.get("access_token"),
+            refresh_token=token_data.get("refresh_token"),
+            token_uri=token_data.get("token_uri"),
+            client_id=token_data.get("client_id"),
+            client_secret=token_data.get("client_secret"),
+            scopes=token_data.get("scopes"),
+        )
+        service = build("calendar", "v3", credentials=credentials)
+        event = service.events().get(calendarId="primary", eventId=event_id).execute()
+        start = event["start"].get("dateTime", event["start"].get("date"))
+        end = event["end"].get("dateTime", event["end"].get("date"))
+        logger.info(f"✅ Fetched Google Calendar event {event_id} for user {user_id}")
+        return CalendarEvent(
+            id=event.get("id"),
+            summary=event.get("summary", "No Title"),
+            description=event.get("description"),
+            start=start,
+            end=end,
+            location=event.get("location"),
+            attendees=[a.get("email") for a in event.get("attendees", [])] if event.get("attendees") else None,
+            htmlLink=event.get("htmlLink"),
+        )
+    except HTTPException:
+        raise
+    except HttpError as e:
+        logger.error(f"Google Calendar get event error: {e}")
+        if e.resp.status == 404:
+            raise HTTPException(status_code=404, detail={"code": "EVENT_NOT_FOUND", "message": f"Event {event_id} not found."})
+        if e.resp.status in (401, 403):
+            raise HTTPException(status_code=401, detail={"code": "AUTHENTICATION_REQUIRED", "message": "Google Calendar access expired.", "action": "RECONNECT_GOOGLE"})
+        raise HTTPException(status_code=500, detail={"code": "CALENDAR_API_ERROR", "message": str(e)})
+    except Exception as e:
+        logger.error(f"Error fetching Google Calendar event: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail={"code": "INTERNAL_ERROR", "message": str(e)})
 
 
 @router.patch("/google/calendar/events/{event_id}", response_model=CalendarEvent)
@@ -608,6 +671,8 @@ async def google_calendar_update_event(
             calendarId="primary", eventId=event_id, body=patch_body
         ).execute()
 
+        # FIX: Wait for Google's eventual consistency after patch.
+        time.sleep(1.5)
         logger.info(f"✅ Updated Google Calendar event {event_id} for user {user_id}")
         start_time = updated_event["start"].get("dateTime", updated_event["start"].get("date"))
         end_time   = updated_event["end"].get("dateTime", updated_event["end"].get("date"))

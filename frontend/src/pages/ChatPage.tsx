@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import ChatComposer from '../components/ChatComposer';
 import { agentChat, ttsGenerate } from '../lib/apiClient';
+import { getOrCreateSessionId } from '../lib/session';
 
 interface Message {
   id: string;
@@ -10,8 +11,14 @@ interface Message {
   audioUrl?: string;
 }
 
-// Stable session ID for the page lifetime
-const SESSION_ID = `chat-${Date.now()}`;
+// Use sessionStorage-persisted ID so navigation between pages does not reset
+// the backend ConversationMemory for this tab/session.
+const SESSION_ID = getOrCreateSessionId();
+
+// Must match backend/config/chat_limits.py MAX_HISTORY_TURNS.
+// When the conversation reaches this many user turns, the backend will start
+// silently truncating the oldest messages.  Show a soft warning banner.
+const MAX_HISTORY_TURNS = 20;
 
 const SUGGESTIONS = [
   'Was ist heute auf meinem Kalender?',
@@ -26,11 +33,18 @@ function makeId() {
     : Math.random().toString(36).slice(2);
 }
 
+/** Count only user turns — each user message occupies one slot in the backend history. */
+function countUserTurns(msgs: Message[]): number {
+  return msgs.filter(m => m.role === 'user').length;
+}
+
 export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [autoSpeak, setAutoSpeak] = useState(false);
+  // Show a notice when the conversation is close to or at the history limit.
+  const [historyWarningDismissed, setHistoryWarningDismissed] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -47,8 +61,16 @@ export default function ChatPage() {
     audio.play().catch(() => {});
   };
 
+  // Race-condition guard: set synchronously before any await so a second submit
+  // in the same tick (e.g. rapid Enter presses) is blocked before setLoading
+  // has had a chance to re-render with disabled=true.
+  const sendingRef = useRef(false);
+
   const handleSend = useCallback(
     async (text: string) => {
+      if (sendingRef.current) return;
+      sendingRef.current = true;
+
       const userMsg: Message = {
         id: makeId(),
         role: 'user',
@@ -92,15 +114,46 @@ export default function ChatPage() {
         ]);
       } finally {
         setLoading(false);
+        sendingRef.current = false;
       }
     },
     [autoSpeak],
   );
 
+  // Compute whether to show the history-limit warning banner
+  const userTurns = countUserTurns(messages);
+  const nearLimit = userTurns >= MAX_HISTORY_TURNS - 2;
+  const atLimit   = userTurns >= MAX_HISTORY_TURNS;
+  const showHistoryWarning = (nearLimit || atLimit) && !historyWarningDismissed;
+
   return (
     <div className="flex flex-col" style={{ height: 'calc(100vh - 105px)' }}>
       {/* ── Message list ─────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-y-auto px-4 pt-4 pb-36">
+
+        {/* History-limit warning banner */}
+        {showHistoryWarning && (
+          <div className={`mb-3 px-4 py-2 rounded-lg text-sm flex items-start gap-2 ${
+            atLimit
+              ? 'bg-orange-50 border border-orange-300 text-orange-800'
+              : 'bg-yellow-50 border border-yellow-200 text-yellow-800'
+          }`}>
+            <span className="mt-0.5">⚠️</span>
+            <span className="flex-1">
+              {atLimit
+                ? `The conversation has reached the ${MAX_HISTORY_TURNS}-turn limit. The oldest messages are now being dropped — the AI may lose earlier context. Start a new chat to reset.`
+                : `The conversation is approaching the ${MAX_HISTORY_TURNS}-turn context limit (${userTurns}/${MAX_HISTORY_TURNS} turns used).`
+              }
+            </span>
+            <button
+              onClick={() => setHistoryWarningDismissed(true)}
+              className="text-current opacity-60 hover:opacity-100 shrink-0"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
         {/* Empty-state with suggestions */}
         {messages.length === 0 && !loading && (
           <div className="flex flex-col items-center justify-center h-full text-center">

@@ -10,6 +10,7 @@ from typing import List, Optional
 from core.config import config
 from core.error_handling import AppError
 from models.chat import ChatMessage, ChatRequest, ChatResponse, ModelInfo, AvailableModelsResponse
+from config.chat_limits import MAX_HISTORY
 
 
 
@@ -54,14 +55,16 @@ class ChatService:
             # Build messages array
             messages = []
             
-            # Add conversation history if provided
-            MAX_HISTORY = 10  # must match ConversationMemory.MAX_HISTORY
+            # Add conversation history if provided.
+            # MAX_HISTORY is imported from config.chat_limits (currently 20).
+            # Previously this was hardcoded to 10, which silently discarded half
+            # of the history stored by ConversationMemory.
             if request.conversation_history:
-               trimmed_history = request.conversation_history[-MAX_HISTORY:]
-               messages.extend([
-               {"role": msg.role, "content": msg.content}
-               for msg in trimmed_history
-                 ])
+                trimmed_history = request.conversation_history[-MAX_HISTORY:]
+                messages.extend([
+                    {"role": msg.role, "content": msg.content}
+                    for msg in trimmed_history
+                ])
             
             # Add current user prompt
             messages.append({
@@ -115,15 +118,33 @@ class ChatService:
                     details={"result": result}
                 )
             
-            ai_response = result["choices"][0]["message"]["content"]
-            usage = result.get("usage")
-            
+            choice       = result["choices"][0]
+            ai_response  = choice["message"]["content"]
+            finish_reason = choice.get("finish_reason", "stop")
+            usage        = result.get("usage")
+
+            # Warn the user when the model ran out of output tokens mid-sentence.
+            # OpenRouter returns finish_reason="length" in that case; "stop" means
+            # natural completion.
+            if finish_reason == "length":
+                ai_response += (
+                    "\n\n⚠️ *(Response truncated — token limit reached. "
+                    "Try asking a shorter or more specific question.)*"
+                )
+                logger.warning(
+                    "[CHAT] Response truncated at token limit  model=%s  "
+                    "prompt_tokens=%s  completion_tokens=%s",
+                    model,
+                    usage.get("prompt_tokens") if usage else "?",
+                    usage.get("completion_tokens") if usage else "?",
+                )
+
             logger.info(f"Successfully generated response ({len(ai_response)} chars)")
-            
+
             return ChatResponse(
                 response=ai_response,
                 model=model,
-                usage=usage
+                usage=usage,
             )
             
         except httpx.RequestError as e:
