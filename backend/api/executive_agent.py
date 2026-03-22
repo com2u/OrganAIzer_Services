@@ -229,7 +229,7 @@ async def get_session_info(session_id: str):
         
         return SessionInfoResponse(
             session_id=session.session_id,
-            message_count=len(session.history),
+            message_count=len(session.conversation_history),
             context=session.context,
             last_activity=session.last_activity.isoformat()
         )
@@ -288,7 +288,7 @@ async def list_sessions():
         for session_id, session in ExecutiveAgent.sessions.items():
             sessions_info.append({
                 "session_id": session_id,
-                "message_count": len(session.history),
+                "message_count": len(session.conversation_history),
                 "last_activity": session.last_activity.isoformat(),
                 "created_at": session.created_at.isoformat()
             })
