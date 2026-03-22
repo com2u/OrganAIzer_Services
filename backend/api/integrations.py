@@ -493,6 +493,23 @@ async def google_calendar_create_event(
         if request.attendees:
             event_body['attendees'] = [{'email': email} for email in request.attendees]
 
+        # Build RRULE for recurring events
+        if request.recurrence:
+            _freq_map = {
+                "daily": "DAILY", "weekly": "WEEKLY",
+                "biweekly": "WEEKLY", "monthly": "MONTHLY", "yearly": "YEARLY",
+            }
+            freq = _freq_map.get(request.recurrence, "WEEKLY")
+            rrule = f"RRULE:FREQ={freq}"
+            if request.recurrence == "biweekly":
+                rrule += ";INTERVAL=2"
+            if request.recurrence_count:
+                rrule += f";COUNT={request.recurrence_count}"
+            elif request.recurrence_end_date:
+                until_str = request.recurrence_end_date.replace("-", "") + "T000000Z"
+                rrule += f";UNTIL={until_str}"
+            event_body['recurrence'] = [rrule]
+
         # Create the event
         created_event = service.events().insert(
             calendarId='primary',
@@ -785,6 +802,7 @@ async def google_gmail_list_messages(
     max_results: int = Query(5, description="Max emails to return"),
     unread_only: bool = Query(False, description="Filter to unread only"),
     sender: Optional[str] = Query(None, description="Filter by sender name or email"),
+    subject: Optional[str] = Query(None, description="Filter emails whose subject contains this text"),
     date_after: Optional[str] = Query(None, description="Filter emails after this date (YYYY-MM-DD)"),
     date_before: Optional[str] = Query(None, description="Filter emails before this date (YYYY-MM-DD)"),
 ):
@@ -822,6 +840,8 @@ async def google_gmail_list_messages(
             query_parts.append("is:unread")
         if sender:
             query_parts.append(f"from:{sender}")
+        if subject:
+            query_parts.append(f"subject:{subject}")
         if date_after:
             query_parts.append(f"after:{date_after.replace('-', '/')}")
         if date_before:
@@ -1391,6 +1411,27 @@ async def microsoft_calendar_create_event(
         if request.attendees:
             body["attendees"] = [{"emailAddress": {"address": e}, "type": "required"} for e in request.attendees]
 
+        # Build Microsoft Graph recurrence pattern
+        if request.recurrence:
+            _ms_freq = {
+                "daily": "daily", "weekly": "weekly", "biweekly": "weekly",
+                "monthly": "absoluteMonthly", "yearly": "absoluteYearly",
+            }
+            recurrence_pattern: dict = {
+                "type": _ms_freq.get(request.recurrence, "weekly"),
+                "interval": 2 if request.recurrence == "biweekly" else 1,
+            }
+            recurrence_range: dict = {"startDate": request.start[:10]}
+            if request.recurrence_count:
+                recurrence_range["type"] = "numbered"
+                recurrence_range["numberOfOccurrences"] = request.recurrence_count
+            elif request.recurrence_end_date:
+                recurrence_range["type"] = "endDate"
+                recurrence_range["endDate"] = request.recurrence_end_date
+            else:
+                recurrence_range["type"] = "noEnd"
+            body["recurrence"] = {"pattern": recurrence_pattern, "range": recurrence_range}
+
         created = _ms_request("POST", "/me/calendar/events", access_token, user_id=user_id, json=body)
         logger.info(f"✅ Created Outlook calendar event '{request.summary}' for user {user_id}")
         return CalendarEvent(
@@ -1492,6 +1533,7 @@ async def microsoft_mail_list_messages(
     max_results: int = Query(5, description="Max emails to return"),
     unread_only: bool = Query(False, description="Filter to unread only"),
     sender: Optional[str] = Query(None, description="Filter by sender name or email"),
+    subject: Optional[str] = Query(None, description="Filter emails whose subject contains this text"),
     date_after: Optional[str] = Query(None, description="Filter emails after this date (YYYY-MM-DD)"),
     date_before: Optional[str] = Query(None, description="Filter emails before this date (YYYY-MM-DD)"),
 ):
@@ -1523,6 +1565,11 @@ async def microsoft_mail_list_messages(
         if sender:
             # Use $search for sender (Graph doesn't support 'from/emailAddress/address' contains in $filter easily)
             params["$search"] = f'"{sender}"'
+        if subject:
+            # contains() on subject is supported in OData for Graph
+            filters.append(f"contains(subject, '{subject}')")
+            if filters:
+                params["$filter"] = " and ".join(filters)
 
         data = _ms_request("GET", "/me/messages", access_token, user_id=user_id, params=params)
 

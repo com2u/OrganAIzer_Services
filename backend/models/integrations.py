@@ -54,6 +54,10 @@ class CalendarEventCreateRequest(BaseModel):
     end: str = Field(..., description="Event end time (ISO 8601)")
     location: Optional[str] = Field(None, description="Event location")
     attendees: Optional[List[str]] = Field(None, description="List of attendee email addresses")
+    # Recurrence (optional — omit for single events)
+    recurrence: Optional[str] = Field(None, description="Recurrence pattern: daily|weekly|biweekly|monthly|yearly")
+    recurrence_end_date: Optional[str] = Field(None, description="Last date of recurrence (YYYY-MM-DD), exclusive with recurrence_count")
+    recurrence_count: Optional[int] = Field(None, description="Number of occurrences, exclusive with recurrence_end_date")
 
 
 class CalendarEventUpdateRequest(BaseModel):

@@ -8,7 +8,7 @@ All configuration is managed via `backend/.env`. Copy the template and fill in y
 
 | Variable | Required | Description |
 |---|---|---|
-| `OPENROUTER_API_KEY` | ✅ | OpenRouter API key — powers all LLM interactions (Gemini, Claude, GPT, etc.) |
+| `OPENROUTER_API_KEY` | ✅ | OpenRouter API key — powers all LLM interactions (Gemini, GPT, open-source models, etc.) |
 | `GEMINI_API_KEY` | Optional | Google AI Studio API key (legacy / image generation fallback) |
 
 ### Google OAuth (required if using Gmail / Google Calendar)

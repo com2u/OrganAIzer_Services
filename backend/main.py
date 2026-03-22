@@ -73,7 +73,7 @@ app = FastAPI(
     * **Speech-to-Text (STT)** - Transcribe audio files to text
     * **Image Generation** - Create images from text prompts (Vertex AI Imagen & Gemini)
     * **Video Transcription** - Transcribe videos from YouTube, URLs, or uploads
-    * **AI Chat** - LLM chat completions via OpenRouter (Gemini, Claude, GPT, etc.)
+    * **AI Chat** - LLM chat completions via OpenRouter (Gemini, GPT, open-source models, etc.)
     * **Document Analysis** - Upload, summarize, and chat with documents (PDF, DOCX, TXT, MD)
     * **Translation** - Translate text, audio, and files between 30+ languages
     * **Knowledge Base (RAG)** - Semantic search and Q&A over your content
