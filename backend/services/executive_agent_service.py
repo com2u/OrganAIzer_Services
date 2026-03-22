@@ -536,7 +536,13 @@ class ExecutiveAgent:
                 endpoint = f"{base_url}/api/integrations/microsoft/mail/messages"
             params = {"user_id": user_id, "max_results": count}
             if args.get("from_sender"):
-                params["from"] = args["from_sender"]
+                params["sender"] = args["from_sender"]
+            if args.get("subject_contains"):
+                params["subject"] = args["subject_contains"]
+            if args.get("since_date"):
+                params["date_after"] = args["since_date"]
+            if args.get("unread_only"):
+                params["unread_only"] = "true"
             logger.info("[READ] read_emails provider=%s count=%s", provider, count)
             try:
                 async with httpx.AsyncClient(timeout=30.0) as client:
@@ -550,6 +556,49 @@ class ExecutiveAgent:
             except Exception as e:
                 logger.error("[READ] read_emails error: %s", e)
                 return {"error": str(e), "emails": [], "provider": provider}
+
+        if name == "lookup_contact":
+            name_query = args.get("name", "")
+            provider_raw = args.get("provider") or mail_provider or "gmail"
+            provider = _normalize_provider(provider_raw)
+            if provider == "google":
+                endpoint = f"{base_url}/api/integrations/google/gmail/messages"
+            else:
+                endpoint = f"{base_url}/api/integrations/microsoft/mail/messages"
+            # Search for emails from/to this name to find their email address
+            params_from = {"user_id": user_id, "max_results": 5, "sender": name_query}
+            contacts_found = {}
+            try:
+                async with httpx.AsyncClient(timeout=20.0) as client:
+                    resp = await client.get(endpoint, params=params_from)
+                if resp.is_success:
+                    emails_data = resp.json()
+                    email_list = emails_data if isinstance(emails_data, list) else emails_data.get("emails", [])
+                    for email in email_list:
+                        from_field = email.get("from", "")
+                        # Extract "Name <email>" pattern
+                        import re as _re
+                        match = _re.search(r"([^<]+?)\s*<([^>]+)>", from_field)
+                        if match:
+                            contact_name = match.group(1).strip()
+                            contact_email = match.group(2).strip()
+                        else:
+                            contact_name = from_field
+                            contact_email = from_field
+                        key = contact_email.lower()
+                        if key not in contacts_found:
+                            contacts_found[key] = {"name": contact_name, "email": contact_email}
+            except Exception as e:
+                logger.error("[READ] lookup_contact error: %s", e)
+                return {"error": str(e), "contacts": [], "provider": provider}
+            contacts = list(contacts_found.values())
+            if not contacts:
+                return {
+                    "contacts": [],
+                    "provider": provider,
+                    "message": f"No emails found from '{name_query}'. They may not be in your recent mail.",
+                }
+            return {"contacts": contacts, "provider": provider}
 
         return {"error": f"Unknown read tool: {name}"}
 
@@ -585,6 +634,8 @@ class ExecutiveAgent:
             return await self._exec_send_email(args, user_id)
         if tool_name == "propose_reply_email":
             return await self._exec_reply_email(args, user_id)
+        if tool_name == "propose_create_recurring_event":
+            return await self._exec_create_recurring_event(args, user_id)
 
         # Unknown propose_ tool — clear and acknowledge
         self.memory.clear_pending_action()
@@ -719,6 +770,78 @@ class ExecutiveAgent:
                 "success": False,
                 "type": "error",
                 "intent": "LLM_DRIVEN",
+                "data": {"pending_action_preserved": True},
+            }
+
+    # ── Recurring calendar create ─────────────────────────────────────────────
+
+    async def _exec_create_recurring_event(self, args: Dict[str, Any], user_id: str) -> Dict[str, Any]:
+        """Execute propose_create_recurring_event after user confirmation."""
+        title = args.get("title", "Meeting")
+        start_str = args.get("start", "")
+        end_str = args.get("end", "")
+        provider = _normalize_provider(args.get("provider", "google"))
+
+        try:
+            start_dt = _parse_and_localize(start_str, self.timezone, self.tz_name)
+            end_dt = _parse_and_localize(end_str, self.timezone, self.tz_name)
+        except Exception as e:
+            return {"message": f"Invalid event times: {e}", "success": False, "type": "error", "intent": "LLM_DRIVEN"}
+
+        payload: Dict[str, Any] = {
+            "summary": title,
+            "start": start_dt.isoformat(),
+            "end": end_dt.isoformat(),
+            "recurrence": args.get("recurrence", "weekly"),
+        }
+        if args.get("recurrence_end_date"):
+            payload["recurrence_end_date"] = args["recurrence_end_date"]
+        if args.get("recurrence_count"):
+            payload["recurrence_count"] = args["recurrence_count"]
+        if args.get("description"):
+            payload["description"] = args["description"]
+        if args.get("location"):
+            payload["location"] = args["location"]
+
+        base_url = os.getenv("BACKEND_URL", "http://localhost:8000")
+        endpoint = f"{base_url}/api/integrations/{provider}/calendar/events"
+
+        logger.info("[EXEC] Recurring calendar create → %s recurrence=%s", endpoint, payload.get("recurrence"))
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(endpoint, json=payload, params={"user_id": user_id})
+
+            if response.is_success:
+                event_data = response.json()
+                event_id = event_data.get("id")
+                self.memory.context["last_created_event_id"] = event_id
+                self.memory.context["last_created_event_summary"] = title
+                self.memory.context["last_created_event_provider"] = provider
+                self.memory.preferred_provider = provider
+                self.memory.clear_pending_action()
+                self.memory.clear_active_task()
+                recurrence_label = {
+                    "daily": "every day", "weekly": "every week", "biweekly": "every two weeks",
+                    "monthly": "every month", "yearly": "every year",
+                }.get(args.get("recurrence", "weekly"), args.get("recurrence", ""))
+                date_lbl = start_dt.strftime("%A, %B %d")
+                time_lbl = start_dt.strftime("%H:%M")
+                msg = f"Done. '{title}' will repeat {recurrence_label}, starting {date_lbl} at {time_lbl}."
+                return {"message": msg, "success": True, "type": "calendar_created", "intent": "LLM_DRIVEN",
+                        "data": {"event_id": event_id, "start": start_dt.isoformat()}}
+            else:
+                error_detail = _extract_error_detail(response)
+                return {
+                    "message": f"Failed to create recurring event (HTTP {response.status_code}): {error_detail}. Say yes to retry.",
+                    "success": False, "type": "error", "intent": "LLM_DRIVEN",
+                    "data": {"pending_action_preserved": True},
+                }
+        except Exception as e:
+            logger.error("[EXEC] Recurring calendar create error: %s", e, exc_info=True)
+            return {
+                "message": f"Error creating recurring event: {e}. Say yes to retry.",
+                "success": False, "type": "error", "intent": "LLM_DRIVEN",
                 "data": {"pending_action_preserved": True},
             }
 

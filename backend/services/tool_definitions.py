@@ -152,7 +152,10 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "read_emails",
-            "description": "Read recent emails from the inbox.",
+            "description": (
+                "Read recent emails from the inbox. "
+                "Supports filtering by sender, subject keywords, date, and read/unread status."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -163,6 +166,18 @@ TOOLS = [
                     "from_sender": {
                         "type": "string",
                         "description": "Filter by sender name or email address (optional)",
+                    },
+                    "subject_contains": {
+                        "type": "string",
+                        "description": "Filter emails whose subject contains this text (optional)",
+                    },
+                    "since_date": {
+                        "type": "string",
+                        "description": "Return only emails received on or after this date, ISO 8601 e.g. 2026-03-01 (optional)",
+                    },
+                    "unread_only": {
+                        "type": "boolean",
+                        "description": "When true, return only unread emails (optional, default false)",
                     },
                     "provider": {
                         "type": "string",
@@ -238,6 +253,81 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "lookup_contact",
+            "description": (
+                "Look up a contact's email address by name. "
+                "Searches your email history to find the most recent email address "
+                "associated with the given name. Use this before propose_send_email "
+                "when the user refers to someone by name but you don't have their email address."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name or partial name of the contact to look up",
+                    },
+                    "provider": {
+                        "type": "string",
+                        "enum": ["gmail", "outlook"],
+                        "description": "Email provider to search (optional)",
+                    },
+                },
+                "required": ["name"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "propose_create_recurring_event",
+            "description": (
+                "Propose creating a recurring calendar event. "
+                "The user must confirm before the event is created. "
+                "Use this for events that repeat (daily, weekly, monthly, etc.)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Event title"},
+                    "start": {
+                        "type": "string",
+                        "description": "First occurrence start time ISO 8601, e.g. 2026-03-23T10:00:00",
+                    },
+                    "end": {
+                        "type": "string",
+                        "description": "First occurrence end time ISO 8601, e.g. 2026-03-23T11:00:00",
+                    },
+                    "recurrence": {
+                        "type": "string",
+                        "enum": ["daily", "weekly", "biweekly", "monthly", "yearly"],
+                        "description": "How often the event repeats",
+                    },
+                    "recurrence_end_date": {
+                        "type": "string",
+                        "description": "Last date of recurrence in ISO 8601 format, e.g. 2026-12-31 (optional — omit for indefinite)",
+                    },
+                    "recurrence_count": {
+                        "type": "integer",
+                        "description": "Number of occurrences (optional — use instead of recurrence_end_date)",
+                    },
+                    "description": {"type": "string", "description": "Event description (optional)"},
+                    "location": {"type": "string", "description": "Event location (optional)"},
+                    "provider": {
+                        "type": "string",
+                        "enum": ["google", "outlook"],
+                        "description": "Calendar provider",
+                    },
+                },
+                "required": ["title", "start", "end", "recurrence"],
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
 
 # Tools that need user confirmation before execution
@@ -247,6 +337,7 @@ CONFIRMATION_REQUIRED_TOOLS = frozenset([
     "propose_delete_calendar_event",
     "propose_send_email",
     "propose_reply_email",
+    "propose_create_recurring_event",
 ])
 
 # Words that mean "yes, go ahead"
@@ -345,5 +436,35 @@ def format_confirmation_message(tool_name: str, args: Dict[str, Any]) -> str:
     if tool_name == "propose_reply_email":
         subject = args.get("original_subject", "the email")
         return f'Reply to "{subject}". Shall I go ahead?'
+
+    if tool_name == "propose_create_recurring_event":
+        title = args.get("title", "event")
+        start = args.get("start", "")
+        recurrence = args.get("recurrence", "")
+        try:
+            dt = datetime.fromisoformat(start[:19])
+            date_str = dt.strftime("%A, %B %d")
+            time_str = dt.strftime("%H:%M")
+            time_part = f" at {time_str}"
+        except Exception:
+            date_str = start
+            time_part = ""
+        recurrence_label = {
+            "daily": "every day",
+            "weekly": "every week",
+            "biweekly": "every two weeks",
+            "monthly": "every month",
+            "yearly": "every year",
+        }.get(recurrence, recurrence)
+        provider_label = "Outlook" if _normalize_provider(args.get("provider", "google")) == "microsoft" else "Google"
+        end_clause = ""
+        if args.get("recurrence_end_date"):
+            end_clause = f" until {args['recurrence_end_date']}"
+        elif args.get("recurrence_count"):
+            end_clause = f" ({args['recurrence_count']} times)"
+        return (
+            f'Create recurring "{title}" starting {date_str}{time_part}, '
+            f'{recurrence_label}{end_clause} in {provider_label} Calendar. Shall I go ahead?'
+        )
 
     return "Shall I go ahead?"

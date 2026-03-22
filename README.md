@@ -31,7 +31,7 @@ These features are **fully implemented and wired end-to-end**:
 | **Voice mode** | Click the mic button — speak naturally, hear the response via TTS |
 | **Google integration** | Connect Google account for Gmail + Google Calendar access |
 | **Microsoft / Outlook integration** | Connect Microsoft account for Outlook mail + Outlook Calendar access |
-| **LLM chat** | General questions answered by AI (Gemini / Claude / GPT via OpenRouter) |
+| **LLM chat** | General questions answered by AI (Gemini / GPT / open-source models via OpenRouter) |
 | **TTS / STT standalone** | `/tts` and `/stt` pages for text-to-speech and speech-to-text |
 | **Image generation** | `/image-gen` page using Gemini image generation |
 | **YouTube transcription** | `/youtube` page |
@@ -59,20 +59,19 @@ These features are **fully implemented and wired end-to-end**:
 │                                                │
 │  ┌──────────────────────────────────────────┐  │
 │  │  Executive Agent Service                │  │
-│  │  ┌─────────────┐  ┌────────────────┐   │  │
-│  │  │ IntentRouter│  │ SlotExtractor  │   │  │
-│  │  │ (classify)  │  │ (parse slots)  │   │  │
-│  │  └──────┬──────┘  └────────────────┘   │  │
-│  │         │                              │  │
-│  │  ┌──────▼──────────────────────────┐  │  │
-│  │  │ Action Handlers                 │  │  │
-│  │  │  _handle_calendar_event_creation│  │  │
-│  │  │  _handle_calendar_list_events   │  │  │
-│  │  │  _handle_calendar_read          │  │  │
-│  │  │  _handle_send_email             │  │  │
-│  │  │  _handle_email_read             │  │  │
-│  │  └──────┬──────────────────────────┘  │  │
-│  └─────────┼────────────────────────────┘  │
+│  │                                         │  │
+│  │  User message → LLM (tool-calling loop) │  │
+│  │       │                                 │  │
+│  │       ├─ propose_create_event           │  │
+│  │       ├─ propose_send_email             │  │
+│  │       ├─ read_calendar_events           │  │
+│  │       ├─ read_emails                    │  │
+│  │       ├─ lookup_contact                 │  │
+│  │       ├─ confirm_action / cancel_action │  │
+│  │       └─ (tool result → next LLM turn)  │  │
+│  │                                         │  │
+│  │  ConversationMemory (per-session state) │  │
+│  └─────────┬───────────────────────────────┘  │
 │            │                               │
 │  ┌─────────▼────────────────────────────┐  │
 │  │  Integrations API                    │  │
@@ -95,61 +94,41 @@ These features are **fully implemented and wired end-to-end**:
 
 ## Executive Agent — brain capabilities
 
-The Executive Agent (`POST /api/agent/chat`) handles all natural-language orchestration. It uses:
+The Executive Agent (`POST /api/agent/chat`) handles all natural-language orchestration via an **LLM tool-calling loop**:
 
-- **IntentRouter** — deterministic keyword-based intent classification (runs before LLM)
-- **SlotExtractor** — extracts dates, times, emails, event titles from free text
-- **NLUExtractor** — LLM-powered slot correction during draft modification
-- **ConversationMemory** — per-session state tracking (active task, pending confirmations)
+1. User message is sent to the LLM with a set of function-call tools
+2. The LLM decides which tool(s) to invoke (or responds directly)
+3. Tool results are fed back into the conversation and the LLM continues
+4. This repeats until the LLM produces a final text response
 
-### Intent types
+Components:
+- **Tool definitions** (`tool_definitions.py`) — schema of all callable tools
+- **ExecutiveAgentService** — runs the tool-calling loop, dispatches tool calls to integration APIs
+- **ConversationMemory** — per-session state (pending actions, preferred provider, history)
 
-| Intent | Example phrases | Action |
-|--------|----------------|--------|
-| `CALENDAR_CREATE` | "create a meeting tomorrow at 9", "add an appointment with Alice" | Collects slots → confirmation → POST calendar |
-| `CALENDAR_LIST` | "show my calendar", "events today" | GET calendar events |
-| `CALENDAR_READ` | "what do I have next week?", "when is my next meeting?" | GET calendar events (date range) |
-| `EMAIL_READ` | "show my last 5 emails", "any emails from John?" | GET emails |
-| `email send` | "send an email to boss@company.com" | Collects slots → confirmation → POST email |
-| `CONFIRM_ACTION` | "yes", "send it", "create it" | Executes pending action |
-| `CANCEL_ACTION` | "cancel", "stop", "never mind" | Clears pending state |
-| `GENERAL_MESSAGE` | Any other question | LLM response |
+### Available tools
 
-### State machine
+| Tool | Description |
+|------|-------------|
+| `propose_create_event` | Draft a calendar event for confirmation |
+| `propose_create_recurring_event` | Draft a recurring calendar event for confirmation |
+| `read_calendar_events` | Read calendar events for a date range |
+| `propose_send_email` | Draft an email for confirmation |
+| `read_emails` | Read inbox emails (supports sender/subject/date/unread filters) |
+| `lookup_contact` | Look up a contact's email address by name |
+| `confirm_action` | Confirm and execute a pending draft action |
+| `cancel_action` | Cancel a pending draft action |
 
-```
-User message
-     │
-     ▼
-IntentRouter.route_message()
-     │
-     ├─ CALENDAR_CREATE → _handle_calendar_event_creation
-     │     │
-     │     ├─ Missing slots? → ask user (calendar_slot_request)
-     │     ├─ All slots, no provider? → ask user (calendar_provider_request)
-     │     │     → Frontend shows 📅 Google Calendar / 📅 Outlook buttons
-     │     ├─ Provider not connected? → tell user (provider_not_connected)
-     │     │     → Frontend shows 🔗 Go to Integrations link
-     │     └─ All ready → confirmation message (action_needed: "confirmation")
-     │           → Frontend shows ✓ Yes / ✕ No buttons
-     │           → User says yes → _execute_calendar_event_creation → POST API
-     │
-     ├─ EMAIL_READ → _handle_email_read → GET API → formatted list
-     │
-     ├─ CALENDAR_READ → _handle_calendar_read → GET API → formatted list
-     │
-     └─ General → LLM chat response
-```
+### Provider resolution
 
-### Provider routing
+The agent resolves calendar/mail provider in this order:
+1. **Explicit user mention** — "use Google Calendar", "send via Outlook"
+2. **Session-locked provider** — auto-detected when exactly one integration is connected
+3. **Clarification question** — agent asks "Google or Microsoft?" when ambiguous
 
-The agent uses two separate provider fields:
-- `calendar_provider` — for calendar operations (`google` | `outlook`)
-- `mail_provider` — for email operations (`gmail` | `outlook`)
-
-The frontend automatically selects providers based on which accounts are connected:
-- Both connected (or Google only) → Google for calendar, Gmail for email
-- Microsoft only → both use Outlook
+Provider fields:
+- `calendar_provider` — `google` | `outlook`
+- `mail_provider` — `gmail` | `outlook`
 
 ---
 

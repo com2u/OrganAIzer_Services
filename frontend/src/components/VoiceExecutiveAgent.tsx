@@ -57,6 +57,10 @@ function VoiceExecutiveAgent() {
   // Use sessionStorage-persisted ID so re-renders / navigation don't start a new context.
   const [sessionId]                 = useState(() => getOrCreateSessionId());
 
+  // Integration connection state — used to auto-detect provider for voice sessions
+  const [googleConnected,    setGoogleConnected]    = useState(false);
+  const [microsoftConnected, setMicrosoftConnected] = useState(false);
+
   // Refs – survive re-renders without triggering them
   const wsRef                 = useRef<WebSocket | null>(null);
   const mediaRecorderRef      = useRef<MediaRecorder | null>(null);
@@ -72,6 +76,32 @@ function VoiceExecutiveAgent() {
   // Prod: ""                       → wss://<origin>
   const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
+  // ── Fetch integration status on mount ───────────────────────────────────────
+  useEffect(() => {
+    const apiKey = (import.meta.env.VITE_API_KEY as string) ?? '';
+    const fetchStatus = async () => {
+      try {
+        const gRes = await fetch(`${API_BASE_URL}/api/integrations/google/status?user_id=default_user`, {
+          headers: { 'X-API-Key': apiKey },
+        });
+        if (gRes.ok) {
+          const gData = await gRes.json();
+          setGoogleConnected(Boolean(gData.connected));
+        }
+      } catch { /* network error → stays false */ }
+      try {
+        const mRes = await fetch(`${API_BASE_URL}/api/integrations/microsoft/status?user_id=default_user`, {
+          headers: { 'X-API-Key': apiKey },
+        });
+        if (mRes.ok) {
+          const mData = await mRes.json();
+          setMicrosoftConnected(Boolean(mData.connected));
+        }
+      } catch { /* network error → stays false */ }
+    };
+    fetchStatus();
+  }, [API_BASE_URL]);
+
   // ── Auto-scroll ─────────────────────────────────────────────────────────────
   const messagesEndRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -80,11 +110,15 @@ function VoiceExecutiveAgent() {
 
   // ── Build WebSocket URL ─────────────────────────────────────────────────────
   const getWsUrl = useCallback((): string => {
-    // Do NOT hard-lock calendar_provider / mail_provider here.
-    // Omitting them lets the Executive Agent apply its own provider resolution
-    // hierarchy (explicit user mention → session preference → clarification).
-    // The backend will ask the user "Google or Microsoft?" when ambiguous.
-    const params = `session_id=${sessionId}&user_id=voice_user`;
+    // Pass provider only when exactly ONE integration is connected.
+    // When both or neither → omit → agent applies its own resolution hierarchy.
+    const wsParams: string[] = [`session_id=${sessionId}`, `user_id=voice_user`];
+    if (googleConnected && !microsoftConnected) {
+      wsParams.push('calendar_provider=google', 'mail_provider=gmail');
+    } else if (microsoftConnected && !googleConnected) {
+      wsParams.push('calendar_provider=outlook', 'mail_provider=outlook');
+    }
+    const params = wsParams.join('&');
     if (API_BASE_URL) {
       // Convert http(s):// → ws(s)://
       const wsBase = API_BASE_URL
@@ -95,7 +129,7 @@ function VoiceExecutiveAgent() {
     // Same-origin (production, served by nginx)
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     return `${proto}//${window.location.host}/api/voice/stream?${params}`;
-  }, [API_BASE_URL, sessionId]);
+  }, [API_BASE_URL, sessionId, googleConnected, microsoftConnected]);
 
   // ── Play TTS audio ──────────────────────────────────────────────────────────
   const playTTS = useCallback(async (audioUrl: string): Promise<void> => {
