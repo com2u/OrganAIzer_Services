@@ -22,7 +22,9 @@ TOOLS = [
             "description": (
                 "List calendar events within a date range. "
                 "Use this to answer questions about upcoming or past events, "
-                "and also before proposing an update or delete so you know the event ID."
+                "and also before proposing an update or delete so you know the event ID. "
+                "Each returned event has an 'id' field — that value is the event_id "
+                "required by propose_update_calendar_event and propose_delete_calendar_event."
             ),
             "parameters": {
                 "type": "object",

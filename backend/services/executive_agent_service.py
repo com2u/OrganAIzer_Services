@@ -281,17 +281,50 @@ class ExecutiveAgent:
         current_time = now.strftime("%H:%M")
         tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
 
-        # Describe connected providers
-        if calendar_provider and mail_provider:
-            provider_info = f"Calendar: {calendar_provider}. Email: {mail_provider}."
-        elif calendar_provider:
-            provider_info = f"Calendar: {calendar_provider}. Email: not specified — ask if needed."
-        elif mail_provider:
-            provider_info = f"Email: {mail_provider}. Calendar: not specified — ask if needed."
+        # Fall back to session memory when API params are None
+        # (happens when both providers are connected and frontend sends null)
+        effective_cal = calendar_provider or self.memory.preferred_provider
+        effective_mail = mail_provider or (
+            "gmail" if self.memory.preferred_provider == "google"
+            else ("outlook" if self.memory.preferred_provider == "microsoft" else None)
+        )
+
+        if effective_cal and effective_mail:
+            provider_info = f"Calendar: {effective_cal}. Email: {effective_mail}."
+        elif effective_cal:
+            provider_info = f"Calendar: {effective_cal}. Email: not specified — ask if needed."
+        elif effective_mail:
+            provider_info = f"Email: {effective_mail}. Calendar: not specified — ask if needed."
         else:
             provider_info = (
                 "No provider specified. When the user wants a calendar or email action, "
                 "ask: Which account would you like to use — Google or Microsoft?"
+            )
+
+        # Build session context block so the LLM knows recent events/emails
+        # without always having to call list_calendar_events again.
+        context_lines = []
+        if self.memory.context.get("last_created_event_id"):
+            ev_summary = self.memory.context.get("last_created_event_summary", "event")
+            ev_id = self.memory.context["last_created_event_id"]
+            ev_provider = self.memory.context.get("last_created_event_provider", effective_cal or "google")
+            context_lines.append(
+                f"Last calendar action: created '{ev_summary}' "
+                f"(event_id={ev_id}, provider={ev_provider})"
+            )
+        if self.memory.last_email_subject:
+            context_lines.append(
+                f"Last email thread: subject='{self.memory.last_email_subject}' "
+                f"from {self.memory.last_email_sender or 'unknown'} "
+                f"(thread_id={self.memory.last_email_thread_id or 'unknown'})"
+            )
+
+        context_section = ""
+        if context_lines:
+            context_section = (
+                "\nSession context (use this to avoid re-fetching known data):\n"
+                + "\n".join(f"- {line}" for line in context_lines)
+                + "\n"
             )
 
         return (
@@ -300,14 +333,17 @@ class ExecutiveAgent:
             "philosophy, and more — AND manage calendars and emails when asked.\n\n"
             f"Today is {current_date}. Current time: {current_time}. Tomorrow: {tomorrow}.\n"
             f"Timezone: {self.tz_name}.\n"
-            f"Connected integrations: {provider_info}\n\n"
+            f"Connected integrations: {provider_info}\n"
+            f"{context_section}\n"
             "When using tools:\n"
             "- For read actions (list events, read emails): use the tool and summarise the result naturally.\n"
             "- For write actions (create, update, delete, send): use the propose_ tool. "
             "The system will show the user a confirmation request automatically — do NOT ask the user "
             "to confirm in your text response when calling a propose_ tool.\n"
-            "- Always call list_calendar_events before proposing an update or delete, "
-            "so you know the event ID.\n"
+            "- For update or delete: if you already know the event_id from session context above, "
+            "use it directly without calling list_calendar_events again. "
+            "Otherwise call list_calendar_events first to find it. "
+            "The event_id is the 'id' field returned by list_calendar_events.\n"
             "- Supply start/end times in ISO 8601 without timezone (e.g. 2026-03-23T10:00:00). "
             "The server applies the correct timezone.\n\n"
             "Response style:\n"
@@ -736,6 +772,10 @@ class ExecutiveAgent:
                 self.memory.clear_active_task()
                 self.memory.preferred_provider = provider
                 event_title = updated.get("summary", args.get("event_title", "the event"))
+                # Keep context fresh so follow-up edits can reuse the same event_id
+                self.memory.context["last_created_event_id"] = event_id
+                self.memory.context["last_created_event_summary"] = event_title
+                self.memory.context["last_created_event_provider"] = provider
                 return {
                     "message": f'Done. "{event_title}" has been updated.',
                     "success": True,
