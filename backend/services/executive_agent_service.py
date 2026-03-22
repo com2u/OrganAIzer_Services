@@ -480,8 +480,8 @@ class ExecutiveAgent:
                     response = await client.get(endpoint, params=params)
                 if response.is_success:
                     events = response.json()
-                    # Store last provider used
                     self.memory.last_provider = provider
+                    self.memory.preferred_provider = provider
                     return {"events": events, "provider": provider, "count": len(events)}
                 return {"error": f"HTTP {response.status_code}", "events": [], "provider": provider}
             except Exception as e:
@@ -505,6 +505,8 @@ class ExecutiveAgent:
                     response = await client.get(endpoint, params=params)
                 if response.is_success:
                     emails = response.json()
+                    self.memory.last_provider = provider
+                    self.memory.preferred_provider = provider
                     return {"emails": emails, "provider": provider}
                 return {"error": f"HTTP {response.status_code}", "emails": [], "provider": provider}
             except Exception as e:
