@@ -6,8 +6,9 @@ import STTPage from './pages/STTPage';
 import ImageGenPage from './pages/ImageGenPage';
 import YouTubePage from './pages/YouTubePage';
 import IntegrationsPage from './pages/IntegrationsPage';
+import PhonePage from './pages/PhonePage';
 
-type PageType = 'executive' | 'tts' | 'stt' | 'image-gen' | 'youtube' | 'integrations';
+type PageType = 'executive' | 'tts' | 'stt' | 'image-gen' | 'youtube' | 'integrations' | 'phone';
 
 const TABS: { id: PageType; label: string; active: string }[] = [
   { id: 'executive',    label: '🤖 Executive AI',  active: 'border-indigo-600 text-indigo-600' },
@@ -16,6 +17,7 @@ const TABS: { id: PageType; label: string; active: string }[] = [
   { id: 'image-gen',    label: 'Text → Image',     active: 'border-purple-600 text-purple-600' },
   { id: 'youtube',      label: 'Video → Text',     active: 'border-red-600 text-red-600' },
   { id: 'integrations', label: '🔗 Integrations',  active: 'border-orange-600 text-orange-600' },
+  { id: 'phone',        label: '📞 Phone',          active: 'border-green-600 text-green-600' },
 ];
 
 export default function App() {
@@ -53,6 +55,7 @@ export default function App() {
         {currentPage === 'image-gen'    && <ImageGenPage />}
         {currentPage === 'youtube'      && <YouTubePage />}
         {currentPage === 'integrations' && <IntegrationsPage />}
+        {currentPage === 'phone'        && <PhonePage />}
       </main>
     </div>
   );
