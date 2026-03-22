@@ -6,7 +6,7 @@ Handles chat completions with various AI models.
 import logging
 import os
 import httpx
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from core.config import config
 from core.error_handling import AppError
 from models.chat import ChatMessage, ChatRequest, ChatResponse, ModelInfo, AvailableModelsResponse
@@ -165,6 +165,88 @@ class ChatService:
                 details={"error": str(e)}
             )
     
+    async def chat_with_tools(
+        self,
+        messages: List[Dict],
+        tools: Optional[List[Dict]] = None,
+        model: Optional[str] = None,
+    ) -> Dict:
+        """
+        Send a messages array to the LLM with optional tool definitions.
+
+        Returns the raw choices[0]["message"] dict, which may contain:
+          - "content": str   — text response
+          - "tool_calls": [] — list of tool calls the model wants to make
+
+        Raises AppError on API failures.
+        """
+        if not config.OPENROUTER_API_KEY:
+            raise AppError(
+                code="API_KEY_MISSING",
+                message="OpenRouter API key not configured",
+                details={"hint": "Set OPENROUTER_API_KEY in .env file"},
+            )
+
+        chosen_model = model or self.default_model
+        SAFE_MAX_TOKENS = 3000
+
+        headers = {
+            "Authorization": f"Bearer {config.OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "http://localhost:8000",
+            "X-Title": "OrganAIzer Services",
+        }
+
+        payload: Dict = {
+            "model": chosen_model,
+            "messages": messages,
+            "temperature": 0.4,
+            "max_tokens": SAFE_MAX_TOKENS,
+        }
+
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+
+        logger.info(
+            "[TOOLS] chat_with_tools | model=%s | messages=%d | tools=%d",
+            chosen_model, len(messages), len(tools) if tools else 0,
+        )
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(self.api_url, headers=headers, json=payload)
+        except httpx.RequestError as e:
+            raise AppError(
+                code="API_REQUEST_FAILED",
+                message="Failed to communicate with OpenRouter API",
+                details={"error": str(e)},
+            )
+
+        if response.status_code != 200:
+            raise AppError(
+                code="API_REQUEST_FAILED",
+                message=f"OpenRouter API returned status {response.status_code}",
+                details={"error": response.text},
+            )
+
+        result = response.json()
+        choices = result.get("choices")
+        if not choices:
+            raise AppError(
+                code="NO_RESPONSE",
+                message="No response from AI model",
+                details={"result": result},
+            )
+
+        choice_msg = choices[0].get("message", {})
+        logger.info(
+            "[TOOLS] response | finish_reason=%s | has_tool_calls=%s",
+            choices[0].get("finish_reason"),
+            bool(choice_msg.get("tool_calls")),
+        )
+        return choice_msg
+
     async def get_available_models(self) -> AvailableModelsResponse:
         """
         Get list of available models from OpenRouter.
