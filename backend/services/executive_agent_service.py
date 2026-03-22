@@ -470,8 +470,8 @@ class ExecutiveAgent:
             endpoint = f"{base_url}/api/integrations/{provider}/calendar/events"
             params = {
                 "user_id": user_id,
-                "time_min": args.get("start_date"),
-                "time_max": args.get("end_date"),
+                "time_min": _ensure_rfc3339(args.get("start_date"), self.timezone),
+                "time_max": _ensure_rfc3339(args.get("end_date"), self.timezone),
             }
             logger.info("[READ] list_calendar_events provider=%s range=%s→%s",
                         provider, params["time_min"], params["time_max"])
@@ -953,6 +953,31 @@ def _normalize_provider(raw_provider: str) -> str:
         pass
 
     return "google"
+
+
+def _ensure_rfc3339(dt_str: Optional[str], tz_obj) -> Optional[str]:
+    """
+    Ensure a datetime string has timezone info as required by the Google Calendar API.
+
+    The LLM generates naive ISO strings (e.g. '2026-03-22T00:00:00').
+    Google requires RFC 3339 with offset (e.g. '2026-03-22T00:00:00+01:00').
+    This function localizes naive strings using the server timezone.
+    """
+    if not dt_str:
+        return dt_str
+    try:
+        clean = dt_str[:19]
+        dt = datetime.fromisoformat(clean)
+        if dt.tzinfo is not None:
+            return dt.isoformat()
+        try:
+            aware = tz_obj.localize(dt, is_dst=None)
+        except Exception:
+            aware = tz_obj.localize(dt, is_dst=False)
+        return aware.isoformat()
+    except Exception:
+        # Last resort: append Z (UTC) so Google doesn't reject it
+        return dt_str if dt_str.endswith("Z") or "+" in dt_str[-6:] else dt_str + "Z"
 
 
 def _parse_and_localize(iso_str: str, tz_obj, tz_name: str):
