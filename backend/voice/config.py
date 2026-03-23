@@ -23,6 +23,7 @@ AI_GREETING: str          = os.environ.get(
 )
 AI_LANGUAGE: str          = os.environ.get("AI_LANGUAGE", "de")
 AI_MAX_CALL_SECONDS: int  = int(os.environ.get("AI_MAX_CALL_SECONDS", "300"))
+AI_RING_TIMEOUT_SECONDS: int = int(os.environ.get("AI_RING_TIMEOUT_SECONDS", "15"))
 AI_TRANSFER_EXTENSION: str = os.environ.get("AI_TRANSFER_EXTENSION", "")
 AI_AFTER_HOURS_START: int = int(os.environ.get("AI_AFTER_HOURS_START", "18"))
 AI_AFTER_HOURS_END: int   = int(os.environ.get("AI_AFTER_HOURS_END", "8"))

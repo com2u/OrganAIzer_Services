@@ -25,11 +25,17 @@ backend/*.png
 backend/generated_*.png
 
 # ==============================================================================
-# LOGS
+# LOGS & CALL DATA
 # ==============================================================================
 *.log
 backend.log
 backend/backend.log
+backend/logs/
+logs/
+
+# AI Phone contacts file — contains personal data, placed at runtime
+backend/AI_Phone_Contacts.xlsx
+AI_Phone_Contacts.xlsx
 
 # ==============================================================================
 # PYTHON

@@ -122,6 +122,7 @@ class SIPClient:
         state = _get_phone_state()
         state["registered"]  = False
         state["active_call"] = None
+        state["bridge_call"] = None
 
     def is_registered(self) -> bool:
         if self._phone is None:
@@ -160,9 +161,9 @@ class SIPClient:
         logger.info("Inbound call received — state: %s", call.state)
         state = _get_phone_state()
 
-        # Reject if a call is already in progress
-        if state.get("active_call") is not None:
-            logger.info("Already in a call — rejecting new inbound call.")
+        # Reject if a call is already in progress or a decision is pending
+        if state.get("active_call") is not None or state.get("ringing_call") is not None:
+            logger.info("Already busy — rejecting new inbound call.")
             try:
                 call.deny()
             except Exception:
@@ -170,9 +171,98 @@ class SIPClient:
             return
 
         t = threading.Thread(
-            target=handle_call,
+            target=self._screen_and_handle,
             args=(call, state),
-            name="ai-call-handler",
+            name="ai-call-screen",
             daemon=True,
         )
         t.start()
+
+    def _screen_and_handle(self, call: VoIPCall, state: dict) -> None:
+        """
+        Wait for the operator to decide whether the AI or the human answers.
+        Runs in a daemon thread so _on_call() returns immediately.
+        """
+        from datetime import datetime, timezone
+        from api.phone import wait_for_ring_decision
+        from voice import config as _cfg
+
+        # ── identify caller ───────────────────────────────────────────────────
+        caller = ""
+        try:
+            caller = call.request.headers.get("From", "")
+            if "<sip:" in caller:
+                caller = caller.split("<sip:")[1].split("@")[0].split(">")[0]
+            elif "sip:" in caller:
+                caller = caller.split("sip:")[1].split("@")[0]
+        except Exception:
+            caller = "unknown"
+
+        from voice import contacts as _contacts
+        contact = _contacts.lookup_by_number(caller)
+        caller_name = contact["name"] if contact else None
+        display = caller_name or caller
+
+        logger.info(
+            "Inbound from %s (%s) — waiting %ds for operator decision…",
+            caller, caller_name or "unknown", _cfg.AI_RING_TIMEOUT_SECONDS,
+        )
+
+        # ── advertise ringing state for the frontend ──────────────────────────
+        state["ringing_call"] = {
+            "caller":        caller,
+            "caller_name":   caller_name,
+            "ringing_since": datetime.now(timezone.utc).isoformat(),
+            "direction":     "inbound",
+        }
+
+        # ── wait for operator or timeout ──────────────────────────────────────
+        decision = wait_for_ring_decision(timeout=float(_cfg.AI_RING_TIMEOUT_SECONDS))
+        state["ringing_call"] = None
+
+        if decision == "human":
+            logger.info("Operator takes the call from %s — answering and bridging audio.", display)
+            import time
+            from datetime import datetime, timezone
+            from voice import call_log as _call_log
+
+            started_at = datetime.now(timezone.utc)
+            try:
+                call.answer()
+            except Exception as exc:
+                logger.error("Could not answer call for bridge: %s", exc)
+                return
+
+            state["active_call"] = {
+                "caller":      caller,
+                "caller_name": caller_name,
+                "started_at":  started_at.isoformat(),
+                "mode":        "human",
+            }
+            state["bridge_call"] = call
+
+            # Keep thread alive until call ends; WebSocket bridge reads/writes audio
+            while call.state != CallState.ENDED:
+                time.sleep(0.5)
+
+            state["bridge_call"]  = None
+            state["active_call"]  = None
+            ended_at = datetime.now(timezone.utc)
+            _call_log.record(
+                caller=caller,
+                caller_name=caller_name,
+                direction="inbound",
+                started_at=started_at,
+                ended_at=ended_at,
+                turn_count=0,
+            )
+            logger.info(
+                "Bridged inbound call ended: %s  duration=%ds",
+                display,
+                int((ended_at - started_at).total_seconds()),
+            )
+            return
+
+        # decision == "ai" (or timed out) → AI handles it
+        logger.info("AI answering call from %s", display)
+        handle_call(call, state)

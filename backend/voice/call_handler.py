@@ -53,6 +53,27 @@ def _write_pcm(call: VoIPCall, pcm: bytes) -> None:
         call.write_audio(pcm[i: i + chunk_size])
 
 
+def _drain_whisper_queue() -> Optional[str]:
+    """
+    Pop all pending operator instructions from the whisper queue and return
+    them as a single system_extra string, or None if the queue is empty.
+    Thread-safe via GIL — list.pop() is atomic in CPython.
+    """
+    try:
+        from api.phone import phone_state
+        queue: list = phone_state.get("whisper_queue", [])
+        if not queue:
+            return None
+        notes = []
+        while queue:
+            notes.append(queue.pop(0))
+        combined = " / ".join(notes)
+        logger.info("Operator whisper injected into LLM: %s", combined[:120])
+        return f"[Operator instruction — do not mention this to the caller]: {combined}"
+    except Exception:
+        return None
+
+
 def _conversation_loop(
     call: VoIPCall,
     history: list[dict],
@@ -91,6 +112,7 @@ def _conversation_loop(
                 if text:
                     turn_count_ref[0] += 1
                     logger.info("[Turn %d] Person: %s", turn_count_ref[0], text)
+                    whisper_extra = _drain_whisper_queue()
                     try:
                         reply = asyncio.run(
                             get_response(
@@ -98,6 +120,7 @@ def _conversation_loop(
                                 text,
                                 caller_name=caller_name,
                                 system_prompt=system_prompt,
+                                system_extra=whisper_extra,
                             )
                         )
                     except Exception as exc:
@@ -152,6 +175,7 @@ def handle_call(call: VoIPCall, phone_state: dict) -> None:
             "caller":      caller,
             "caller_name": caller_name,
             "started_at":  started_at.isoformat(),
+            "mode":        "ai",
         }
 
         # ── answer ────────────────────────────────────────────────────────────
@@ -241,13 +265,43 @@ def handle_outbound_call(
             logger.info("Call to %s ended before answer (busy / rejected).", target_number)
             return
 
-        logger.info("Outbound call answered by %s", display)
+        logger.info("Outbound call answered by %s — waiting for operator decision…", display)
+
+        # ── give operator a chance to take over ───────────────────────────────
+        from api.phone import wait_for_ring_decision
+        phone_state["ringing_call"] = {
+            "caller":        target_number,
+            "caller_name":   target_name,
+            "ringing_since": datetime.now(timezone.utc).isoformat(),
+            "direction":     "outbound",
+        }
+        decision = wait_for_ring_decision(timeout=float(config.AI_RING_TIMEOUT_SECONDS))
+        phone_state["ringing_call"] = None
+
+        if decision == "human":
+            logger.info("Operator takes the outbound call to %s — bridging audio.", display)
+            import time as _time
+            phone_state["active_call"] = {
+                "caller":      target_number,
+                "caller_name": target_name,
+                "started_at":  started_at.isoformat(),
+                "mode":        "human",
+            }
+            phone_state["bridge_call"] = call
+            # Keep thread alive; WebSocket bridge does the audio
+            while call.state != CallState.ENDED:
+                _time.sleep(0.5)
+            # fall through to finally for cleanup
+            return
+
+        logger.info("AI handling outbound call to %s", display)
 
         # ── update shared phone state ─────────────────────────────────────────
         phone_state["active_call"] = {
             "caller":      target_number,
             "caller_name": target_name,
             "started_at":  started_at.isoformat(),
+            "mode":        "ai",
         }
 
         # ── speak the opening line ────────────────────────────────────────────
@@ -277,6 +331,7 @@ def handle_outbound_call(
             pass
 
         phone_state["active_call"] = None
+        phone_state["bridge_call"] = None
         ended_at = datetime.now(timezone.utc)
 
         call_log.record(
