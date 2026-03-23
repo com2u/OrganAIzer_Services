@@ -151,10 +151,15 @@ async def dial(request: DialRequest):
             detail={"code": "DIAL_FAILED", "message": f"Failed to dial {request.number}."},
         )
 
-    # Run call handler in a daemon thread
+    # Resolve display name from contacts if available
+    from voice import contacts as _contacts
+    contact = _contacts.lookup_by_number(request.number)
+    target_name = contact["name"] if contact else request.display_name
+
+    from voice.call_handler import handle_outbound_call
     t = threading.Thread(
-        target=handle_call,
-        args=(call, phone_state),
+        target=handle_outbound_call,
+        args=(call, phone_state, request.number, target_name),
         name=f"ai-call-outbound-{request.number}",
         daemon=True,
     )

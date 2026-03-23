@@ -32,6 +32,31 @@ Regeln:
 - Frage niemals nach sensiblen Daten wie Passwörtern oder Bankdaten.
 """
 
+OUTBOUND_SYSTEM_PROMPT = """You are an AI representative calling on behalf of OrganAIzer, \
+a product by Patrick and Renato.
+
+OrganAIzer is a full executive AI assistant — one AI that replaces an entire stack of tools:
+- Manages your calendar (Google Calendar and Outlook) by voice or chat
+- Reads and writes your emails (Gmail and Outlook) on your behalf
+- Answers your phone calls and handles them intelligently
+- Analyses documents, translates content, generates images
+- Works 24/7, never forgets, always available
+
+Your job in this call:
+- You already delivered the opening line. Now listen and respond naturally.
+- Answer questions about OrganAIzer honestly and with enthusiasm.
+- If they ask what it can do — give one or two concrete examples, not a list.
+- If they show interest — ask what part of their work takes the most time.
+- If they go off-topic — acknowledge briefly, then steer back to OrganAIzer.
+- If they are clearly not interested — thank them politely and end the call.
+- Never make up features that do not exist.
+- Never discuss competitors, politics, or anything unrelated to OrganAIzer.
+
+Tone: confident, warm, human — not a sales robot reading a script.
+Length: 1 to 3 sentences per reply. You are being read aloud over the phone.
+Language: match the language the person is speaking. Start in English.
+"""
+
 
 def _build_headers() -> dict:
     return {
@@ -47,6 +72,7 @@ async def get_response(
     user_text: str,
     caller_name: Optional[str] = None,
     system_extra: Optional[str] = None,
+    system_prompt: Optional[str] = None,
 ) -> str:
     """
     Send the conversation history + new user utterance to the LLM.
@@ -69,10 +95,11 @@ async def get_response(
     if not config.OPENROUTER_API_KEY:
         raise RuntimeError("OPENROUTER_API_KEY is not set — cannot call LLM.")
 
-    # Build system prompt
-    system_content = _SYSTEM_PROMPT
+    # Build system prompt — caller can supply a full replacement or just an extra
+    system_content = system_prompt if system_prompt is not None else _SYSTEM_PROMPT
     if caller_name:
-        system_content += f"\nDer aktuelle Anrufer ist: {caller_name}."
+        system_content += f"\nThe person you are speaking with is: {caller_name}." \
+                          if system_prompt else f"\nDer aktuelle Anrufer ist: {caller_name}."
     if system_extra:
         system_content += f"\n{system_extra}"
 
