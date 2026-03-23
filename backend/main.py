@@ -18,7 +18,7 @@ from core.error_handling import (
     validation_error_handler,
     generic_error_handler
 )
-from api import tts, stt, image_gen, youtube, video, chat, document, translation, knowledge_base, integrations, executive_agent, voice_mode
+from api import tts, stt, image_gen, youtube, video, chat, document, translation, knowledge_base, integrations, executive_agent, voice_mode, phone
 
 # Set up logging
 setup_logging()
@@ -33,6 +33,16 @@ async def lifespan(app: FastAPI):
     """
     # Startup
     logger.info("Starting OrganAIzer Services API")
+
+    # Start AI phone SIP client (non-blocking — runs in daemon threads).
+    # Skips silently if COMTREXX_SIP_USER / PASS / EXTENSION are not set.
+    from voice.sip_client import SIPClient
+    _sip = SIPClient()
+    import threading as _threading
+    _sip_thread = _threading.Thread(target=_sip.start, daemon=True, name="sip-client-start")
+    _sip_thread.start()
+    app.state.sip_client = _sip
+    logger.info("SIP client start dispatched (background thread)")
 
     # Ensure required directories exist
     config.ensure_directories()
@@ -59,6 +69,8 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Shutting down OrganAIzer Services API")
+    if hasattr(app.state, "sip_client"):
+        app.state.sip_client.stop()
 
 
 # Create FastAPI application with lifespan handler
@@ -151,6 +163,7 @@ app.include_router(knowledge_base.router, prefix="/api")  # Knowledge base (RAG)
 app.include_router(integrations.router, prefix="/api")  # External integrations (Google, Outlook) - BETA
 app.include_router(executive_agent.router, prefix="/api/agent", tags=["executive-agent"])  # Executive Agent endpoints
 app.include_router(voice_mode.router, prefix="/api/voice")  # Realtime Voice Mode WebSocket
+app.include_router(phone.router, prefix="/api/phone")        # AI Phone (SIP calling)
 
 
 @app.get("/health")
