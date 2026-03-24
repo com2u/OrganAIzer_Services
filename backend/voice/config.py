@@ -11,6 +11,12 @@ load_dotenv()
 # ── COMtrexx / SIP ────────────────────────────────────────────────────────────
 COMTREXX_IP: str          = os.environ.get("COMTREXX_IP", "172.20.0.244")
 COMTREXX_SIP_PORT: int    = int(os.environ.get("COMTREXX_SIP_PORT", "5060"))
+# Local SIP port pyVoIP binds to.  Use 5080 to avoid clashing with the
+# Windows built-in SIP stack which reserves port 5060.
+COMTREXX_LOCAL_SIP_PORT: int = int(os.environ.get("COMTREXX_LOCAL_SIP_PORT", "5080"))
+# Local IP to advertise in SIP Via/Contact headers.  Leave blank to
+# auto-detect the interface that has a route to COMTREXX_IP.
+COMTREXX_LOCAL_IP: str    = os.environ.get("COMTREXX_LOCAL_IP", "")
 COMTREXX_SIP_USER: str    = os.environ.get("COMTREXX_SIP_USER", "")
 COMTREXX_SIP_PASS: str    = os.environ.get("COMTREXX_SIP_PASS", "")
 COMTREXX_SIP_DOMAIN: str  = os.environ.get("COMTREXX_SIP_DOMAIN", COMTREXX_IP)

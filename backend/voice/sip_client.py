@@ -16,7 +16,9 @@ Outbound calls (Phase 4+):
 from __future__ import annotations
 
 import logging
+import socket as _socket
 import threading
+import time
 from typing import Optional
 
 from pyVoIP.VoIP import VoIPPhone, VoIPCall, CallState
@@ -29,6 +31,30 @@ logger = logging.getLogger(__name__)
 
 # Imported lazily to avoid a circular import at module level
 _phone_state: Optional[dict] = None
+
+# pyVoIP schedules its own re-registration at (default_expires - 5) = 115s.
+# We check at 90s so we only reconnect if pyVoIP's own re-register failed.
+_WATCHDOG_INTERVAL  = 90
+# pyVoIP leaves the SIP socket non-blocking after __register().
+# Its recv_loop (started with Timer(1, ...)) resets it to blocking after ~1s.
+# We wait this long after phone.start() before allowing dial().
+_POST_REGISTER_WAIT = 2.0   # seconds
+# Timeout applied to the SIP socket so invite()'s recv() never hangs forever.
+_SIP_RECV_TIMEOUT   = 30.0  # seconds
+_WSAENOTSOCK        = 10038
+_WSAEWOULDBLOCK     = 10035
+
+
+def _detect_local_ip(remote: str) -> str:
+    """Return the local IP that would be used to reach *remote*."""
+    try:
+        s = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        s.connect((remote, 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "0.0.0.0"
 
 
 def _get_phone_state() -> dict:
@@ -47,11 +73,13 @@ class SIPClient:
       - keeps phone_state in sync with registration status
       - dispatches each inbound call to call_handler in its own thread
       - provides a dial() method for outbound calls
+      - watchdog thread detects silent socket death and reconnects
     """
 
     def __init__(self) -> None:
         self._phone: Optional[VoIPPhone] = None
-        self._lock  = threading.Lock()
+        self._lock        = threading.Lock()
+        self._stop_event  = threading.Event()
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
@@ -69,28 +97,78 @@ class SIPClient:
             )
             return
 
+        self._stop_event.clear()
+        self._register()
+
+        # Watchdog: detects silent socket death and reconnects
+        t = threading.Thread(
+            target=self._watchdog_loop,
+            name="sip-watchdog",
+            daemon=True,
+        )
+        t.start()
+
+    def _register(self) -> bool:
+        """Create and start a VoIPPhone instance. Returns True on success."""
         try:
+            local_ip = config.COMTREXX_LOCAL_IP or _detect_local_ip(config.COMTREXX_IP)
             logger.info(
-                "Registering SIP: %s@%s:%d (extension %s)",
+                "Registering SIP: %s@%s:%d (extension %s, local %s:%d)",
                 config.COMTREXX_SIP_USER,
                 config.COMTREXX_SIP_DOMAIN,
                 config.COMTREXX_SIP_PORT,
                 config.COMTREXX_EXTENSION,
+                local_ip,
+                config.COMTREXX_LOCAL_SIP_PORT,
             )
-            self._phone = VoIPPhone(
+            phone = VoIPPhone(
                 server=config.COMTREXX_IP,
                 port=config.COMTREXX_SIP_PORT,
                 username=config.COMTREXX_SIP_USER,
                 password=config.COMTREXX_SIP_PASS,
+                myIP=local_ip,
                 callCallback=self._on_call,
-                sipPort=5060,
+                sipPort=config.COMTREXX_LOCAL_SIP_PORT,
                 rtpPortLow=10000,
                 rtpPortHigh=20000,
             )
-            self._phone.start()
+            phone.start()
+            # pyVoIP's recv_loop starts after a 1-second Timer and resets the
+            # SIP socket from non-blocking back to blocking.  Wait for it so
+            # the socket is ready for an immediate dial() call.
+            time.sleep(_POST_REGISTER_WAIT)
+            # Apply a recv timeout so invite() never blocks indefinitely if the
+            # PBX stops responding (e.g. 0.0.0.0 contact issue is now fixed,
+            # but belt-and-suspenders guard against any future network hiccup).
+            try:
+                phone.sip.s.settimeout(_SIP_RECV_TIMEOUT)
+            except Exception:
+                pass
+            with self._lock:
+                self._phone = phone
 
-            # Update shared state for the /api/phone/status endpoint
+            # Poll until COMtrexx confirms registration (200 OK to REGISTER).
+            # pyVoIP is async — phone.start() fires the REGISTER but the PBX
+            # 401-challenge / re-auth roundtrip may take several seconds.
+            # We wait up to 10 s; if still only REGISTERING at that point the
+            # PBX has not accepted us and we treat it as a failure.
+            confirmed = self._wait_for_confirmed_registration(max_wait=10.0)
+
             state = _get_phone_state()
+            if not confirmed:
+                logger.error(
+                    "SIP registration not confirmed by PBX after 10 s — "
+                    "check credentials, domain, and network reachability."
+                )
+                try:
+                    phone.stop()
+                except Exception:
+                    pass
+                with self._lock:
+                    self._phone = None
+                state["registered"] = False
+                return False
+
             state["registered"] = True
             state["extension"]  = config.COMTREXX_EXTENSION
             state["server"]     = f"{config.COMTREXX_IP}:{config.COMTREXX_SIP_PORT}"
@@ -100,15 +178,37 @@ class SIPClient:
                 config.COMTREXX_EXTENSION,
                 config.COMTREXX_IP,
             )
+            return True
 
         except Exception as exc:
             logger.error("SIP registration failed: %s", exc, exc_info=True)
-            self._phone = None
-            state = _get_phone_state()
-            state["registered"] = False
+            with self._lock:
+                self._phone = None
+            _get_phone_state()["registered"] = False
+            return False
+
+    def _reconnect(self) -> bool:
+        """Tear down the current phone instance and re-register."""
+        logger.warning("SIP reconnect triggered — tearing down old socket…")
+        with self._lock:
+            if self._phone is not None:
+                try:
+                    self._phone.stop()
+                except Exception:
+                    pass
+                self._phone = None
+        return self._register()
+
+    def _watchdog_loop(self) -> None:
+        """Periodically verify the SIP socket is alive; reconnect if not."""
+        while not self._stop_event.wait(timeout=_WATCHDOG_INTERVAL):
+            if not self.is_registered():
+                logger.warning("SIP watchdog: socket appears dead — reconnecting…")
+                self._reconnect()
 
     def stop(self) -> None:
         """Deregister and stop the SIP client."""
+        self._stop_event.set()
         with self._lock:
             if self._phone is not None:
                 try:
@@ -125,31 +225,111 @@ class SIPClient:
         state["bridge_call"] = None
 
     def is_registered(self) -> bool:
+        """Return True only when COMtrexx has confirmed registration (REGISTERED state)."""
         if self._phone is None:
             return False
         try:
-            return self._phone.get_status() == PhoneStatus.REGISTERED
+            status = self._phone.get_status()
+            if status == PhoneStatus.REGISTERED:
+                return True
+            logger.debug("SIP status: %s", status)
+            return False
         except Exception:
             return False
 
+    def _wait_for_confirmed_registration(self, max_wait: float = 10.0) -> bool:
+        """
+        Poll pyVoIP status until the PBX confirms registration (REGISTERED),
+        or until max_wait seconds elapse.  Returns True on success.
+        """
+        deadline = time.monotonic() + max_wait
+        while time.monotonic() < deadline:
+            with self._lock:
+                ph = self._phone
+            if ph is not None:
+                try:
+                    s = ph.get_status()
+                    if s == PhoneStatus.REGISTERED:
+                        return True
+                    logger.debug("Waiting for SIP registration — current status: %s", s)
+                except Exception:
+                    pass
+            time.sleep(0.5)
+        return False
+
     # ── outbound ──────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _sip_socket_valid(phone: VoIPPhone) -> bool:
+        """Return True if phone's SIP socket is open and usable."""
+        try:
+            return phone.sip.s is not None and phone.sip.s.fileno() != -1
+        except Exception:
+            return False
+
+    def _wait_for_sip_socket(self, max_wait: float = 3.0) -> bool:
+        """Poll until the SIP socket reports a valid fileno, or timeout."""
+        deadline = time.monotonic() + max_wait
+        while time.monotonic() < deadline:
+            with self._lock:
+                ph = self._phone
+            if ph is not None and self._sip_socket_valid(ph):
+                return True
+            time.sleep(0.1)
+        logger.warning("SIP socket did not become ready within %.1fs", max_wait)
+        return False
 
     def dial(self, number: str) -> Optional[VoIPCall]:
         """
         Initiate an outbound call.  Returns the VoIPCall object or None on error.
-        The call starts in DIALING state; call_handler.handle_call() should be
-        invoked in a separate thread to run the conversation loop.
+        Automatically reconnects once if the SIP socket has silently died
+        (WinError 10038 / WSAENOTSOCK).
         """
-        if self._phone is None:
-            logger.error("dial() called but SIP client is not started.")
-            return None
-        try:
-            logger.info("Dialing %s", number)
-            call = self._phone.call(number)
-            return call
-        except Exception as exc:
-            logger.error("Failed to dial %s: %s", number, exc)
-            return None
+        for attempt in range(2):
+            with self._lock:
+                phone = self._phone
+            if phone is None:
+                logger.error("dial() called but SIP client is not started.")
+                return None
+            try:
+                logger.info("Dialing %s (attempt %d)", number, attempt + 1)
+                return phone.call(number)
+            except OSError as exc:
+                if exc.winerror in (_WSAENOTSOCK, _WSAEWOULDBLOCK) and attempt == 0:
+                    if exc.winerror == _WSAENOTSOCK:
+                        logger.warning(
+                            "Dial failed — dead socket (WinError 10038). Reconnecting…"
+                        )
+                        if not self._reconnect():
+                            logger.error("Reconnect failed; cannot dial %s.", number)
+                            return None
+                    else:
+                        logger.warning(
+                            "Dial failed — socket not ready (WinError 10035). "
+                            "Waiting %gs…", _POST_REGISTER_WAIT
+                        )
+                        time.sleep(_POST_REGISTER_WAIT)
+                    # Poll until pyVoIP's socket is truly ready before retrying.
+                    # _register() already sleeps _POST_REGISTER_WAIT, but the
+                    # recv_loop thread may still be resetting sip.s at that point.
+                    if not self._wait_for_sip_socket():
+                        logger.error(
+                            "SIP socket never became ready; cannot dial %s.", number
+                        )
+                        return None
+                else:
+                    logger.error("Failed to dial %s: %s", number, exc)
+                    return None
+            except TimeoutError:
+                logger.error(
+                    "Dial %s timed out after %gs — PBX did not respond to INVITE.",
+                    number, _SIP_RECV_TIMEOUT,
+                )
+                return None
+            except Exception as exc:
+                logger.error("Failed to dial %s: %s", number, exc)
+                return None
+        return None
 
     # ── inbound callback ──────────────────────────────────────────────────────
 
