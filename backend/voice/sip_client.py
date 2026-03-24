@@ -21,6 +21,7 @@ import threading
 import time
 from typing import Optional
 
+import pyVoIP
 from pyVoIP.VoIP import VoIPPhone, VoIPCall, CallState
 from pyVoIP.VoIP.status import PhoneStatus
 
@@ -28,6 +29,18 @@ from voice import config
 from voice.call_handler import handle_call
 
 logger = logging.getLogger(__name__)
+
+# Route pyVoIP's internal debug() calls to our logger so we can see
+# the actual SIP messages exchanged with the PBX.
+def _pyvoip_debug_to_logger(msg, exc=None):
+    if exc is not None:
+        logger.debug("pyVoIP: %s", exc)
+    else:
+        logger.debug("pyVoIP: %s", msg)
+
+import pyVoIP as _pyvoip_module
+_pyvoip_module.debug = _pyvoip_debug_to_logger
+_pyvoip_module.DEBUG = True  # enable so internal guards don't short-circuit
 
 # Imported lazily to avoid a circular import at module level
 _phone_state: Optional[dict] = None
@@ -241,7 +254,10 @@ class SIPClient:
         """
         Poll pyVoIP status until the PBX confirms registration (REGISTERED),
         or until max_wait seconds elapse.  Returns True on success.
+        Bails out immediately if pyVoIP transitions to FAILED or INACTIVE
+        (which means it has given up after hitting REGISTER_FAILURE_THRESHOLD).
         """
+        _terminal = {PhoneStatus.FAILED, PhoneStatus.INACTIVE}
         deadline = time.monotonic() + max_wait
         while time.monotonic() < deadline:
             with self._lock:
@@ -251,10 +267,18 @@ class SIPClient:
                     s = ph.get_status()
                     if s == PhoneStatus.REGISTERED:
                         return True
+                    if s in _terminal:
+                        logger.error(
+                            "SIP registration failed — pyVoIP status is %s "
+                            "(check credentials and enable DEBUG logging for "
+                            "the full SIP exchange).",
+                            s.value,
+                        )
+                        return False
                     logger.debug("Waiting for SIP registration — current status: %s", s)
                 except Exception:
                     pass
-            time.sleep(0.5)
+            time.sleep(0.2)
         return False
 
     # ── outbound ──────────────────────────────────────────────────────────────
