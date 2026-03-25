@@ -3,9 +3,10 @@ Voice module configuration — reads everything from environment variables.
 Never import credentials directly; always go through this module.
 """
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 
 # ── COMtrexx / SIP ────────────────────────────────────────────────────────────
@@ -45,7 +46,6 @@ CONTACTS_FILE: str        = os.environ.get("CONTACTS_FILE", "AI_Phone_Contacts.x
 REQUIRED = {
     "COMTREXX_SIP_USER": COMTREXX_SIP_USER,
     "COMTREXX_SIP_PASS": COMTREXX_SIP_PASS,
-    "COMTREXX_EXTENSION": COMTREXX_EXTENSION,
     "OPENROUTER_API_KEY": OPENROUTER_API_KEY,
 }
 

@@ -45,12 +45,35 @@ _ANSWER_TIMEOUT_S     = 30    # give up if not answered within this time
 
 
 def _write_pcm(call: VoIPCall, pcm: bytes) -> None:
-    """Write PCM bytes to the call in 160-byte RTP-sized chunks."""
-    chunk_size = 320  # 160 samples × 2 bytes
+    """
+    Write u8 PCM bytes to the call in 160-byte RTP-sized chunks.
+    pyVoIP encode_pcmu uses audioop width=1 (1 byte per sample, 8-bit u8).
+    160 samples × 1 byte = 160 bytes = 20 ms at 8 kHz.
+    """
+    chunk_size = 160  # 160 samples × 1 byte (8-bit u8, NOT 16-bit)
+    logger.debug(
+        "_write_pcm: %d bytes u8 PCM -> %d × %d-byte chunks (8-bit u8, 8kHz, PCMU)",
+        len(pcm), (len(pcm) + chunk_size - 1) // chunk_size, chunk_size,
+    )
     for i in range(0, len(pcm), chunk_size):
         if call.state == CallState.ENDED:
             break
         call.write_audio(pcm[i: i + chunk_size])
+
+
+def _log_media_params(call: VoIPCall) -> None:
+    """Log codec and audio format details for the active call."""
+    try:
+        for client in call.RTPClients:
+            logger.debug(
+                "RTP media: codec=%s payload_type=%s sample_rate=%s "
+                "frame_bytes=160 frame_fmt=u8 (8-bit unsigned offset binary)",
+                getattr(client, "preference", "?"),
+                int(getattr(client, "preference", 0)),
+                getattr(getattr(client, "preference", None), "rate", "?"),
+            )
+    except Exception as exc:
+        logger.debug("Could not read RTP client media params: %s", exc)
 
 
 def _drain_whisper_queue() -> Optional[str]:
@@ -181,6 +204,7 @@ def handle_call(call: VoIPCall, phone_state: dict) -> None:
         # ── answer ────────────────────────────────────────────────────────────
         call.answer()
         logger.info("Call answered")
+        _log_media_params(call)
 
         # ── greet ─────────────────────────────────────────────────────────────
         greeting = config.AI_GREETING
@@ -305,6 +329,7 @@ def handle_outbound_call(
         }
 
         # ── speak the opening line ────────────────────────────────────────────
+        _log_media_params(call)
         # Seed the history so the LLM knows what we already said
         history.append({"role": "assistant", "content": _OUTBOUND_OPENING})
         _write_pcm(call, speak(_OUTBOUND_OPENING, lang="en"))

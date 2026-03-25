@@ -23,7 +23,7 @@ from typing import Optional
 
 import pyVoIP
 from pyVoIP.VoIP import VoIPPhone, VoIPCall, CallState
-from pyVoIP.VoIP.status import PhoneStatus
+from pyVoIP.VoIP import PhoneStatus
 
 from voice import config
 from voice.call_handler import handle_call
@@ -39,8 +39,121 @@ def _pyvoip_debug_to_logger(msg, exc=None):
         logger.debug("pyVoIP: %s", msg)
 
 import pyVoIP as _pyvoip_module
+import pyVoIP.SIP as _pv_sip
+import pyVoIP.VoIP as _pv_voip
+import hashlib as _hashlib
+import uuid as _uuid
+
+# Route pyVoIP debug output to our logger.
+# IMPORTANT: SIP.py and VoIP.py do `debug = pyVoIP.debug` at *import time*, so
+# replacing pyVoIP.debug afterward has no effect on their local binding.
+# We must also patch the module-level names in SIP and VoIP directly.
 _pyvoip_module.debug = _pyvoip_debug_to_logger
 _pyvoip_module.DEBUG = True  # enable so internal guards don't short-circuit
+_pv_sip.debug = _pyvoip_debug_to_logger
+_pv_voip.debug = _pyvoip_debug_to_logger
+
+# ── COMtrexx SIP auth compatibility patch ─────────────────────────────────────
+# pyVoIP 1.6.4 hardcodes ";transport=UDP" in two places for REGISTER:
+#   1. The HA2 digest computation  →  MD5("REGISTER:sip:<server>;transport=UDP")
+#   2. The Authorization header    →  uri="sip:<server>;transport=UDP"
+#
+# COMtrexx (and many strict PBXes) expect the plain URI without the transport
+# parameter, causing a second 401 that pyVoIP surfaces as "Invalid Username or
+# Password" — even when credentials are correct.
+#
+# Fix: patch gen_authorization so HA2 uses bare sip:<server>, and wrap
+# gen_register to strip ";transport=UDP" from the Authorization uri= field.
+# Both must match for the digest to verify correctly.
+
+def _patched_gen_authorization(self, request):
+    realm = request.authentication["realm"]
+    nonce = request.authentication["nonce"]
+    method = request.headers["CSeq"]["method"]
+    uri = f"sip:{self.server}"  # no ;transport=UDP
+
+    HA1 = _hashlib.md5(
+        f"{self.username}:{realm}:{self.password}".encode("utf8")
+    ).hexdigest()
+    HA2 = _hashlib.md5(
+        f"{method}:{uri}".encode("utf8")
+    ).hexdigest()
+
+    qop_raw = request.authentication.get("qop", "")
+    if "auth" in qop_raw:
+        # RFC 2617 qop=auth: response = MD5(HA1:nonce:nc:cnonce:qop:HA2)
+        cnonce = _uuid.uuid4().hex[:16]
+        nc = "00000001"
+        self._digest_cnonce = cnonce
+        self._digest_nc = nc
+        self._digest_qop = "auth"
+        return _hashlib.md5(
+            f"{HA1}:{nonce}:{nc}:{cnonce}:auth:{HA2}".encode("utf8")
+        ).hexdigest().encode("utf8")
+    else:
+        # RFC 2069 fallback (no qop in challenge)
+        self._digest_cnonce = None
+        self._digest_nc = None
+        self._digest_qop = None
+        return _hashlib.md5(
+            f"{HA1}:{nonce}:{HA2}".encode("utf8")
+        ).hexdigest().encode("utf8")
+
+_orig_gen_register = _pv_sip.SIPClient.gen_register
+
+def _patched_gen_register(self, request, deregister=False):
+    result = _orig_gen_register(self, request, deregister)
+    # Strip ;transport=UDP from the Authorization uri= field (HA2 also uses bare URI)
+    result = result.replace(
+        f'uri="sip:{self.server};transport=UDP"',
+        f'uri="sip:{self.server}"',
+    )
+    # Inject qop/nc/cnonce/opaque when RFC 2617 qop=auth was used
+    if getattr(self, "_digest_qop", None) == "auth":
+        cnonce = self._digest_cnonce
+        nc = self._digest_nc
+        opaque = request.authentication.get("opaque", "")
+        extra = f',qop=auth,nc={nc},cnonce="{cnonce}"'
+        if opaque:
+            extra += f',opaque="{opaque}"'
+        result = result.replace(",algorithm=MD5\r\n", f"{extra},algorithm=MD5\r\n")
+        logger.debug(
+            "SIP Authorization (RFC 2617 qop=auth): username=%s registrar=%s "
+            "realm=%s uri=sip:%s qop=auth nc=%s cnonce=%s opaque=%s algorithm=MD5",
+            self.username, self.server,
+            request.authentication.get("realm", ""),
+            self.server, nc, cnonce, opaque or "(none)",
+        )
+    else:
+        logger.debug(
+            "SIP Authorization (RFC 2069, no qop): username=%s registrar=%s "
+            "realm=%s uri=sip:%s algorithm=MD5",
+            self.username, self.server,
+            request.authentication.get("realm", ""),
+            self.server,
+        )
+    return result
+
+def _patched_handle_bad_request(self):
+    # pyVoIP's default silently does nothing, then falls through to raise
+    # InvalidAccountInfoError("Invalid Username or Password") — completely wrong
+    # for a transport error.  Raise a clear exception immediately instead.
+    # The full PBX response (including reason phrase) is visible at DEBUG level
+    # in the lines logged just before this is called.
+    raise RuntimeError(
+        "PBX rejected REGISTER with 400 Bad Request. "
+        "COMtrexx sends this with reason 'Use SIP/TLS' when the device/softphone "
+        "account is configured to require TLS. "
+        "To test over UDP: in COMtrexx open the device settings for this softphone "
+        "and disable the 'Secure SIP (TLS)' / 'SIPS' option. "
+        "Note: pyVoIP 1.6.4 is UDP-only — TLS is not supported by this library."
+    )
+
+_pv_sip.SIPClient.gen_authorization = _patched_gen_authorization
+_pv_sip.SIPClient.genAuthorization = _patched_gen_authorization  # deprecated alias
+_pv_sip.SIPClient.gen_register = _patched_gen_register
+_pv_sip.SIPClient._handle_bad_request = _patched_handle_bad_request
+# genRegister delegates to self.gen_register → patching gen_register is enough
 
 # Imported lazily to avoid a circular import at module level
 _phone_state: Optional[dict] = None
@@ -56,6 +169,19 @@ _POST_REGISTER_WAIT = 2.0   # seconds
 _SIP_RECV_TIMEOUT   = 30.0  # seconds
 _WSAENOTSOCK        = 10038
 _WSAEWOULDBLOCK     = 10035
+
+
+def _resolve_registrar_host() -> str:
+    """Return the SIP registrar host used by pyVoIP REGISTER/INVITE requests."""
+    return (config.COMTREXX_SIP_DOMAIN or config.COMTREXX_IP).strip()
+
+
+def _resolve_host_ip(host: str) -> str:
+    """Resolve *host* to an IPv4 address for logging/debugging."""
+    try:
+        return _socket.gethostbyname(host)
+    except Exception:
+        return host
 
 
 def _detect_local_ip(remote: str) -> str:
@@ -124,18 +250,30 @@ class SIPClient:
     def _register(self) -> bool:
         """Create and start a VoIPPhone instance. Returns True on success."""
         try:
-            local_ip = config.COMTREXX_LOCAL_IP or _detect_local_ip(config.COMTREXX_IP)
+            registrar_host = _resolve_registrar_host()
+            registrar_ip = _resolve_host_ip(registrar_host)
+            local_ip = config.COMTREXX_LOCAL_IP or _detect_local_ip(registrar_host)
+            if local_ip == "0.0.0.0":
+                logger.warning(
+                    "Could not determine a specific local SIP bind IP for registrar %s; "
+                    "pyVoIP will bind to %s.",
+                    registrar_host,
+                    local_ip,
+                )
             logger.info(
-                "Registering SIP: %s@%s:%d (extension %s, local %s:%d)",
+                "Registering SIP over UDP: username=%s, auth_username=%s, registrar=%s, "
+                "resolved_server=%s, port=%d, extension=%s, local_bind=%s:%d",
                 config.COMTREXX_SIP_USER,
-                config.COMTREXX_SIP_DOMAIN,
+                config.COMTREXX_SIP_USER,
+                registrar_host,
+                registrar_ip,
                 config.COMTREXX_SIP_PORT,
                 config.COMTREXX_EXTENSION,
                 local_ip,
                 config.COMTREXX_LOCAL_SIP_PORT,
             )
             phone = VoIPPhone(
-                server=config.COMTREXX_IP,
+                server=registrar_host,
                 port=config.COMTREXX_SIP_PORT,
                 username=config.COMTREXX_SIP_USER,
                 password=config.COMTREXX_SIP_PASS,
@@ -184,17 +322,28 @@ class SIPClient:
 
             state["registered"] = True
             state["extension"]  = config.COMTREXX_EXTENSION
-            state["server"]     = f"{config.COMTREXX_IP}:{config.COMTREXX_SIP_PORT}"
+            state["server"]     = f"{registrar_host}:{config.COMTREXX_SIP_PORT}"
 
             logger.info(
                 "SIP registered — extension %s on %s",
                 config.COMTREXX_EXTENSION,
-                config.COMTREXX_IP,
+                registrar_host,
             )
             return True
 
         except Exception as exc:
-            logger.error("SIP registration failed: %s", exc, exc_info=True)
+            logger.error(
+                "SIP registration failed: registrar=%s resolved_server=%s port=%d "
+                "username=%s local_ip=%s extension=%s error=%s",
+                _resolve_registrar_host(),
+                _resolve_host_ip(_resolve_registrar_host()),
+                config.COMTREXX_SIP_PORT,
+                config.COMTREXX_SIP_USER,
+                config.COMTREXX_LOCAL_IP or "auto",
+                config.COMTREXX_EXTENSION,
+                exc,
+                exc_info=True,
+            )
             with self._lock:
                 self._phone = None
             _get_phone_state()["registered"] = False

@@ -5,9 +5,12 @@ audio_bridge.py — STT and TTS pipeline for phone calls.
   speak(text, lang)             — text → raw PCM bytes (ready for RTP)
   is_silence(pcm_chunk)        — energy check for a single RTP packet
 
-Audio contract (matches pyVoIP G.711 decoded output):
-  Input  PCM: 8 000 Hz, 16-bit signed, mono (little-endian)
-  Output PCM: 8 000 Hz, 16-bit signed, mono (little-endian)
+Audio contract (matches pyVoIP G.711 µ-law internal format):
+  Input  PCM: 8 000 Hz, 8-bit unsigned offset binary (u8), mono
+  Output PCM: 8 000 Hz, 8-bit unsigned offset binary (u8), mono
+
+  pyVoIP's encode_pcmu/parse_pcmu use audioop width=1 (1 byte per sample).
+  Silence = 0x80 (128).  Range = 0–255.  Do NOT use s16le here.
 
 STT: openai-whisper 'base' model (loaded lazily, kept in memory)
 TTS: gTTS (MP3) converted to raw PCM via ffmpeg
@@ -66,12 +69,12 @@ def _ffmpeg() -> str:
 def is_silence(pcm_chunk: bytes, threshold: float = _SILENCE_THRESHOLD) -> bool:
     """
     Return True if the RMS energy of a single PCM chunk is below threshold.
-    Use this on every incoming RTP packet to detect when a caller has stopped
-    speaking before calling transcribe().
+    Input is 8-bit unsigned offset binary (pyVoIP u8 format, silence = 0x80).
     """
     if not pcm_chunk:
         return True
-    samples = np.frombuffer(pcm_chunk, dtype=np.int16).astype(np.float32) / 32768.0
+    # uint8 offset binary → float centred on zero: (x - 128) / 128
+    samples = (np.frombuffer(pcm_chunk, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
     rms = float(np.sqrt(np.mean(samples ** 2)))
     return rms < threshold
 
@@ -80,11 +83,12 @@ def is_silence(pcm_chunk: bytes, threshold: float = _SILENCE_THRESHOLD) -> bool:
 
 def _concat_and_resample(pcm_chunks: list[bytes]) -> np.ndarray:
     """
-    Concatenate raw 8 kHz PCM chunks and upsample to 16 kHz float32
-    for Whisper.
+    Concatenate raw 8 kHz u8 PCM chunks and upsample to 16 kHz float32
+    for Whisper.  Input is uint8 offset binary (silence = 0x80).
     """
     raw = b"".join(pcm_chunks)
-    samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+    # uint8 offset binary → float centred on zero
+    samples = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
     # Linear interpolation: 8 k -> 16 k
     x_old = np.arange(len(samples))
     x_new = np.linspace(0, len(samples) - 1, len(samples) * 2)
@@ -96,7 +100,7 @@ def transcribe(
     lang: str = AI_LANGUAGE,
 ) -> str:
     """
-    Transcribe a list of raw 8 kHz 16-bit PCM chunks to text.
+    Transcribe a list of raw 8 kHz u8 PCM chunks to text.
 
     Args:
         pcm_chunks: Accumulated RTP audio packets from one speech segment.
@@ -113,7 +117,8 @@ def transcribe(
         return ""
 
     # Skip Whisper if the whole buffer is silence (avoids hallucinations)
-    samples_check = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+    # Input is uint8 offset binary (pyVoIP u8 format, silence = 0x80)
+    samples_check = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
     rms = float(np.sqrt(np.mean(samples_check ** 2)))
     if rms < _SILENCE_THRESHOLD:
         logger.debug("transcribe: buffer is silent (RMS=%.4f), skipping", rms)
@@ -145,7 +150,7 @@ def speak(
     lang: str = AI_LANGUAGE,
 ) -> bytes:
     """
-    Convert text to raw 8 kHz 16-bit mono PCM bytes using gTTS + ffmpeg.
+    Convert text to raw 8 kHz unsigned 8-bit mono PCM bytes using gTTS + ffmpeg.
 
     Args:
         text: The string to synthesise.
@@ -172,14 +177,16 @@ def speak(
 
         gTTS(text=text, lang=lang, slow=False).save(mp3_path)
 
-        # ffmpeg: MP3 → raw PCM  (8 kHz, 16-bit signed LE, mono)
+        # ffmpeg: MP3 → raw PCM  (8 kHz, unsigned 8-bit, mono)
+        # pyVoIP encode_pcmu uses audioop with sample_width=1 (1 byte per sample).
+        # u8 = unsigned 8-bit offset binary, silence = 0x80.  Do NOT use s16le.
         subprocess.run(
             [
                 _ffmpeg(), "-y",
                 "-i", mp3_path,
                 "-ar", str(_SIP_SAMPLE_RATE),
                 "-ac", "1",
-                "-f", "s16le",
+                "-f", "u8",
                 pcm_path,
             ],
             check=True,
@@ -189,8 +196,12 @@ def speak(
         with open(pcm_path, "rb") as f:
             pcm = f.read()
 
-        duration_ms = int(len(pcm) / 2 / _SIP_SAMPLE_RATE * 1000)
-        logger.debug("speak: %d chars -> %d bytes PCM (%d ms)", len(text), len(pcm), duration_ms)
+        # 1 byte per sample → no /2 divisor
+        duration_ms = int(len(pcm) / _SIP_SAMPLE_RATE * 1000)
+        logger.debug(
+            "speak: %d chars -> %d bytes u8 PCM @ %d Hz (%d ms)",
+            len(text), len(pcm), _SIP_SAMPLE_RATE, duration_ms,
+        )
         return pcm
 
     except subprocess.CalledProcessError as exc:

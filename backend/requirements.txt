@@ -57,5 +57,10 @@ cryptography==41.0.7
 msal==1.25.0
 msal-extensions==1.1.0
 
+# VoIP / SIP (AI phone feature)
+# 1.6.4: last version that works on Python 3.13 (audioop was removed in 3.13,
+# which breaks 1.6.8+).  Do NOT upgrade without testing on Python 3.13.
+pyVoIP==1.6.4
+
 # CORS middleware (included with FastAPI/Starlette)
 # starlette is a dependency of FastAPI
