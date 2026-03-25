@@ -157,7 +157,7 @@ class TestGetValidMsToken:
         The JWT payload aud should contain 'graph.microsoft.com' (or its GUID).
         """
         # Simulate wrong token (id_token has aud = client_id)
-        id_like_token = _graph_token(aud="a2da9786-3455-435e-ba02-1df2b292b8a7")  # client_id as aud
+        id_like_token = _graph_token(aud="00000000-0000-0000-0000-000000000001")  # fake client_id as aud
         tokens = _stored_tokens(access_token=id_like_token, expires_at_offset=600)
 
         import logging

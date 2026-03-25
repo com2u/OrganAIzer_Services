@@ -102,7 +102,7 @@ fi
 
 # Verify required environment variables are set in .env file
 print_status "Checking environment variables in .env file..."
-REQUIRED_VARS=("GOOGLE_API_KEY" "OPENROUTER_API_KEY" "AZURE_CLIENT_ID" "AZURE_TENANT_ID" "AZURE_CLIENT_SECRET")
+REQUIRED_VARS=("OPENROUTER_API_KEY" "MICROSOFT_CLIENT_ID" "MICROSOFT_CLIENT_SECRET" "TOKEN_ENCRYPTION_KEY" "API_KEYS")
 MISSING_VARS=()
 
 for var in "${REQUIRED_VARS[@]}"; do
@@ -228,8 +228,7 @@ print_status "CORS is configured for:"
 echo "  - https://organaizer.com2u.selfhost.eu"
 echo "  - https://organaizer_backend.com2u.selfhost.eu"
 echo "  - http://localhost:5173, http://localhost:3000"
-echo "  - http://192.168.0.95:5173, http://192.168.0.95:3000"
-echo "  - http://100.117.42.75:5173, http://100.117.42.75:3000"
+echo "  - http://<your-dev-host>:5173, http://<your-dev-host>:3000"
 echo
 print_status "To view logs: $DOCKER_COMPOSE logs -f"
 print_status "To stop: $DOCKER_COMPOSE down"

@@ -60,13 +60,13 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         
         # CORS headers
-        add_header 'Access-Control-Allow-Origin' 'https://organaizer.com2u.selfhost.eu http://localhost:5173 http://localhost:3000 http://192.168.0.95:5173 http://192.168.0.95:3000 http://100.107.41.75:5173 http://100.107.41.75:3000' always;
+        add_header 'Access-Control-Allow-Origin' 'https://organaizer.com2u.selfhost.eu http://localhost:5173 http://localhost:3000' always;
         add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD' always;
         add_header 'Access-Control-Allow-Headers' 'Authorization, Content-Type, X-Requested-With, Accept, Origin, X-Custom-Header' always;
         add_header 'Access-Control-Allow-Credentials' 'true' always;
         
         if ($request_method = 'OPTIONS') {
-            add_header 'Access-Control-Allow-Origin' 'https://organaizer.com2u.selfhost.eu http://localhost:5173 http://localhost:3000 http://192.168.0.95:5173 http://192.168.0.95:3000 http://100.107.41.75:5173 http://100.107.41.75:3000';
+            add_header 'Access-Control-Allow-Origin' 'https://organaizer.com2u.selfhost.eu http://localhost:5173 http://localhost:3000';
             add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD';
             add_header 'Access-Control-Allow-Headers' 'Authorization, Content-Type, X-Requested-With, Accept, Origin, X-Custom-Header';
             add_header 'Access-Control-Allow-Credentials' 'true';
@@ -109,13 +109,13 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         
         # CORS headers for API calls
-        add_header 'Access-Control-Allow-Origin' 'https://organaizer.com2u.selfhost.eu http://localhost:5173 http://localhost:3000 http://192.168.0.95:5173 http://192.168.0.95:3000 http://100.107.41.75:5173 http://100.107.41.75:3000' always;
+        add_header 'Access-Control-Allow-Origin' 'https://organaizer.com2u.selfhost.eu http://localhost:5173 http://localhost:3000' always;
         add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD' always;
         add_header 'Access-Control-Allow-Headers' 'Authorization, Content-Type, X-Requested-With, Accept, Origin, X-Custom-Header' always;
         add_header 'Access-Control-Allow-Credentials' 'true' always;
         
         if ($request_method = 'OPTIONS') {
-            add_header 'Access-Control-Allow-Origin' 'https://organaizer.com2u.selfhost.eu http://localhost:5173 http://localhost:3000 http://192.168.0.95:5173 http://192.168.0.95:3000 http://100.107.41.75:5173 http://100.107.41.75:3000';
+            add_header 'Access-Control-Allow-Origin' 'https://organaizer.com2u.selfhost.eu http://localhost:5173 http://localhost:3000';
             add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD';
             add_header 'Access-Control-Allow-Headers' 'Authorization, Content-Type, X-Requested-With, Accept, Origin, X-Custom-Header';
             add_header 'Access-Control-Allow-Credentials' 'true';
@@ -138,12 +138,13 @@ server {
 
 ```bash
 # Required
-GOOGLE_API_KEY=your_google_api_key_here
+GEMINI_API_KEY=your_gemini_api_key_here
 OPENROUTER_API_KEY=your_openrouter_api_key_here
 MODEL=google/gemini-2.5-flash
-AZURE_CLIENT_ID=your_azure_client_id
-AZURE_TENANT_ID=your_azure_tenant_id
-AZURE_CLIENT_SECRET=your_azure_client_secret
+MICROSOFT_CLIENT_ID=your_azure_application_client_id
+MICROSOFT_TENANT_ID=common
+MICROSOFT_CLIENT_SECRET=your_azure_client_secret_value
+TOKEN_ENCRYPTION_KEY=your_fernet_encryption_key_here
 ```
 
 ## CORS Configuration
@@ -152,8 +153,7 @@ The backend is configured to allow CORS from:
 - `https://organaizer.com2u.selfhost.eu`
 - `https://organaizer_backend.com2u.selfhost.eu`
 - `http://localhost:5173`, `http://localhost:3000`
-- `http://192.168.0.95:5173`, `http://192.168.0.95:3000`
-- `http://100.107.41.75:5173`, `http://100.107.41.75:3000`
+- `http://<your-dev-host>:5173`, `http://<your-dev-host>:3000`
 
 ## Management Commands
 

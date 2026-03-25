@@ -35,8 +35,8 @@ cp .env.example .env
 #### For Production
 ```bash
 # Ensure .env contains production values:
-VITE_API_KEY=l5hhroDITUp5zCFEGSaMk43HdVDFlK85
-VITE_API_URL_PROD=http://organaizer_backend.com2u.selfhost.eu
+VITE_API_KEY=your-api-key-here
+VITE_API_URL_PROD=https://your-backend-domain.example.com
 ```
 
 ### 2. Backend Configuration
@@ -58,7 +58,7 @@ npm run dev
 ```bash
 # Build with API key
 cd frontend
-docker build --build-arg VITE_API_KEY=l5hhroDITUp5zCFEGSaMk43HdVDFlK85 -t frontend:latest .
+docker build --build-arg VITE_API_KEY=your-api-key-here -t frontend:latest .
 
 # Or use docker-compose from root
 cd ..
@@ -83,32 +83,34 @@ docker-compose logs -f
 #### Backend (.env)
 ```bash
 # API Keys for backend authentication
-API_KEYS=ylgS92K4Ca3HS7p53FW76ttoKwNhLgxB,D1RVbXwPLr00uCWpoC9eJhaQvAhEj8Y8,p8Mq3PWqkLFtjv8txsyVT8FjLH2Bmu95,l5hhroDITUp5zCFEGSaMk43HdVDFlK85
+# Generate with: python -c "import secrets; print(secrets.token_hex(32))"
+API_KEYS=your-api-key-1,your-api-key-2
 
-# Google API
-GOOGLE_API_KEY=your_google_key
+# Google AI Studio (Gemini image generation)
+GEMINI_API_KEY=your_gemini_api_key_here
 
 # OpenRouter (LLM)
-OPENROUTER_API_KEY=your_openrouter_key
+OPENROUTER_API_KEY=your_openrouter_api_key_here
 MODEL=google/gemini-2.5-flash
 
-# Azure (Outlook)
-AZURE_CLIENT_ID=your_azure_client_id
-AZURE_TENANT_ID=your_azure_tenant_id
-AZURE_CLIENT_SECRET=your_azure_client_secret
+# Microsoft / Azure (Outlook + Calendar)
+MICROSOFT_CLIENT_ID=your_azure_application_client_id
+MICROSOFT_TENANT_ID=common
+MICROSOFT_CLIENT_SECRET=your_azure_client_secret_value
+
+# Token encryption key
+# Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+TOKEN_ENCRYPTION_KEY=your_fernet_encryption_key_here
 ```
 
 #### Frontend (.env)
 ```bash
 # Must match one of the API_KEYS above
-VITE_API_KEY=l5hhroDITUp5zCFEGSaMk43HdVDFlK85
+VITE_API_KEY=your-api-key-here
 
 # API URLs
 VITE_API_URL=http://localhost:8000/api          # Development
-VITE_API_URL_PROD=https://organaizer_backend.com2u.selfhost.eu  # Production
-
-# Frontend URL (for reference)
-FRONTEND_URL=https://organaizer.com2u.selfhost.eu
+VITE_API_URL_PROD=https://your-backend-domain.example.com  # Production
 ```
 
 ### Production Deployment
@@ -129,7 +131,7 @@ docker-compose build backend
 
 # Build frontend with production API key
 cd frontend
-docker build --build-arg VITE_API_KEY=l5hhroDITUp5zCFEGSaMk43HdVDFlK85 -t frontend:latest .
+docker build --build-arg VITE_API_KEY=your-api-key-here -t frontend:latest .
 cd ..
 
 # Deploy all services

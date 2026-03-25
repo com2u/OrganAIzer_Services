@@ -49,17 +49,18 @@ Client → Your Existing Nginx (80/443) → Backend (5263) or Frontend (5264)
 
 ### Required Environment Variables (.env)
 ```bash
-GOOGLE_API_KEY=your_key
-OPENROUTER_API_KEY=your_key
+GEMINI_API_KEY=your_gemini_api_key_here
+OPENROUTER_API_KEY=your_openrouter_api_key_here
 MODEL=google/gemini-2.5-flash
-AZURE_CLIENT_ID=your_id
-AZURE_TENANT_ID=your_id
-AZURE_CLIENT_SECRET=your_secret
+MICROSOFT_CLIENT_ID=your_azure_application_client_id
+MICROSOFT_TENANT_ID=common
+MICROSOFT_CLIENT_SECRET=your_azure_client_secret_value
+TOKEN_ENCRYPTION_KEY=your_fernet_encryption_key_here
 ```
 
 ### CORS Domains Supported
 - Production: `https://organaizer.com2u.selfhost.eu`, `https://organaizer_backend.com2u.selfhost.eu`
-- Development: `localhost`, `192.168.0.95`, `100.107.41.75`
+- Development: `localhost`, your local dev host
 
 ## 🚀 Deployment Commands
 

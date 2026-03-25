@@ -6,6 +6,15 @@
 backend/credentials.json
 backend/keys.csv
 
+# TLS certificates and private keys
+*.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.pfx
+nginx/ssl/
+
 # ==============================================================================
 # OAUTH TOKENS & TOKEN CACHES — Runtime data, not source code
 # ==============================================================================

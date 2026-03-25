@@ -120,14 +120,15 @@ if [ ! -f ".env" ]; then
 # Copy this file to .env and fill in your actual values
 
 # API Keys
-GOOGLE_API_KEY=your_google_api_key_here
+GEMINI_API_KEY=your_gemini_api_key_here
 OPENROUTER_API_KEY=your_openrouter_api_key_here
 MODEL=google/gemini-2.5-flash
 
-# Azure Configuration
-AZURE_CLIENT_ID=your_azure_client_id
-AZURE_TENANT_ID=your_azure_tenant_id
-AZURE_CLIENT_SECRET=your_azure_client_secret
+# Microsoft / Azure Configuration
+MICROSOFT_CLIENT_ID=your_azure_application_client_id
+MICROSOFT_TENANT_ID=common
+MICROSOFT_CLIENT_SECRET=your_azure_client_secret_value
+TOKEN_ENCRYPTION_KEY=your_fernet_encryption_key_here
 EOF
     fi
     print_warning "Please update .env file with your actual API keys before deploying."

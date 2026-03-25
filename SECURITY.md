@@ -29,17 +29,17 @@ from dotenv import load_dotenv
 import os
 
 load_dotenv()
-api_key = os.getenv('GOOGLE_API_KEY')
+api_key = os.getenv('OPENROUTER_API_KEY')
 ```
 
 ### 2. CORS Configuration
 CORS is restricted to specific domains:
 - Production: `https://organaizer.com2u.selfhost.eu`, `https://organaizer_backend.com2u.selfhost.eu`
-- Development: `localhost`, `192.168.0.95`, `100.117.42.75`
+- Development: `localhost`, your local dev host
 
 ### 3. API Key Authentication
 Required header: `X-API-Key`
-Keys are stored in `backend/keys.csv` (should be moved to environment variables)
+Keys are passed via the `API_KEYS` environment variable (comma-separated list)
 
 ### 4. Docker Security
 - Containers run with minimal privileges
@@ -56,8 +56,9 @@ cp .env.example .env
 ### Step 2: Add Your Real API Keys
 Edit `.env` and replace placeholders with real values:
 ```bash
-GOOGLE_API_KEY=your_actual_key_here
+GEMINI_API_KEY=your_actual_key_here
 OPENROUTER_API_KEY=your_actual_key_here
+MICROSOFT_CLIENT_ID=your_actual_client_id
 # etc.
 ```
 
