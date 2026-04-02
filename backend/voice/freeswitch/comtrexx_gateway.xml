@@ -1,0 +1,64 @@
+<include>
+  <!--
+    comtrexx_gateway.xml
+    SIP/TLS gateway from FreeSWITCH to COMtrexx PBX.
+
+    DEPLOY TO:
+      C:\Program Files\FreeSWITCH\conf\sip_profiles\external\comtrexx_gateway.xml
+
+    APPLY WITH (in fs_cli):
+      reloadxml
+      sofia profile external restart
+
+    This file makes FreeSWITCH register as extension 003010 on COMtrexx
+    over TLS (port 5061), replacing the pyVoIP UDP registration that
+    COMtrexx rejects with "Use SIP/TLS".
+
+    PREREQUISITES on the FreeSWITCH side:
+      1. mod_sofia compiled with TLS support (standard in Windows installer).
+      2. TLS certificate at: C:\Program Files\FreeSWITCH\conf\ssl\agent.pem
+         If missing, generate a self-signed cert:
+           openssl req -new -x509 -days 3650 -nodes \
+             -out agent.pem -keyout agent.pem \
+             -subj "/CN=freeswitch"
+      3. The external SIP profile must have TLS enabled.
+         In external.xml add/verify:
+           <param name="tls"           value="true"/>
+           <param name="tls-cert-dir"  value="$${certs_dir}"/>
+         Then: sofia profile external restart
+      4. COMtrexx device account for 003010 must have "Secure SIP (TLS)"
+         enabled (this is why the 400 Bad Request was sent to pyVoIP).
+
+    VARIABLES:
+      Replace YOUR_PASSWORD_HERE with the SIP password for extension 003010,
+      or set it via FS vars.xml:
+        <X-PRE-PROCESS cmd="set" data="comtrexx_pass=YOUR_PASSWORD"/>
+      then use $${comtrexx_pass} below.
+  -->
+  <gateway name="comtrexx">
+    <!-- COMtrexx PBX address -->
+    <param name="realm"               value="172.20.0.244"/>
+    <!-- SIP/TLS port — COMtrexx default is 5061 -->
+    <param name="proxy"               value="172.20.0.244:5061"/>
+
+    <!-- Extension credentials -->
+    <param name="username"            value="003010"/>
+    <param name="password"            value="YOUR_SIP_PASSWORD_HERE"/>
+    <param name="from-user"           value="003010"/>
+    <param name="from-domain"         value="172.20.0.244"/>
+    <param name="extension"           value="003010"/>
+
+    <!-- Force TLS transport -->
+    <param name="register-transport"  value="tls"/>
+    <param name="contact-params"      value="transport=tls"/>
+
+    <!-- Registration -->
+    <param name="register"            value="true"/>
+    <param name="expire-seconds"      value="120"/>
+    <param name="retry-seconds"       value="30"/>
+    <param name="ping"                value="25"/>
+
+    <!-- Caller ID behaviour -->
+    <param name="caller-id-in-from"   value="false"/>
+  </gateway>
+</include>

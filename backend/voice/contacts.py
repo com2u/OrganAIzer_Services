@@ -47,10 +47,26 @@ def _norm_number(raw: str) -> str:
     if not raw:
         return ""
     raw = str(raw).strip()
-    # preserve leading +
     if raw.startswith("+"):
         return "+" + re.sub(r"\D", "", raw[1:])
     return re.sub(r"\D", "", raw)
+
+
+def _to_national_de(number: str) -> str:
+    """
+    Normalize a German phone number to digits-only national format
+    (e.g. 01751234567) regardless of whether it starts with +49, 0049, or 0.
+
+    Non-German numbers (no recognisable country-prefix) are returned as-is
+    so the fallback suffix match in lookup_by_number still works.
+    """
+    digits = re.sub(r"\D", "", number.lstrip("+"))
+    if digits.startswith("0049"):
+        digits = "0" + digits[4:]
+    elif digits.startswith("49") and len(digits) >= 11:
+        # +49 followed by national number without leading 0 (e.g. +491751234567)
+        digits = "0" + digits[2:]
+    return digits
 
 
 def _find_col(headers: list[str], patterns: list[str], override: str = "") -> Optional[str]:
@@ -154,19 +170,40 @@ def lookup_by_number(number: str) -> Optional[dict]:
     """
     Return the first contact whose normalised number matches,
     or None if not found.
+
+    Matching strategy (in priority order):
+    1. Exact match on the raw normalised form (fastest path).
+    2. Exact match on national-format German numbers (handles +49 vs 0 prefix
+       differences without false positives from the old suffix approach).
+    3. Last-7-digit suffix match as a final fallback for short/partial numbers.
     """
     load()
     needle = _norm_number(number)
     if not needle:
         return None
+
+    needle_nat = _to_national_de(needle)
+
     for c in _contacts:
-        # match if stored number ends with the last 7+ digits of the caller
-        if c["number"] and (
-            c["number"] == needle
-            or c["number"].endswith(needle[-7:])
-            or needle.endswith(c["number"][-7:])
-        ):
+        stored = c["number"]
+        if not stored:
+            continue
+
+        # 1. Exact raw match
+        if stored == needle:
             return c
+
+        # 2. Exact national-format match (resolves +49 / 0049 / 0 ambiguity)
+        stored_nat = _to_national_de(stored)
+        if needle_nat and stored_nat and needle_nat == stored_nat:
+            return c
+
+        # 3. Last-7-digit suffix fallback (only when both numbers are long enough
+        #    to avoid false positives on short numbers)
+        if len(needle_nat) >= 9 and len(stored_nat) >= 9:
+            if needle_nat[-7:] == stored_nat[-7:]:
+                return c
+
     return None
 
 

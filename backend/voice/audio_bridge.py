@@ -23,6 +23,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import uuid as _uuid
 from typing import Optional
 
 import numpy as np
@@ -215,3 +216,124 @@ def speak(
                     os.unlink(path)
                 except OSError:
                     pass
+
+
+# ── FreeSWITCH ESL audio helpers ──────────────────────────────────────────────
+
+def transcribe_file(
+    wav_path: str,
+    lang: str = AI_LANGUAGE,
+) -> str:
+    """
+    Transcribe a WAV file recorded by FreeSWITCH to text using Whisper.
+
+    Whisper's load_audio() handles any sample rate — it resamples internally
+    to 16 kHz.  Silent recordings are discarded without calling the model to
+    avoid hallucinations.
+
+    Args:
+        wav_path: Absolute path to the WAV file produced by the FS record app.
+        lang:     BCP-47 language code passed to Whisper.
+
+    Returns:
+        Transcribed text string, or "" if the file is silent or empty.
+    """
+    if not os.path.exists(wav_path):
+        logger.warning("transcribe_file: file not found: %s", wav_path)
+        return ""
+
+    # whisper.load_audio resamples to 16 kHz float32 via ffmpeg
+    audio = whisper.load_audio(wav_path)
+    if audio is None or len(audio) == 0:
+        return ""
+
+    rms = float(np.sqrt(np.mean(audio.astype(np.float32) ** 2)))
+    if rms < _SILENCE_THRESHOLD:
+        logger.debug("transcribe_file: silent recording (RMS=%.4f), skipping", rms)
+        return ""
+
+    model = _get_model()
+    logger.debug(
+        "transcribe_file: %.2f s of audio (RMS=%.4f), lang=%s",
+        len(audio) / _WHISPER_RATE, rms, lang,
+    )
+    result = model.transcribe(audio, language=lang, fp16=False, temperature=0.0)
+    text: str = result.get("text", "").strip()
+    logger.info("Transcribed (file): %r", text[:120])
+    return text
+
+
+def speak_to_file(
+    text: str,
+    lang: str = AI_LANGUAGE,
+    output_dir: Optional[str] = None,
+    tld: Optional[str] = None,
+) -> str:
+    """
+    Convert text to a WAV file suitable for FreeSWITCH playback.
+
+    Pipeline: gTTS → MP3 temp file → ffmpeg → WAV (8 kHz, mono, PCM s16le).
+    The caller is responsible for deleting the returned file after playback.
+
+    Args:
+        text:       Text to synthesise.
+        lang:       gTTS language code.
+        output_dir: Directory for the output WAV.  Defaults to
+                    config.FREESWITCH_AUDIO_TEMP_DIR.
+
+    Returns:
+        Absolute path to the created WAV file, or "" if text is blank.
+    """
+    from voice.config import FREESWITCH_AUDIO_TEMP_DIR
+    import pathlib
+
+    text = text.strip()
+    if not text:
+        return ""
+
+    if output_dir is None:
+        output_dir = FREESWITCH_AUDIO_TEMP_DIR
+
+    pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
+    wav_path = str(
+        (pathlib.Path(output_dir) / (_uuid.uuid4().hex + ".wav")).resolve()
+    )
+    mp3_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            mp3_path = f.name
+
+        # tld controls accent: 'de' → Hochdeutsch, 'us' → American English
+        if tld is None:
+            tld = "de" if lang == "de" else "us"
+        gTTS(text=text, lang=lang, tld=tld, slow=False).save(mp3_path)
+
+        # ffmpeg: MP3 → WAV (8 kHz, mono, 16-bit signed).
+        # FS playback accepts standard PCM WAV and transcodes to the channel codec.
+        # Use s16le (16-bit) rather than u8 — FS expects signed 16-bit WAV input.
+        subprocess.run(
+            [
+                _ffmpeg(), "-y",
+                "-i", mp3_path,
+                "-ar", str(_SIP_SAMPLE_RATE),
+                "-ac", "1",
+                "-acodec", "pcm_s16le",
+                wav_path,
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+        logger.debug("speak_to_file: %d chars → %s", len(text), wav_path)
+        return wav_path
+
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            f"ffmpeg WAV conversion failed: {exc.stderr.decode(errors='replace')[:300]}"
+        ) from exc
+    finally:
+        if mp3_path:
+            try:
+                os.unlink(mp3_path)
+            except OSError:
+                pass

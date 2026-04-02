@@ -100,14 +100,20 @@ def _drain_whisper_queue() -> Optional[str]:
 def _conversation_loop(
     call: VoIPCall,
     history: list[dict],
+    caller: str,
     caller_name: Optional[str],
+    started_at: datetime,
     system_prompt: Optional[str],
     turn_count_ref: list[int],   # mutable single-element list so caller sees updates
-) -> None:
+) -> bool:
     """
     Shared VAD + LLM + TTS loop used by both inbound and outbound handlers.
-    Runs until the call ends or the max duration is reached.
+    Runs until the call ends, the max duration is reached, or the AI escalates.
+
+    Returns True if the AI triggered an escalation, False otherwise.
     """
+    from voice.escalation import handle_escalation
+
     speech_chunks: list[bytes] = []
     silent_streak  = 0
     total_ms       = 0
@@ -151,12 +157,39 @@ def _conversation_loop(
                         reply = "Sorry, there was a technical issue. Let me try again."
 
                     logger.info("[Turn %d] AI: %s", turn_count_ref[0], reply)
+
+                    # ── escalation trigger ────────────────────────────────────
+                    if reply.upper().startswith("ESCALATE:"):
+                        reason = reply[9:].strip()
+                        logger.info("Escalation triggered by AI: %s", reason)
+                        _write_pcm(call, speak(
+                            "Einen Moment bitte, ich leite Sie weiter.",
+                            lang=config.AI_LANGUAGE,
+                        ))
+                        result = handle_escalation(
+                            caller, caller_name, history, reason, started_at
+                        )
+                        if result.get("transfer_ok"):
+                            _write_pcm(call, speak(
+                                "Sie werden jetzt verbunden. Auf Wiederhören.",
+                                lang=config.AI_LANGUAGE,
+                            ))
+                        else:
+                            _write_pcm(call, speak(
+                                "Ein Mitarbeiter wird Sie so schnell wie möglich "
+                                "zurückrufen. Vielen Dank für Ihren Anruf. Auf Wiederhören.",
+                                lang=config.AI_LANGUAGE,
+                            ))
+                        return True
+
                     _write_pcm(call, speak(reply, lang=config.AI_LANGUAGE))
             elif silent_streak >= _SILENCE_CHUNKS:
                 silent_streak = 0
         else:
             silent_streak = 0
             speech_chunks.append(chunk)
+
+    return False
 
 
 def handle_call(call: VoIPCall, phone_state: dict) -> None:
@@ -214,7 +247,11 @@ def handle_call(call: VoIPCall, phone_state: dict) -> None:
 
         # ── VAD + conversation loop ───────────────────────────────────────────
         turn_ref = [turn_count]
-        _conversation_loop(call, history, caller_name, system_prompt=None, turn_count_ref=turn_ref)
+        _conversation_loop(
+            call, history,
+            caller=caller, caller_name=caller_name, started_at=started_at,
+            system_prompt=None, turn_count_ref=turn_ref,
+        )
         turn_count = turn_ref[0]
 
     except Exception as exc:
@@ -337,11 +374,9 @@ def handle_outbound_call(
         # ── VAD + conversation loop (outbound system prompt) ──────────────────
         turn_ref = [turn_count]
         _conversation_loop(
-            call,
-            history,
-            caller_name=target_name,
-            system_prompt=OUTBOUND_SYSTEM_PROMPT,
-            turn_count_ref=turn_ref,
+            call, history,
+            caller=target_number, caller_name=target_name, started_at=started_at,
+            system_prompt=OUTBOUND_SYSTEM_PROMPT, turn_count_ref=turn_ref,
         )
         turn_count = turn_ref[0]
 

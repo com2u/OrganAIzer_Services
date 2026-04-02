@@ -1,0 +1,37 @@
+<include>
+  <!--
+    inbound_ai_dialplan.xml
+    Routes inbound calls from COMtrexx to the Python AI call handler.
+
+    DEPLOY TO (WSL2 Debian12):
+      /etc/freeswitch/dialplan/public/00_inbound_ai.xml
+
+    The FS external profile routes to the "public" context (not "default").
+    Inbound calls from gateways always land in "public".
+
+    APPLY WITH (in fs_cli):
+      reloadxml
+
+    HOW IT WORKS:
+      When a call arrives from COMtrexx, FreeSWITCH connects to the Python
+      app on port 8085 (ESL outbound socket).  Python answers, plays TTS,
+      records speech, runs Whisper + LLM, and hangs up.
+
+    NOTE: sip_gateway_name is NOT set for inbound calls (only outbound).
+    We match destination_number instead — catches all calls to this FS instance.
+    To restrict to a specific extension add:
+      expression="^003010$"
+  -->
+  <extension name="ai_inbound_comtrexx" continue="false">
+    <condition field="destination_number" expression="^(.*)$">
+      <action application="set"    data="hangup_after_bridge=true"/>
+      <action application="set"    data="continue_on_fail=false"/>
+      <!--
+        172.20.0.42 = Windows host LAN IP where Python backend runs.
+        Port 8085   = FREESWITCH_ESL_OUTBOUND_PORT.
+        async full  = full event stream, non-blocking dialplan thread.
+      -->
+      <action application="socket" data="172.21.224.1:8085 async full"/>
+    </condition>
+  </extension>
+</include>

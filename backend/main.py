@@ -34,15 +34,56 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting OrganAIzer Services API")
 
-    # Start AI phone SIP client (non-blocking — runs in daemon threads).
-    # Skips silently if COMTREXX_SIP_USER / PASS / EXTENSION are not set.
-    from voice.sip_client import SIPClient
-    _sip = SIPClient()
-    import threading as _threading
-    _sip_thread = _threading.Thread(target=_sip.start, daemon=True, name="sip-client-start")
-    _sip_thread.start()
-    app.state.sip_client = _sip
-    logger.info("SIP client start dispatched (background thread)")
+    # ── FreeSWITCH ESL Outbound Server ────────────────────────────────────────
+    # FreeSWITCH registers to COMtrexx over SIP/TLS (gateway XML config).
+    # When a call arrives, FS connects here via the dialplan socket app.
+    from voice.esl_client import ESLOutboundServer
+    from voice.esl_call_handler import handle_esl_call
+    from api.phone import phone_state as _phone_state
+    from voice import config as _voice_config
+    from pathlib import Path as _Path
+
+    # ── validate audio temp directory ─────────────────────────────────────────
+    _audio_dir = _Path(_voice_config.FREESWITCH_AUDIO_TEMP_DIR).resolve()
+    _audio_dir.mkdir(parents=True, exist_ok=True)
+    _write_test = _audio_dir / ".write_test"
+    try:
+        _write_test.write_text("ok")
+        _write_test.unlink()
+        logger.info("ESL audio directory writable: %s", _audio_dir)
+    except OSError as _e:
+        logger.error(
+            "ESL audio directory NOT writable (%s): %s — calls will fail to record!",
+            _audio_dir, _e,
+        )
+
+    # ── validate FreeSWITCH ESL inbound connectivity ───────────────────────────
+    from voice.esl_client import send_api_command as _esl_cmd
+    _fs_status = _esl_cmd("status")
+    if _fs_status:
+        logger.info("FreeSWITCH ESL inbound connection OK")
+    else:
+        logger.warning(
+            "FreeSWITCH ESL inbound unreachable at %s:%d — "
+            "escalation transfers will fail until FS is running.",
+            _voice_config.FREESWITCH_ESL_HOST,
+            _voice_config.FREESWITCH_ESL_PORT,
+        )
+
+    # Bind to 0.0.0.0 so FreeSWITCH can reach us from any network interface
+    # (needed when FS runs in Docker/WSL2 and Python runs on the LAN interface).
+    # Restrict access at the firewall/FS dialplan level instead.
+    _esl_server = ESLOutboundServer(
+        host="0.0.0.0",
+        port=_voice_config.FREESWITCH_ESL_OUTBOUND_PORT,
+        call_callback=lambda h: handle_esl_call(h, _phone_state),
+    )
+    _esl_server.start_background()
+    app.state.esl_server = _esl_server
+    logger.info(
+        "ESL Outbound Server listening on 0.0.0.0:%d",
+        _voice_config.FREESWITCH_ESL_OUTBOUND_PORT,
+    )
 
     # Ensure required directories exist
     config.ensure_directories()
@@ -69,8 +110,8 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Shutting down OrganAIzer Services API")
-    if hasattr(app.state, "sip_client"):
-        app.state.sip_client.stop()
+    if hasattr(app.state, "esl_server"):
+        app.state.esl_server.stop()
 
 
 # Create FastAPI application with lifespan handler

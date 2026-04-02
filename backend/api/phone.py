@@ -32,8 +32,8 @@ phone_state: dict = {
     "active_call":   None,   # None or {"caller": str, "started_at": str}
     "ringing_call":  None,   # None or {"caller": str, "caller_name": str|None,
                              #          "ringing_since": str, "direction": "inbound"|"outbound"}
-    "whisper_queue": [],     # list[str] — operator instructions injected into the next LLM turn
-    "bridge_call":   None,   # VoIPCall object when operator is talking through the browser
+    "whisper_queue": _queue.Queue(),  # thread-safe queue of operator instructions
+    "bridge_call":   None,   # ESLOutboundHandler when operator takes the call
 }
 
 # ── ring decision synchronisation ─────────────────────────────────────────────
@@ -280,7 +280,7 @@ async def whisper(request: WhisperRequest):
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={"code": "EMPTY_INSTRUCTION", "message": "Instruction cannot be empty."},
         )
-    phone_state["whisper_queue"].append(instruction)
+    phone_state["whisper_queue"].put_nowait(instruction)
     logger.info("Operator whisper queued: %s", instruction[:120])
     return {"status": "queued", "instruction": instruction}
 
@@ -295,9 +295,19 @@ async def call_audio_ws(websocket: WebSocket):
       - Each message is a raw 320-byte chunk of 16-bit signed PCM, 8 kHz, mono.
         (160 samples × 2 bytes — one 20 ms RTP frame, same format as pyVoIP.)
     """
-    from pyVoIP.VoIP import CallState as _CS
+    # pyVoIP is no longer used (replaced by FreeSWITCH ESL).
+    # The operator audio bridge over ESL is not yet implemented.
+    try:
+        from pyVoIP.VoIP import CallState as _CS
+        _pyvoip_available = True
+    except ImportError:
+        _pyvoip_available = False
 
     await websocket.accept()
+
+    if not _pyvoip_available:
+        await websocket.close(1011, "Operator audio bridge not available (pyVoIP removed; ESL bridge pending)")
+        return
 
     call = phone_state.get("bridge_call")
     if call is None or call.state == _CS.ENDED:
@@ -312,7 +322,7 @@ async def call_audio_ws(websocket: WebSocket):
 
     def _sip_reader():
         """Dedicated thread: pull PCM from pyVoIP and enqueue."""
-        while not stop_flag.is_set() and call.state != _CS.ENDED:
+        while not stop_flag.is_set() and getattr(call, "state", None) != _CS.ENDED:
             try:
                 pcm = call.read_audio(160, blocking=True)   # blocks ~20 ms
                 try:
@@ -340,12 +350,12 @@ async def call_audio_ws(websocket: WebSocket):
 
     async def recv_from_browser():
         """WebSocket → pyVoIP write_audio in 320-byte chunks."""
-        while not stop_flag.is_set() and call.state != _CS.ENDED:
+        while not stop_flag.is_set() and getattr(call, "state", None) != _CS.ENDED:
             try:
                 data = await asyncio.wait_for(websocket.receive_bytes(), timeout=1.0)
                 for i in range(0, len(data), 320):
                     chunk = data[i: i + 320]
-                    if len(chunk) == 320 and call.state != _CS.ENDED:
+                    if len(chunk) == 320 and getattr(call, "state", None) != _CS.ENDED:
                         call.write_audio(chunk)
             except asyncio.TimeoutError:
                 continue
