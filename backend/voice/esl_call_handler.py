@@ -278,7 +278,8 @@ def _conversation_loop(
                     logger.info("Consent response: %r", consent_text)
                     yes_words = {"ja", "yes", "jo", "jep", "klar", "natürlich",
                                  "einverstanden", "ok", "okay", "gerne", "sure"}
-                    recording_consent = bool(set(consent_text.split()) & yes_words)
+                    words = set(w.strip(".,!?;:") for w in consent_text.split())
+                    recording_consent = bool(words & yes_words)
 
             logger.info("Recording consent: %s", recording_consent)
 
@@ -363,7 +364,8 @@ def handle_esl_call(handler, phone_state: dict) -> None:
     if not caller_name:
         fs_name = handler.get_caller_name()
         if fs_name and fs_name.upper() not in ("UNKNOWN", "ANONYMOUS", ""):
-            caller_name = fs_name
+            from urllib.parse import unquote
+            caller_name = unquote(fs_name)
     display = caller_name or caller
 
     logger.info(
