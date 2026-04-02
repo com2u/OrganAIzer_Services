@@ -6,6 +6,7 @@ import logging
 import os
 import json
 import base64
+import hashlib
 import re
 import secrets
 from pathlib import Path
@@ -161,14 +162,27 @@ async def google_auth_start(user_id: str = Query("default_user")):
         
         # Generate state token for CSRF protection
         state = secrets.token_urlsafe(32)
-        _oauth_states[state] = {"user_id": user_id, "timestamp": datetime.now()}
-        
+
+        # Generate PKCE code_verifier + code_challenge (required by Google)
+        code_verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b'=').decode()
+        code_challenge = base64.urlsafe_b64encode(
+            hashlib.sha256(code_verifier.encode()).digest()
+        ).rstrip(b'=').decode()
+
+        _oauth_states[state] = {
+            "user_id": user_id,
+            "timestamp": datetime.now(),
+            "code_verifier": code_verifier,
+        }
+
         # Get authorization URL
         authorization_url, _ = flow.authorization_url(
             access_type='offline',
             include_granted_scopes='true',
             state=state,
-            prompt='consent'  # Force consent to get refresh token
+            prompt='consent',
+            code_challenge=code_challenge,
+            code_challenge_method='S256',
         )
         
         logger.info(f"✅ Generated OAuth URL for user {user_id}")
@@ -228,8 +242,12 @@ async def google_auth_callback(code: str = Query(...), state: str = Query(...)):
             state=state
         )
         
-        # Exchange authorization code for tokens
-        flow.fetch_token(code=code)
+        # Exchange authorization code for tokens (include PKCE verifier if present)
+        code_verifier = user_data.get("code_verifier")
+        fetch_kwargs = {"code": code}
+        if code_verifier:
+            fetch_kwargs["code_verifier"] = code_verifier
+        flow.fetch_token(**fetch_kwargs)
         
         credentials = flow.credentials
         
