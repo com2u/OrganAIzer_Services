@@ -20,6 +20,10 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional
 
+import base64
+import os
+from email.mime.audio import MIMEAudio
+
 import httpx
 
 from voice import config
@@ -96,8 +100,66 @@ async def _llm_summary(
     return ""
 
 
-def _send_smtp_email(subject: str, body: str) -> bool:
-    """Send an email via SMTP. Returns True on success."""
+def _send_via_gmail(subject: str, body: str, recording_path: Optional[str] = None) -> bool:
+    """Send email using the stored Google OAuth token. Returns True on success."""
+    try:
+        from google.oauth2.credentials import Credentials
+        from googleapiclient.discovery import build
+        from utils.token_storage import get_token_storage
+    except ImportError:
+        return False
+
+    try:
+        token_data = get_token_storage().load_tokens("default_user", "google")
+        if not token_data:
+            logger.info("Gmail not connected — skipping Gmail send")
+            return False
+
+        creds = Credentials(
+            token=token_data.get("access_token"),
+            refresh_token=token_data.get("refresh_token"),
+            token_uri=token_data.get("token_uri"),
+            client_id=token_data.get("client_id"),
+            client_secret=token_data.get("client_secret"),
+            scopes=token_data.get("scopes"),
+        )
+
+        to_addr = config.ESCALATION_EMAIL_TO
+        if not to_addr:
+            logger.info("ESCALATION_EMAIL_TO not set — skipping Gmail send")
+            return False
+
+        if recording_path and os.path.exists(recording_path):
+            msg = MIMEMultipart("mixed")
+            msg.attach(MIMEText(body, "plain", "utf-8"))
+            with open(recording_path, "rb") as f:
+                audio_part = MIMEAudio(f.read(), _subtype="wav")
+            audio_part.add_header(
+                "Content-Disposition", "attachment",
+                filename=os.path.basename(recording_path),
+            )
+            msg.attach(audio_part)
+        else:
+            msg = MIMEMultipart("alternative")
+            msg.attach(MIMEText(body, "plain", "utf-8"))
+
+        msg["To"]      = to_addr
+        msg["Subject"] = subject
+
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+        service = build("gmail", "v1", credentials=creds)
+        service.users().messages().send(
+            userId="me", body={"raw": raw}
+        ).execute()
+        logger.info("Escalation email sent via Gmail to %s", to_addr)
+        return True
+    except Exception as exc:
+        logger.warning("Gmail send failed: %s", exc)
+        return False
+
+
+def _send_smtp_email(subject: str, body: str, recording_path: Optional[str] = None) -> bool:
+    """Send an email via SMTP with optional WAV attachment. Returns True on success."""
     if not all([
         config.ESCALATION_EMAIL_TO,
         config.ESCALATION_EMAIL_FROM,
@@ -111,11 +173,26 @@ def _send_smtp_email(subject: str, body: str) -> bool:
         )
         return False
 
-    msg = MIMEMultipart("alternative")
+    msg = MIMEMultipart("mixed")
     msg["Subject"] = subject
     msg["From"]    = config.ESCALATION_EMAIL_FROM
     msg["To"]      = config.ESCALATION_EMAIL_TO
     msg.attach(MIMEText(body, "plain", "utf-8"))
+
+    if recording_path and os.path.exists(recording_path):
+        try:
+            with open(recording_path, "rb") as f:
+                audio_data = f.read()
+            audio_part = MIMEAudio(audio_data, _subtype="wav")
+            audio_part.add_header(
+                "Content-Disposition",
+                "attachment",
+                filename=os.path.basename(recording_path),
+            )
+            msg.attach(audio_part)
+            logger.info("Recording attached: %s (%d bytes)", recording_path, len(audio_data))
+        except Exception as exc:
+            logger.warning("Could not attach recording: %s", exc)
 
     try:
         with smtplib.SMTP(config.ESCALATION_SMTP_HOST, config.ESCALATION_SMTP_PORT, timeout=15) as server:
@@ -198,6 +275,8 @@ def handle_escalation(
     started_at: datetime,
     call_uuid: str = "",
     esl_handler: Optional[ESLOutboundHandler] = None,
+    recording_consent: bool = False,
+    recording_path: Optional[str] = None,
 ) -> dict:
     """
     Full escalation flow called after the AI decides to escalate.
@@ -241,18 +320,23 @@ def handle_escalation(
     # 2. Send escalation email
     subject = f"KI-Eskalation: {display} – {escalation_reason or 'Eskalation'}"
     transcript_block = _format_transcript(transcript)
+    consent_line = "Ja" if recording_consent else "Nein"
     body = (
         f"Teleprofi-Fulda KI-Telefonassistent — Eskalation\n"
         f"{'=' * 50}\n\n"
-        f"Anrufer:        {display}\n"
-        f"Nummer:         {caller}\n"
-        f"Anrufbeginn:    {started_at.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
-        f"Dauer:          {duration_s}s\n"
-        f"Grund:          {escalation_reason or 'nicht angegeben'}\n\n"
+        f"Anrufer:              {display}\n"
+        f"Nummer:               {caller}\n"
+        f"Anrufbeginn:          {started_at.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+        f"Dauer:                {duration_s}s\n"
+        f"Grund:                {escalation_reason or 'nicht angegeben'}\n"
+        f"Aufzeichnung erlaubt: {consent_line}\n\n"
         f"Zusammenfassung:\n{summary}\n\n"
         f"Gesprächsverlauf:\n{transcript_block}\n"
     )
-    email_sent = _send_smtp_email(subject, body)
+    # Try Gmail OAuth first (no SMTP config needed), fall back to SMTP
+    email_sent = _send_via_gmail(subject, body, recording_path=recording_path)
+    if not email_sent:
+        email_sent = _send_smtp_email(subject, body, recording_path=recording_path)
 
     # 3. Transfer — try waiting room primary, then secondary.
     # Requires FREESWITCH_ESL_* env vars and FreeSWITCH running with a SIP route to COMtrexx.

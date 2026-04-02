@@ -167,6 +167,7 @@ def _conversation_loop(
     system_prompt: Optional[str],
     turn_count_ref: list[int],
     uuid: str,
+    call_rec_path: Optional[Path] = None,
 ) -> bool:
     """
     Core record → transcribe → LLM → speak loop.
@@ -248,16 +249,55 @@ def _conversation_loop(
         if reply.upper().startswith("ESCALATE:"):
             reason = reply[9:].strip()
             logger.info("Escalation triggered: %s", reason)
-            hold_msg = (
-                "One moment please, I'm transferring you now."
-                if conv_lang == "en"
-                else "Einen Moment bitte, ich leite Sie weiter."
-            )
-            _speak_and_play(handler, hold_msg)
 
-            # Generate LLM summary + send escalation email (fire-and-forget)
+            # ── recording consent ─────────────────────────────────────────────
+            consent_question = (
+                "Before I connect you with a team member — do you consent "
+                "to this call being recorded for quality purposes? "
+                "Please say yes or no."
+                if conv_lang == "en"
+                else "Bevor ich Sie weiterleite — sind Sie damit einverstanden, "
+                     "dass dieses Gespräch zu Qualitätszwecken aufgezeichnet wird? "
+                     "Bitte sagen Sie Ja oder Nein."
+            )
+            _speak_and_play(handler, consent_question, lang=conv_lang)
+
+            recording_consent = False
+            if not handler.is_hung_up:
+                consent_path = _audio_dir() / f"{uuid}_consent.wav"
+                consent_arg = (
+                    f"{_fs_path(consent_path)} "
+                    f"8 "           # max 8 seconds — just yes/no
+                    f"{_RECORD_SILENCE_THRESH} "
+                    f"25"           # 500 ms silence to stop
+                )
+                handler.execute("record", consent_arg, timeout=15.0)
+                if consent_path.exists():
+                    consent_text = transcribe_file(str(consent_path), lang=conv_lang).lower()
+                    _cleanup(str(consent_path))
+                    logger.info("Consent response: %r", consent_text)
+                    yes_words = {"ja", "yes", "jo", "jep", "klar", "natürlich",
+                                 "einverstanden", "ok", "okay", "gerne", "sure"}
+                    recording_consent = bool(set(consent_text.split()) & yes_words)
+
+            logger.info("Recording consent: %s", recording_consent)
+
+            hold_msg = (
+                "One moment please, I'm connecting you with a team member."
+                if conv_lang == "en"
+                else "Einen Moment bitte, ich leite Sie an einen Mitarbeiter weiter."
+            )
+            _speak_and_play(handler, hold_msg, lang=conv_lang)
+
+            # Stop the full-call recording so the file is finalised before emailing
+            if call_rec_path:
+                handler.execute("stop_record_session", _fs_path(call_rec_path), timeout=5.0)
+
+            # Generate LLM summary + send escalation email with recording attached
+            rec_file = str(call_rec_path) if call_rec_path and call_rec_path.exists() else None
             handle_escalation(caller, caller_name, history, reason, started_at,
-                              call_uuid=uuid)
+                              call_uuid=uuid, recording_consent=recording_consent,
+                              recording_path=rec_file)
 
             # Transfer via the already-open outbound socket — avoids the
             # inbound ESL API (port 8021) which may not be reachable from Windows.
@@ -390,6 +430,12 @@ def handle_esl_call(handler, phone_state: dict) -> None:
         handler.execute("set", "suppress_cng=true", timeout=5.0)
         handler.execute("set", "bridge_generate_comfort_noise=-1", timeout=5.0)
 
+        # ── start full-call background recording ──────────────────────────────
+        # Records the entire conversation to a single WAV file.
+        # Used for the escalation email attachment.
+        call_rec_path = _audio_dir() / f"{uuid}_call.wav"
+        handler.execute("record_session", _fs_path(call_rec_path), timeout=5.0)
+
         # ── greet ─────────────────────────────────────────────────────────────
         greeting = config.AI_GREETING
         if caller_name:
@@ -405,7 +451,7 @@ def handle_esl_call(handler, phone_state: dict) -> None:
             handler, history,
             caller=caller, caller_name=caller_name, started_at=started_at,
             system_prompt=None, turn_count_ref=turn_ref,
-            uuid=uuid,
+            uuid=uuid, call_rec_path=call_rec_path,
         )
         turn_count = turn_ref[0]
 
