@@ -271,87 +271,174 @@ async def whisper(request: WhisperRequest):
 @router.websocket("/call-audio")
 async def call_audio_ws(websocket: WebSocket):
     """
-    WebSocket audio bridge for operator-in-browser calls.
-    Connects only when phone_state["bridge_call"] is set (operator chose "I'll take it").
+    WebSocket audio bridge — operator talks to the caller through the browser.
 
-    Binary protocol (both directions):
-      - Each message is a raw 320-byte chunk of 16-bit signed PCM, 8 kHz, mono.
-        (160 samples × 2 bytes — one 20 ms RTP frame, same format as pyVoIP.)
+    Active only when phone_state["bridge_call"] is set (operator chose "I'll take it").
+
+    Wire protocol (both directions):
+      Each binary message is exactly 320 bytes of raw 16-bit signed PCM, 8 kHz, mono
+      (160 samples = 20 ms per frame).
+
+    Implementation:
+      Caller → browser: FreeSWITCH uuid_record writes a growing WAV file; Python
+                        tails it in 20-ms frames and forwards them over the WebSocket.
+      Browser → caller: incoming PCM frames are buffered, wrapped in a minimal WAV,
+                        and injected into the caller's leg via uuid_broadcast.
+      Both directions use the inbound ESL API channel (send_api_command) so the
+      per-call outbound ESL socket is not blocked.
     """
-    # pyVoIP is no longer used (replaced by FreeSWITCH ESL).
-    # The operator audio bridge over ESL is not yet implemented.
-    try:
-        from pyVoIP.VoIP import CallState as _CS
-        _pyvoip_available = True
-    except ImportError:
-        _pyvoip_available = False
-
     await websocket.accept()
 
-    if not _pyvoip_available:
-        await websocket.close(1011, "Operator audio bridge not available (pyVoIP removed; ESL bridge pending)")
-        return
-
-    call = phone_state.get("bridge_call")
-    if call is None or call.state == _CS.ENDED:
+    handler = phone_state.get("bridge_call")
+    if handler is None or handler.is_hung_up:
         await websocket.close(1008, "No active bridged call")
         return
 
-    logger.info("Operator audio bridge connected")
+    uuid = handler.get_uuid()
+    loop = asyncio.get_running_loop()
 
-    # Queue for SIP→browser direction (filled by a reader thread, drained by the coroutine)
-    sip_audio: _queue.Queue = _queue.Queue(maxsize=100)
-    stop_flag = threading.Event()
+    from pathlib import Path as _Path
+    import struct as _struct
+    from voice import config as _vc
+    from voice.esl_client import send_api_command
 
-    def _sip_reader():
-        """Dedicated thread: pull PCM from pyVoIP and enqueue."""
-        while not stop_flag.is_set() and getattr(call, "state", None) != _CS.ENDED:
+    def _to_fs_path(p: _Path) -> str:
+        """Windows absolute path → /mnt/<drive>/... for FreeSWITCH running in WSL."""
+        s = str(p)
+        if len(s) >= 2 and s[1] == ":":
+            return f"/mnt/{s[0].lower()}{s[2:].replace(chr(92), '/')}"
+        return s.replace("\\", "/")
+
+    audio_dir = _Path(_vc.FREESWITCH_AUDIO_TEMP_DIR).resolve()
+    audio_dir.mkdir(parents=True, exist_ok=True)
+
+    rec_wav = audio_dir / f"{uuid}_bridge.wav"
+
+    # Start recording the caller's leg to a growing WAV file via the ESL API channel.
+    # FS writes continuously; Python reads it like `tail -f`, sending 20-ms frames.
+    await loop.run_in_executor(
+        None, send_api_command, f"uuid_record {uuid} start {_to_fs_path(rec_wav)}"
+    )
+    logger.info("Operator bridge open: uuid=%s", uuid)
+
+    stop = asyncio.Event()
+    _op_seq = [0]   # mutable counter for operator WAV filenames
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+
+    def _write_wav(pcm: bytes, path: _Path, rate: int = 8000) -> None:
+        """Wrap raw s16le PCM in a minimal WAV file."""
+        n = len(pcm)
+        with open(path, "wb") as f:
+            f.write(b"RIFF")
+            f.write(_struct.pack("<I", 36 + n))
+            f.write(b"WAVE")
+            f.write(b"fmt ")
+            f.write(_struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16))
+            f.write(b"data")
+            f.write(_struct.pack("<I", n))
+            f.write(pcm)
+
+    async def _broadcast_op(pcm: bytes) -> None:
+        """Write operator PCM to a temp WAV and broadcast it to the caller's leg."""
+        seq = _op_seq[0]
+        _op_seq[0] += 1
+        wav = audio_dir / f"{uuid}_op_{seq}.wav"
+        await loop.run_in_executor(None, _write_wav, pcm, wav)
+        await loop.run_in_executor(
+            None, send_api_command,
+            f"uuid_broadcast {uuid} {_to_fs_path(wav)} aleg",
+        )
+        # Remove the temp file after generous playback headroom
+        async def _rm() -> None:
+            await asyncio.sleep(15)
             try:
-                pcm = call.read_audio(160, blocking=True)   # blocks ~20 ms
-                try:
-                    sip_audio.put_nowait(pcm)
-                except _queue.Full:
-                    pass   # drop frame if browser is too slow
+                wav.unlink(missing_ok=True)
             except Exception:
+                pass
+        asyncio.create_task(_rm())
+
+    # ── task: stream caller audio to browser ──────────────────────────────────
+
+    async def _stream_caller() -> None:
+        WAV_HEADER = 44     # standard WAV header size
+        FRAME = 320         # 20 ms @ 8 kHz, s16le, mono
+
+        # Wait up to 5 s for FS to create and populate the recording file
+        for _ in range(100):
+            if rec_wav.exists() and rec_wav.stat().st_size > WAV_HEADER:
                 break
-        stop_flag.set()
+            await asyncio.sleep(0.05)
 
-    reader = threading.Thread(target=_sip_reader, daemon=True, name="sip-audio-bridge-rx")
-    reader.start()
+        if not rec_wav.exists():
+            logger.warning("Bridge recorder: WAV never appeared for uuid=%s", uuid)
+            return
 
-    async def send_to_browser():
-        """Drain sip_audio queue → WebSocket."""
-        while not stop_flag.is_set():
+        read_pos = WAV_HEADER
+
+        def _read(pos: int) -> bytes:
             try:
-                pcm = sip_audio.get_nowait()
-                await websocket.send_bytes(pcm)
-            except _queue.Empty:
-                await asyncio.sleep(0.005)   # 5 ms poll — fine for 20 ms frames
-            except (WebSocketDisconnect, Exception):
-                break
-        stop_flag.set()
+                with open(rec_wav, "rb") as f:
+                    f.seek(pos)
+                    return f.read(FRAME * 8)   # up to 8 frames (160 ms) per syscall
+            except OSError:
+                return b""
 
-    async def recv_from_browser():
-        """WebSocket → pyVoIP write_audio in 320-byte chunks."""
-        while not stop_flag.is_set() and getattr(call, "state", None) != _CS.ENDED:
-            try:
-                data = await asyncio.wait_for(websocket.receive_bytes(), timeout=1.0)
-                for i in range(0, len(data), 320):
-                    chunk = data[i: i + 320]
-                    if len(chunk) == 320 and getattr(call, "state", None) != _CS.ENDED:
-                        call.write_audio(chunk)
-            except asyncio.TimeoutError:
+        while not stop.is_set() and not handler.is_hung_up:
+            raw = await loop.run_in_executor(None, _read, read_pos)
+            if not raw:
+                await asyncio.sleep(0.02)
                 continue
+            i = 0
+            while i + FRAME <= len(raw):
+                try:
+                    await websocket.send_bytes(raw[i: i + FRAME])
+                except Exception:
+                    stop.set()
+                    return
+                i += FRAME
+                read_pos += FRAME
+            if i < len(raw):
+                # Partial frame — wait for FS to write more
+                await asyncio.sleep(0.01)
+
+    # ── task: receive operator audio and play it to the caller ────────────────
+
+    async def _recv_operator() -> None:
+        FLUSH_BYTES = 8 * 320   # broadcast every 160 ms to balance latency vs overhead
+        buf = bytearray()
+        while not stop.is_set() and not handler.is_hung_up:
+            try:
+                data = await asyncio.wait_for(websocket.receive_bytes(), timeout=0.2)
+                buf.extend(data)
+                while len(buf) >= FLUSH_BYTES:
+                    await _broadcast_op(bytes(buf[:FLUSH_BYTES]))
+                    del buf[:FLUSH_BYTES]
+            except asyncio.TimeoutError:
+                # Flush any partial buffer so the caller hears the tail end of speech
+                if buf:
+                    await _broadcast_op(bytes(buf))
+                    buf.clear()
             except (WebSocketDisconnect, Exception):
                 break
-        stop_flag.set()
+        stop.set()
+
+    # ── run both directions concurrently ──────────────────────────────────────
 
     try:
-        await asyncio.gather(send_to_browser(), recv_from_browser())
+        await asyncio.gather(_stream_caller(), _recv_operator())
     finally:
-        stop_flag.set()
-        logger.info("Operator audio bridge disconnected")
+        stop.set()
+        await loop.run_in_executor(
+            None, send_api_command,
+            f"uuid_record {uuid} stop {_to_fs_path(rec_wav)}",
+        )
+        try:
+            rec_wav.unlink(missing_ok=True)
+        except Exception:
+            pass
         try:
             await websocket.close()
         except Exception:
             pass
+        logger.info("Operator bridge closed: uuid=%s", uuid)
