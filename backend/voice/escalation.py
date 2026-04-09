@@ -340,24 +340,34 @@ def handle_escalation(
 
     # 3. Transfer — try waiting room primary, then secondary.
     # Requires FREESWITCH_ESL_* env vars and FreeSWITCH running with a SIP route to COMtrexx.
+    #
+    # When esl_handler is provided the caller (_conversation_loop) already owns
+    # the outbound ESL socket and will execute the transfer itself immediately
+    # after this function returns.  Skip the transfer here to avoid a double
+    # attempt: one via uuid_transfer (inbound ESL / port 8021) and one via the
+    # outbound socket.  The actual blind transfer uses:
+    #   handler.execute("transfer", "<ext> XML default")
+    # which re-enters the FreeSWITCH default dialplan — 778/779 must therefore
+    # exist in that context and bridge to sofia/gateway/comtrexx/<ext>.
     transfer_target = ""
     transfer_ok = False
-    for candidate in (config.AI_WAITING_ROOM_PRIMARY, config.AI_WAITING_ROOM_SECONDARY):
-        if not candidate:
-            continue
-        transfer_ok = transfer_to_extension(candidate, call_uuid=call_uuid, handler=esl_handler)
-        if transfer_ok:
-            transfer_target = candidate
-            break
-        logger.info("Transfer to %s failed — trying next target", candidate)
+    if esl_handler is None:
+        for candidate in (config.AI_WAITING_ROOM_PRIMARY, config.AI_WAITING_ROOM_SECONDARY):
+            if not candidate:
+                continue
+            transfer_ok = transfer_to_extension(candidate, call_uuid=call_uuid, handler=None)
+            if transfer_ok:
+                transfer_target = candidate
+                break
+            logger.info("Transfer to %s failed — trying next target", candidate)
 
-    if not transfer_ok:
-        transfer_target = config.AI_WAITING_ROOM_PRIMARY or ""
-        logger.warning(
-            "Call transfer failed for caller %s — no waiting room extension reachable. "
-            "Email escalation is the only active handoff path.",
-            display,
-        )
+        if not transfer_ok:
+            transfer_target = config.AI_WAITING_ROOM_PRIMARY or ""
+            logger.warning(
+                "Call transfer failed for caller %s — no waiting room extension reachable. "
+                "Email escalation is the only active handoff path.",
+                display,
+            )
 
     logger.info(
         "Escalation handled: caller=%s reason=%s email_sent=%s transfer_target=%s transfer_ok=%s",

@@ -61,9 +61,15 @@ AI_RECORD_SILENCE_THRESHOLD_MS: int = int(os.environ.get("AI_RECORD_SILENCE_THRE
 
 # ── FreeSWITCH ESL Outbound Socket ────────────────────────────────────────────
 # Port on which our Python app listens for FreeSWITCH outbound connections.
-# Configure the FS dialplan with: <action application="socket" data="127.0.0.1:8085 async full"/>
+# Configure the FS dialplan with: <action application="socket" data="HOST:8085 async full"/>
 FREESWITCH_ESL_OUTBOUND_PORT: int = int(
     os.environ.get("FREESWITCH_ESL_OUTBOUND_PORT", "8085")
+)
+# IP that FreeSWITCH uses to connect back to Python (used in originate commands).
+# When FS runs in WSL2 and Python on Windows, this is the WSL2 gateway (Windows host IP).
+# Find it in WSL2: cat /etc/resolv.conf | grep nameserver
+FREESWITCH_ESL_OUTBOUND_HOST: str = os.environ.get(
+    "FREESWITCH_ESL_OUTBOUND_HOST", "172.21.224.1"
 )
 # Directory for temporary WAV files exchanged with FreeSWITCH (recordings + TTS).
 # Must be writable by the Python process and readable by FreeSWITCH.
@@ -78,6 +84,18 @@ LLM_MODEL: str            = os.environ.get("MODEL", "google/gemini-2.5-pro-previ
 
 # ── Contacts ─────────────────────────────────────────────────────────────────
 CONTACTS_FILE: str        = os.environ.get("CONTACTS_FILE", "AI_Phone_Contacts.xlsx")
+
+# ── Company Profile (Layer 2 — injectable per client via .env) ───────────────
+# Swap these variables per deployment. The AI core behaviour (Layer 1) in
+# llm_bridge.py stays untouched; only these values change per client.
+AI_COMPANY_NAME: str        = os.environ.get("AI_COMPANY_NAME", "")
+AI_COMPANY_DESCRIPTION: str = os.environ.get("AI_COMPANY_DESCRIPTION", "")
+# Pipe-separated list of services/products, e.g. "VoIP|Headsets|Support"
+AI_COMPANY_SERVICES: str    = os.environ.get("AI_COMPANY_SERVICES", "")
+AI_COMPANY_HOURS: str       = os.environ.get("AI_COMPANY_HOURS", "")
+AI_COMPANY_LOCATION: str    = os.environ.get("AI_COMPANY_LOCATION", "")
+# Free-text notes: pricing policy, legacy systems, special instructions
+AI_COMPANY_EXTRA: str       = os.environ.get("AI_COMPANY_EXTRA", "")
 
 # ── Validation (called at startup) ───────────────────────────────────────────
 REQUIRED = {

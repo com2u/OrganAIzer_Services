@@ -1,0 +1,46 @@
+<include>
+  <!--
+    default_transfer_dialplan.xml
+    Routes AI escalation transfers (778, 779) from FreeSWITCH to COMtrexx.
+
+    DEPLOY TO (WSL2 Debian12 or wherever FreeSWITCH runs):
+      /etc/freeswitch/dialplan/default/10_comtrexx_transfer.xml
+
+    APPLY WITH (in fs_cli):
+      reloadxml
+
+    HOW IT WORKS:
+      When _conversation_loop escalates a call it executes:
+        handler.execute("transfer", "778 XML default")
+      or
+        handler.execute("transfer", "779 XML default")
+
+      FreeSWITCH re-enters the "default" dialplan context with destination 778
+      or 779.  Without this file there is no route and the call drops with
+      NO_ROUTE_DESTINATION.
+
+      This extension matches 778 and 779, sets hangup_after_bridge so the
+      channel cleans up when COMtrexx hangs up, then bridges to COMtrexx via
+      the named gateway (defined in comtrexx_gateway.xml).
+
+    PREREQUISITES:
+      - comtrexx gateway registered and REACHABLE (sofia status gateway comtrexx)
+      - 778 / 779 must be valid destinations on COMtrexx (group, queue, extension)
+      - No COMtrexx dial-plan permission changes are needed for a blind transfer;
+        "Offene Rückfrage" is NOT required (that is a consultation-hold feature
+        unrelated to this blind forward)
+
+    NOTE ON FUTURE METADATA:
+      To pass caller context to the receiving phone, set SIP headers before the
+      transfer fires (in esl_call_handler.py, before handler.execute("transfer")):
+        handler.execute("set", "sip_h_X-AI-Caller=<number>")
+        handler.execute("set", "sip_h_X-AI-Reason=<reason>")
+      Whether COMtrexx surfaces these depends on the endpoint model.
+  -->
+  <extension name="comtrexx_ai_transfer">
+    <condition field="destination_number" expression="^(77[89])$">
+      <action application="set"    data="hangup_after_bridge=true"/>
+      <action application="bridge" data="sofia/gateway/comtrexx/$1"/>
+    </condition>
+  </extension>
+</include>

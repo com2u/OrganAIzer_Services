@@ -56,6 +56,74 @@ def _detect_lang(text: str) -> str:
     return "en"
 
 
+# ── filler phrase cache ───────────────────────────────────────────────────────
+# Pre-generated WAV files played immediately after recording ends, while the
+# STT + LLM + TTS pipeline runs in the background. Eliminates the silence gap
+# the caller hears during processing.
+# Multiple phrases per language are rotated round-robin so the caller never
+# hears the same phrase twice in a row.
+_FILLER_TEXTS: dict[str, list[str]] = {
+    "de": [
+        "Einen Moment bitte.",
+        "Ich schaue das kurz nach.",
+        "Einen Augenblick.",
+        "Kurz Geduld bitte.",
+        "Ich bin gleich bei Ihnen.",
+    ],
+    "en": [
+        "One moment please.",
+        "Let me check that for you.",
+        "Just a moment.",
+        "Bear with me.",
+        "Right with you.",
+    ],
+}
+
+_filler_wavs:  dict[str, list[str]] = {}  # lang → list of WAV paths
+_filler_index: dict[str, int]       = {}  # lang → next index
+_filler_lock = threading.Lock()
+
+
+def _build_filler_pool(lang: str) -> None:
+    """Generate all WAVs for *lang* and store them. Called from background thread."""
+    texts = _FILLER_TEXTS.get(lang, _FILLER_TEXTS["de"])
+    paths = []
+    for text in texts:
+        path = speak_to_file(text, lang=lang)
+        if path:
+            paths.append(path)
+    with _filler_lock:
+        _filler_wavs[lang] = paths
+        _filler_index[lang] = 0
+    logger.debug("Filler pool ready for lang=%s (%d phrases)", lang, len(paths))
+
+
+def _get_filler_wav(lang: str) -> str:
+    """Return the next filler WAV path for *lang*, rotating through the pool."""
+    with _filler_lock:
+        pool = _filler_wavs.get(lang)
+        if pool is None:
+            # Pool not ready yet — fall back silently (background thread will fix it)
+            return ""
+        if not pool:
+            return ""
+        idx = _filler_index.get(lang, 0)
+        _filler_index[lang] = (idx + 1) % len(pool)
+        return pool[idx]
+
+
+def prewarm_fillers() -> None:
+    """Pre-generate filler WAVs for all languages at startup.
+    Call once from the server startup path so language switches never block."""
+    for lang in _FILLER_TEXTS:
+        threading.Thread(
+            target=_build_filler_pool,
+            args=(lang,),
+            daemon=True,
+            name=f"filler-prewarm-{lang}",
+        ).start()
+
+
 # ── recording parameters ──────────────────────────────────────────────────────
 # FS record app args: <max_seconds> <silence_threshold_ms> <silence_timeout_ms>
 # silence_threshold_ms: energy level below which audio counts as silence (200 = default)
@@ -210,40 +278,97 @@ def _conversation_loop(
             _cleanup(str(rec_path))
             continue
 
-        # ── transcribe — use current conversation language as Whisper hint ────
-        text = ""
-        if rec_path.exists():
-            text = transcribe_file(str(rec_path), lang=conv_lang)
-        _cleanup(str(rec_path))
+        # ── background: STT + LLM + TTS while filler plays ───────────────────
+        # Start processing immediately after recording ends. The filler phrase
+        # plays on the channel while Whisper + LLM + edge-tts run in parallel,
+        # eliminating most of the silence gap the caller would otherwise hear.
+        _proc: dict = {"text": "", "reply": "", "wav": "", "lang": conv_lang}
+        _proc_done = threading.Event()
 
-        if not text:
+        def _process_turn(
+            _rec=str(rec_path),
+            _lang=conv_lang,
+            _cn=caller_name,
+            _sp=system_prompt,
+        ) -> None:
+            t = ""
+            if Path(_rec).exists():
+                t = transcribe_file(_rec, lang=_lang)
+            _cleanup(_rec)
+            if not t:
+                _proc_done.set()
+                return
+            _proc["text"] = t
+            extra = _drain_whisper_queue()
+            try:
+                r = asyncio.run(
+                    get_response(
+                        history, t,
+                        caller_name=_cn,
+                        system_prompt=_sp,
+                        system_extra=extra,
+                    )
+                )
+            except Exception as exc:
+                logger.error("LLM error: %s", exc)
+                r = (
+                    "Es tut mir leid, es gab ein technisches Problem. Bitte versuchen Sie es erneut."
+                    if _lang == "de"
+                    else "I'm sorry, there was a technical issue. Please try again."
+                )
+            _proc["reply"] = r
+            reply_lang = _detect_lang(r)
+            _proc["lang"] = reply_lang
+            # Pre-generate TTS unless the LLM triggered a special action
+            # (ESCALATE / HANGUP replies are never spoken directly to the caller)
+            if not r.upper().startswith("ESCALATE:") and not r.upper().startswith("HANGUP:"):
+                wav = speak_to_file(r, lang=reply_lang)
+                _proc["wav"] = wav
+            _proc_done.set()
+
+        threading.Thread(
+            target=_process_turn, daemon=True, name=f"proc-t{turn}"
+        ).start()
+
+        # Play filler immediately — caller hears "Einen Moment bitte." instead
+        # of silence while the heavy processing runs in the background.
+        filler = _get_filler_wav(conv_lang)
+        if filler and not handler.is_hung_up:
+            handler.execute("playback", _fs_path(Path(filler)), timeout=10.0)
+
+        # Wait for background thread (usually already done by the time
+        # the filler finishes playing)
+        _proc_done.wait(timeout=20.0)
+
+        if handler.is_hung_up:
+            if _proc.get("wav"):
+                _cleanup(_proc["wav"])
+            break
+
+        if not _proc["text"]:
             # Silent / empty recording — record again
             continue
 
         turn_count_ref[0] += 1
         turn += 1
+        text  = _proc["text"]
+        reply = _proc["reply"]
+        conv_lang = _proc["lang"]
+
         logger.info("[Turn %d] Caller: %s", turn_count_ref[0], text)
-
-        # ── LLM ──────────────────────────────────────────────────────────────
-        whisper_extra = _drain_whisper_queue()
-        try:
-            reply = asyncio.run(
-                get_response(
-                    history,
-                    text,
-                    caller_name=caller_name,
-                    system_prompt=system_prompt,
-                    system_extra=whisper_extra,
-                )
-            )
-        except Exception as exc:
-            logger.error("LLM error: %s", exc)
-            reply = "Es tut mir leid, es gab ein technisches Problem. Bitte versuchen Sie es erneut."
-
         logger.info("[Turn %d] AI: %s", turn_count_ref[0], reply)
 
-        # Update conversation language based on what the AI just replied with
-        conv_lang = _detect_lang(reply)
+        # ── hangup trigger (off-topic dead end — no consent, no email) ──────────
+        if reply.upper().startswith("HANGUP:"):
+            reason = reply[7:].strip()
+            logger.info("Hangup triggered (off-topic): %s", reason)
+            farewell = (
+                "Thank you for calling. Have a good day. Goodbye!"
+                if conv_lang == "en"
+                else "Vielen Dank für Ihren Anruf. Auf Wiederhören!"
+            )
+            _speak_and_play(handler, farewell, lang=conv_lang)
+            break
 
         # ── escalation trigger ────────────────────────────────────────────────
         if reply.upper().startswith("ESCALATE:"):
@@ -294,26 +419,37 @@ def _conversation_loop(
             if call_rec_path:
                 handler.execute("stop_record_session", _fs_path(call_rec_path), timeout=5.0)
 
-            # Generate LLM summary + send escalation email with recording attached
+            # Generate LLM summary + send escalation email with recording attached.
+            # Pass esl_handler so handle_escalation skips its own transfer attempt —
+            # the transfer below (outbound socket, "ext XML default") is the
+            # single authoritative handoff.
             rec_file = str(call_rec_path) if call_rec_path and call_rec_path.exists() else None
             handle_escalation(caller, caller_name, history, reason, started_at,
-                              call_uuid=uuid, recording_consent=recording_consent,
+                              call_uuid=uuid, esl_handler=handler,
+                              recording_consent=recording_consent,
                               recording_path=rec_file)
 
-            # Transfer via the already-open outbound socket — avoids the
-            # inbound ESL API (port 8021) which may not be reachable from Windows.
+            # Park the call at COMtrexx orbit 778/779 using SIP REFER (deflect).
+            # Since 003010 is an internal COMtrexx extension, a REFER to a park
+            # orbit is accepted. A direct bridge INVITE to 778 is rejected by
+            # COMtrexx (cause 88 INCOMPATIBLE_DESTINATION) — deflect is the
+            # correct mechanism.
+            # COMtrexx must be configured: park orbit 778 timeout = 10 min,
+            # on-timeout forward → 003010 (so the AI can handle the fallback).
             transferred = False
             for ext in filter(None, [
                 config.AI_WAITING_ROOM_PRIMARY,
                 config.AI_WAITING_ROOM_SECONDARY,
             ]):
-                logger.info("Transferring call to extension %s via outbound socket", ext)
-                completed = handler.execute("transfer", f"{ext} XML default", timeout=15.0)
+                logger.info("Parking call at COMtrexx orbit %s via SIP REFER", ext)
+                completed = handler.execute(
+                    "deflect", f"sip:{ext}@{config.COMTREXX_IP}", timeout=15.0
+                )
                 if completed or handler.is_hung_up:
                     transferred = True
-                    logger.info("Transfer to extension %s succeeded", ext)
+                    logger.info("Deflect to park orbit %s succeeded", ext)
                     break
-                logger.warning("Transfer to %s did not complete, trying next", ext)
+                logger.warning("Deflect to orbit %s did not complete, trying next", ext)
 
             if not transferred:
                 farewell = (
@@ -326,16 +462,27 @@ def _conversation_loop(
                 _speak_and_play(handler, farewell)
             return True
 
-        # ── speak reply ───────────────────────────────────────────────────────
-        _speak_and_play(handler, reply)
+        # ── speak reply (WAV already generated in background thread) ─────────
+        if _proc.get("wav"):
+            try:
+                handler.execute(
+                    "playback", _fs_path(Path(_proc["wav"])),
+                    timeout=_PLAYBACK_TIMEOUT,
+                )
+            finally:
+                _cleanup(_proc["wav"])
 
     return False
 
 
 def handle_esl_call(handler, phone_state: dict) -> None:
     """
-    Handle a single inbound ESL call end-to-end.
+    Handle an inbound or outbound ESL call end-to-end.
     Called by ESLOutboundServer._handle_connection in a dedicated daemon thread.
+
+    Outbound calls (originated via voice/outbound.py) are identified by UUID
+    match against the pending context table.  All other calls are treated as
+    inbound from COMtrexx.
 
     Args:
         handler:     ESLOutboundHandler for this call.
@@ -343,6 +490,7 @@ def handle_esl_call(handler, phone_state: dict) -> None:
     """
     from datetime import datetime, timezone
     from api.phone import wait_for_ring_decision
+    from voice.outbound import pop_outbound_context
 
     started_at  = datetime.now(timezone.utc)
     uuid        = handler.get_uuid()
@@ -350,38 +498,85 @@ def handle_esl_call(handler, phone_state: dict) -> None:
     turn_count  = 0
     history     = new_history()
 
+    # ── check if this is an outbound call we originated ───────────────────────
+    outbound_ctx = pop_outbound_context(uuid)
+    is_outbound  = outbound_ctx is not None
+
     # ── reject if already busy ────────────────────────────────────────────────
     if phone_state.get("active_call") is not None or phone_state.get("ringing_call") is not None:
-        logger.info("Already busy — rejecting inbound call from %s", caller)
+        logger.info("Already busy — rejecting call uuid=%s", uuid)
         handler.hangup()
         return
 
     # ── resolve caller name ───────────────────────────────────────────────────
-    # Strip leading + and country codes for contact lookup
-    contact = _contacts.lookup_by_number(caller)
-    caller_name: Optional[str] = contact["name"] if contact else None
-    # Also try the caller name FS provided (may be available from COMtrexx)
-    if not caller_name:
-        fs_name = handler.get_caller_name()
-        if fs_name and fs_name.upper() not in ("UNKNOWN", "ANONYMOUS", ""):
-            from urllib.parse import unquote
-            caller_name = unquote(fs_name)
+    if is_outbound:
+        # For outbound, "caller" is the number we dialled
+        number = outbound_ctx["number"]
+        contact = _contacts.lookup_by_number(number)
+        caller_name: Optional[str] = contact["name"] if contact else outbound_ctx.get("display_name")
+        caller = number
+    else:
+        contact = _contacts.lookup_by_number(caller)
+        caller_name = contact["name"] if contact else None
+        if not caller_name:
+            fs_name = handler.get_caller_name()
+            if fs_name and fs_name.upper() not in ("UNKNOWN", "ANONYMOUS", ""):
+                from urllib.parse import unquote
+                caller_name = unquote(fs_name)
+
     display = caller_name or caller
 
     logger.info(
-        "Inbound ESL call: uuid=%s caller=%s (%s)",
+        "%s ESL call: uuid=%s number=%s (%s)",
+        "Outbound" if is_outbound else "Inbound",
         uuid, caller, caller_name or "unknown",
     )
 
     try:
-        # ── advertise ringing state + wait for operator decision ──────────────
+        if is_outbound:
+            # ── outbound: answer immediately, AI speaks first ─────────────────
+            phone_state["active_call"] = {
+                "caller":      caller,
+                "caller_name": caller_name,
+                "started_at":  started_at.isoformat(),
+                "mode":        "ai",
+                "direction":   "outbound",
+            }
+
+            ok = handler.execute("answer", timeout=10.0)
+            if not ok or handler.is_hung_up:
+                return
+
+            handler.execute("set", "suppress_cng=true", timeout=5.0)
+            handler.execute("set", "bridge_generate_comfort_noise=-1", timeout=5.0)
+
+            call_rec_path = _audio_dir() / f"{uuid}_call.wav"
+            handler.execute("record_session", _fs_path(call_rec_path), timeout=5.0)
+
+            greeting_lang = outbound_ctx.get("lang", "de")
+            _speak_and_play(handler, outbound_ctx["opening_line"], lang=greeting_lang)
+
+            if handler.is_hung_up:
+                return
+
+            turn_ref = [turn_count]
+            _conversation_loop(
+                handler, history,
+                caller=caller, caller_name=caller_name, started_at=started_at,
+                system_prompt=outbound_ctx["system_prompt"],
+                turn_count_ref=turn_ref,
+                uuid=uuid, call_rec_path=call_rec_path,
+            )
+            turn_count = turn_ref[0]
+            return
+
+        # ── inbound: advertise ringing + wait for operator decision ───────────
         phone_state["ringing_call"] = {
             "caller":        caller,
             "caller_name":   caller_name,
             "ringing_since": started_at.isoformat(),
             "direction":     "inbound",
         }
-        # Notify any configured webhook (runs in background, non-blocking)
         threading.Thread(
             target=_notify_ring_webhook,
             args=(caller, caller_name, started_at),
@@ -393,8 +588,6 @@ def handle_esl_call(handler, phone_state: dict) -> None:
         phone_state["ringing_call"] = None
 
         if decision == "human":
-            # Operator is picking up — answer so FS bridges the RTP, then park.
-            # The operator WebSocket bridge will handle audio from here.
             logger.info("Operator takes call from %s — answering and parking.", display)
             handler.execute("answer", timeout=10.0)
             phone_state["active_call"] = {
@@ -404,15 +597,13 @@ def handle_esl_call(handler, phone_state: dict) -> None:
                 "mode":        "human",
             }
             phone_state["bridge_call"] = handler
-            # Hold here until the call ends
             handler.wait_for_hangup()
             return
 
         if handler.is_hung_up:
-            # Caller hung up during the decision window
             return
 
-        # ── AI answers ────────────────────────────────────────────────────────
+        # ── AI answers inbound call ───────────────────────────────────────────
         logger.info("AI answering call from %s", display)
         phone_state["active_call"] = {
             "caller":      caller,

@@ -95,6 +95,9 @@ class ContactEntry(BaseModel):
 class DialRequest(BaseModel):
     number: str
     display_name: Optional[str] = None
+    opening_line: Optional[str] = None   # first thing the AI says when answered
+    lang: Optional[str] = None           # "de" or "en" — defaults to AI_LANGUAGE
+    system_prompt: Optional[str] = None  # override the default outbound system prompt
 
 
 class WhisperRequest(BaseModel):
@@ -159,71 +162,51 @@ async def get_contacts() -> list[ContactEntry]:
 @router.post("/dial")
 async def dial(request: DialRequest):
     """
-    Initiate an outbound call via the SIP client.
-    Returns 503 if the SIP client is not registered.
+    Initiate an AI-driven outbound call via FreeSWITCH ESL originate.
+
+    FreeSWITCH dials *number* through the COMtrexx gateway.  When the call is
+    answered, the AI speaks *opening_line* first, then continues the conversation
+    using the configured outbound system prompt.
+
+    Returns 409 if a call is already active.
+    Returns 502 if FreeSWITCH rejects the originate command.
     """
-    import threading
-    from fastapi import Request
+    from voice.outbound import originate_call
+    from voice.llm_bridge import OUTBOUND_SYSTEM_PROMPT
+    from voice import config as _vc
 
-    if not phone_state.get("registered"):
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "code": "SIP_NOT_CONNECTED",
-                "message": (
-                    "SIP client is not registered yet. "
-                    "Set COMTREXX_SIP_USER, COMTREXX_SIP_PASS, and COMTREXX_EXTENSION "
-                    "in backend/.env and restart the server."
-                ),
-            },
-        )
-
-    if phone_state.get("active_call") is not None:
+    if phone_state.get("active_call") is not None or phone_state.get("ringing_call") is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "CALL_IN_PROGRESS", "message": "A call is already active."},
         )
 
-    # Dispatch via the SIP client stored on app.state
-    from voice.call_handler import handle_call
-    from starlette.requests import Request as StarletteRequest
+    lang = request.lang or _vc.AI_LANGUAGE
+    system_prompt = request.system_prompt or OUTBOUND_SYSTEM_PROMPT
 
-    # Lazy import to avoid circular dependency at module load
-    try:
-        from main import app as _app
-        sip = getattr(_app.state, "sip_client", None)
-    except Exception:
-        sip = None
+    opening_line = request.opening_line or (
+        "Hello! This is the AI assistant from Teleprofi Fulda calling. "
+        "I hope I'm not disturbing you — do you have a moment?"
+        if lang == "en"
+        else "Guten Tag! Hier ist der KI-Assistent von Teleprofi Fulda. "
+             "Ich hoffe ich störe nicht — hätten Sie kurz einen Moment?"
+    )
 
-    if sip is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={"code": "SIP_NOT_READY", "message": "SIP client not initialised."},
-        )
+    success, result = originate_call(
+        number=request.number,
+        opening_line=opening_line,
+        system_prompt=system_prompt,
+        lang=lang,
+    )
 
-    call = sip.dial(request.number)
-    if call is None:
+    if not success:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail={"code": "DIAL_FAILED", "message": f"Failed to dial {request.number}."},
+            detail={"code": "DIAL_FAILED", "message": result},
         )
 
-    # Resolve display name from contacts if available
-    from voice import contacts as _contacts
-    contact = _contacts.lookup_by_number(request.number)
-    target_name = contact["name"] if contact else request.display_name
-
-    from voice.call_handler import handle_outbound_call
-    t = threading.Thread(
-        target=handle_outbound_call,
-        args=(call, phone_state, request.number, target_name),
-        name=f"ai-call-outbound-{request.number}",
-        daemon=True,
-    )
-    t.start()
-
-    logger.info("Outbound call started to %s", request.number)
-    return {"status": "dialing", "number": request.number}
+    logger.info("Outbound call initiated: number=%s uuid=%s", request.number, result)
+    return {"status": "dialing", "number": request.number, "uuid": result}
 
 
 @router.post("/ring/ai")
