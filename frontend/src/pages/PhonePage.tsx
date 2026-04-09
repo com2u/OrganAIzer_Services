@@ -98,11 +98,8 @@ function useCallDuration(startedAt: string | null): string {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
-    if (!startedAt) {
-      setElapsed(0);
-      if (intervalRef.current) clearInterval(intervalRef.current);
-      return;
-    }
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    if (!startedAt) return;
     const start = new Date(startedAt).getTime();
     const tick = () => setElapsed(Math.floor((Date.now() - start) / 1000));
     tick();
