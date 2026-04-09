@@ -39,6 +39,7 @@ async def lifespan(app: FastAPI):
     # When a call arrives, FS connects here via the dialplan socket app.
     from voice.esl_client import ESLOutboundServer
     from voice.esl_call_handler import handle_esl_call, prewarm_fillers
+    from voice.audio_bridge import prewarm_whisper
     from api.phone import phone_state as _phone_state
     from voice import config as _voice_config
     from pathlib import Path as _Path
@@ -84,6 +85,9 @@ async def lifespan(app: FastAPI):
     # Pre-generate filler WAVs for all languages in background threads so a
     # language switch mid-call never blocks the main call-handling thread.
     prewarm_fillers()
+    # Pre-load the phone call Whisper model (voice/audio_bridge.py) so the
+    # first inbound call does not pay the ~10s model load penalty.
+    prewarm_whisper()
     logger.info(
         "ESL Outbound Server listening on 0.0.0.0:%d",
         _voice_config.FREESWITCH_ESL_OUTBOUND_PORT,

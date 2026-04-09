@@ -287,18 +287,22 @@ def _conversation_loop(
 
         def _process_turn(
             _rec=str(rec_path),
-            _lang=conv_lang,
             _cn=caller_name,
             _sp=system_prompt,
         ) -> None:
-            t = ""
+            t, stt_lang = "", conv_lang
             if Path(_rec).exists():
-                t = transcribe_file(_rec, lang=_lang)
+                # Pass lang=None so Whisper auto-detects German vs English.
+                t, stt_lang = transcribe_file(_rec)
             _cleanup(_rec)
             if not t:
                 _proc_done.set()
                 return
             _proc["text"] = t
+            # Update language from STT detection immediately — the filler for
+            # this turn is already playing, but the NEXT turn's filler will use
+            # the correct language.
+            _proc["lang"] = stt_lang
             extra = _drain_whisper_queue()
             try:
                 r = asyncio.run(
@@ -313,16 +317,16 @@ def _conversation_loop(
                 logger.error("LLM error: %s", exc)
                 r = (
                     "Es tut mir leid, es gab ein technisches Problem. Bitte versuchen Sie es erneut."
-                    if _lang == "de"
+                    if stt_lang == "de"
                     else "I'm sorry, there was a technical issue. Please try again."
                 )
             _proc["reply"] = r
-            reply_lang = _detect_lang(r)
-            _proc["lang"] = reply_lang
+            # Refine language from LLM reply (handles mixed-language edge cases)
+            _proc["lang"] = _detect_lang(r)
             # Pre-generate TTS unless the LLM triggered a special action
-            # (ESCALATE / HANGUP replies are never spoken directly to the caller)
-            if not r.upper().startswith("ESCALATE:") and not r.upper().startswith("HANGUP:"):
-                wav = speak_to_file(r, lang=reply_lang)
+            # (ESCALATE replies are never spoken directly to the caller)
+            if not r.upper().startswith("ESCALATE:"):
+                wav = speak_to_file(r, lang=_proc["lang"])
                 _proc["wav"] = wav
             _proc_done.set()
 
@@ -358,18 +362,6 @@ def _conversation_loop(
         logger.info("[Turn %d] Caller: %s", turn_count_ref[0], text)
         logger.info("[Turn %d] AI: %s", turn_count_ref[0], reply)
 
-        # ── hangup trigger (off-topic dead end — no consent, no email) ──────────
-        if reply.upper().startswith("HANGUP:"):
-            reason = reply[7:].strip()
-            logger.info("Hangup triggered (off-topic): %s", reason)
-            farewell = (
-                "Thank you for calling. Have a good day. Goodbye!"
-                if conv_lang == "en"
-                else "Vielen Dank für Ihren Anruf. Auf Wiederhören!"
-            )
-            _speak_and_play(handler, farewell, lang=conv_lang)
-            break
-
         # ── escalation trigger ────────────────────────────────────────────────
         if reply.upper().startswith("ESCALATE:"):
             reason = reply[9:].strip()
@@ -398,7 +390,8 @@ def _conversation_loop(
                 )
                 handler.execute("record", consent_arg, timeout=15.0)
                 if consent_path.exists():
-                    consent_text = transcribe_file(str(consent_path), lang=conv_lang).lower()
+                    consent_text, _ = transcribe_file(str(consent_path), lang=conv_lang)
+                    consent_text = consent_text.lower()
                     _cleanup(str(consent_path))
                     logger.info("Consent response: %r", consent_text)
                     yes_words = {"ja", "yes", "jo", "jep", "klar", "natürlich",

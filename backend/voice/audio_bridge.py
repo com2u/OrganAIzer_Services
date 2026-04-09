@@ -12,8 +12,9 @@ Audio contract (matches pyVoIP G.711 µ-law internal format):
   pyVoIP's encode_pcmu/parse_pcmu use audioop width=1 (1 byte per sample).
   Silence = 0x80 (128).  Range = 0–255.  Do NOT use s16le here.
 
-STT: faster-whisper 'base' model (loaded lazily, kept in memory)
+STT: faster-whisper 'small' model (pre-warmed at startup, kept in memory)
      ~4× faster than openai-whisper on CPU; int8 quantised; built-in VAD filter.
+     'small' gives significantly better German accuracy than 'base' on phone audio.
 TTS: edge-tts (Microsoft neural, no API key) → MP3 → WAV via ffmpeg
 """
 
@@ -43,7 +44,7 @@ _SIP_SAMPLE_RATE   = 8_000   # Hz — legacy pyVoIP / G.711 path
 _ESL_SAMPLE_RATE   = 16_000  # Hz — FreeSWITCH ESL path (G722-compatible output)
 _WHISPER_RATE      = 16_000  # Hz — Whisper internal sample rate
 _SILENCE_THRESHOLD = 0.005   # RMS below this → treat as silence
-_WHISPER_MODEL     = "base"  # faster-whisper model size
+_WHISPER_MODEL     = "small"  # faster-whisper model size; 'small' >> 'base' for German phone audio
 
 # ── TTS voices (edge-tts neural voices, no API key required) ──────────────────
 # Override per deployment via AI_TTS_VOICE_DE / AI_TTS_VOICE_EN in .env.
@@ -56,14 +57,22 @@ _model: Optional[WhisperModel] = None
 
 
 def _get_model() -> WhisperModel:
-    """Load the faster-whisper model on first call; reuse on subsequent calls.
-    int8 quantisation gives ~4× speedup on CPU with no meaningful accuracy loss."""
+    """Return the faster-whisper model, loading it on first call.
+    int8 quantisation gives ~4× speedup on CPU with no meaningful accuracy loss.
+    Call prewarm_whisper() at startup to avoid a cold-start delay on the first call."""
     global _model
     if _model is None:
         logger.info("Loading faster-whisper model '%s' (first call)…", _WHISPER_MODEL)
         _model = WhisperModel(_WHISPER_MODEL, device="cpu", compute_type="int8")
         logger.info("faster-whisper model ready.")
     return _model
+
+
+def prewarm_whisper() -> None:
+    """Load the Whisper model now so the first call does not pay the load penalty.
+    Safe to call from a background thread at server startup."""
+    import threading
+    threading.Thread(target=_get_model, daemon=True, name="whisper-phone-prewarm").start()
 
 
 def _ffmpeg() -> str:
@@ -148,7 +157,8 @@ def transcribe(
     segments, _ = model.transcribe(
         audio,
         language=lang,
-        beam_size=1,        # greedy — fastest path on CPU
+        beam_size=5,                    # better accuracy vs beam_size=1 (greedy)
+        condition_on_previous_text=False,  # prevents hallucination cascades
     )
     text: str = " ".join(s.text for s in segments).strip()
     logger.info("Transcribed: %r", text[:120])
@@ -233,8 +243,8 @@ def speak(
 
 def transcribe_file(
     wav_path: str,
-    lang: str = AI_LANGUAGE,
-) -> str:
+    lang: Optional[str] = None,
+) -> tuple[str, str]:
     """
     Transcribe a WAV file recorded by FreeSWITCH to text using Whisper.
 
@@ -244,10 +254,14 @@ def transcribe_file(
 
     Args:
         wav_path: Absolute path to the WAV file produced by the FS record app.
-        lang:     BCP-47 language code passed to Whisper.
+        lang:     BCP-47 language code hint passed to Whisper, or None to
+                  auto-detect (recommended — lets callers switch between
+                  German and English without reconfiguring anything).
 
     Returns:
-        Transcribed text string, or "" if the file is silent or empty.
+        (text, detected_lang) — transcribed text (or "") and the ISO-639-1
+        language code Whisper detected (e.g. "de", "en").  Falls back to
+        AI_LANGUAGE if detection produces no result.
     """
     if not os.path.exists(wav_path):
         logger.warning("transcribe_file: file not found: %s", wav_path)
@@ -275,24 +289,27 @@ def transcribe_file(
 
     if rms < _SILENCE_THRESHOLD:
         logger.debug("transcribe_file: silent recording (RMS=%.4f), skipping", wav_path)
-        return ""
+        return "", AI_LANGUAGE
 
     model = _get_model()
-    logger.debug("transcribe_file: RMS=%.4f lang=%s path=%s", rms, lang, wav_path)
+    logger.debug("transcribe_file: RMS=%.4f lang=%s path=%s", rms, lang or "auto", wav_path)
 
-    # faster-whisper accepts a file path directly and resamples internally.
-    # vad_filter is intentionally off — FreeSWITCH recordings are already
-    # silence-trimmed by the record app, and Silero VAD can mis-classify
-    # speech on low-bitrate (8 kHz G.711) lines.  The RMS check above handles
-    # truly silent files before we reach the model.
-    segments, _ = model.transcribe(
+    # lang=None → Whisper auto-detects the language (German or English).
+    # vad_filter skips silent segments that slip past the RMS check above
+    # (e.g. 30 s recordings where the caller spoke only briefly at the start).
+    # condition_on_previous_text=False prevents hallucination cascades that show
+    # up as extreme compression ratios (20x) in the faster-whisper debug log.
+    segments, info = model.transcribe(
         wav_path,
         language=lang,
-        beam_size=1,
+        beam_size=5,
+        condition_on_previous_text=False,
+        vad_filter=True,
     )
     text: str = " ".join(s.text for s in segments).strip()
-    logger.info("Transcribed (file): %r", text[:120])
-    return text
+    detected: str = info.language or AI_LANGUAGE
+    logger.info("Transcribed (file): lang=%s %r", detected, text[:120])
+    return text, detected
 
 
 def speak_to_file(
