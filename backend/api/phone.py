@@ -34,6 +34,7 @@ phone_state: dict = {
                              #          "ringing_since": str, "direction": "inbound"|"outbound"}
     "whisper_queue": _queue.Queue(),  # thread-safe queue of operator instructions
     "bridge_call":   None,   # ESLOutboundHandler when operator takes the call
+    "esl_handler":   None,   # ESLOutboundHandler for the current call (AI or human)
 }
 
 # ── ring decision synchronisation ─────────────────────────────────────────────
@@ -266,6 +267,56 @@ async def whisper(request: WhisperRequest):
     phone_state["whisper_queue"].put_nowait(instruction)
     logger.info("Operator whisper queued: %s", instruction[:120])
     return {"status": "queued", "instruction": instruction}
+
+
+@router.post("/hangup")
+async def hangup():
+    """
+    Hang up the currently active call.
+    Works regardless of whether the call is in AI or human mode.
+    Returns 409 if no call is active.
+    """
+    handler = phone_state.get("esl_handler")
+    if handler is None or phone_state.get("active_call") is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "NO_ACTIVE_CALL", "message": "No call is currently active."},
+        )
+    handler.hangup()
+    logger.info("Operator hung up the call")
+    return {"status": "hanging_up"}
+
+
+@router.get("/log")
+async def get_call_log(limit: int = 50):
+    """
+    Return the most recent call log entries (newest first).
+    Reads from logs/call_log.jsonl written by voice/call_log.py.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    log_file = _Path(__file__).resolve().parent.parent / "logs" / "call_log.jsonl"
+    if not log_file.exists():
+        return []
+
+    try:
+        lines = log_file.read_text(encoding="utf-8").splitlines()
+        entries = []
+        for line in reversed(lines):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(_json.loads(line))
+            except _json.JSONDecodeError:
+                continue
+            if len(entries) >= limit:
+                break
+        return entries
+    except Exception as exc:
+        logger.error("Failed to read call log: %s", exc)
+        return []
 
 
 @router.websocket("/call-audio")

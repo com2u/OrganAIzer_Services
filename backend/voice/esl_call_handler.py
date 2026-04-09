@@ -495,6 +495,9 @@ def handle_esl_call(handler, phone_state: dict) -> None:
     outbound_ctx = pop_outbound_context(uuid)
     is_outbound  = outbound_ctx is not None
 
+    # ── store handler so the API can hang up at any time ─────────────────────
+    phone_state["esl_handler"] = handler
+
     # ── reject if already busy ────────────────────────────────────────────────
     if phone_state.get("active_call") is not None or phone_state.get("ringing_call") is not None:
         logger.info("Already busy — rejecting call uuid=%s", uuid)
@@ -649,6 +652,7 @@ def handle_esl_call(handler, phone_state: dict) -> None:
         phone_state["ringing_call"] = None
         phone_state["bridge_call"]  = None
         phone_state["active_call"]  = None
+        phone_state["esl_handler"]  = None
 
         if not handler.is_hung_up:
             handler.hangup()

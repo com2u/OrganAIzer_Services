@@ -79,6 +79,17 @@ interface Contact {
   status: string;
 }
 
+interface CallLogEntry {
+  ts: string;
+  direction: 'inbound' | 'outbound';
+  caller: string;
+  caller_name: string;
+  started_at: string;
+  duration_seconds: number;
+  turn_count: number;
+  summary: string;
+}
+
 const API_KEY      = (import.meta.env.VITE_API_KEY      as string) ?? '';
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string) ?? '';
 
@@ -116,6 +127,8 @@ export default function PhonePage() {
   const [ringDeciding, setRingDeciding] = useState(false);
   const [talking, setTalking]       = useState(false);
   const [talkError, setTalkError]   = useState<string | null>(null);
+  const [hangingUp, setHangingUp]   = useState(false);
+  const [callLog, setCallLog]       = useState<CallLogEntry[]>([]);
   const pollRef    = useRef<ReturnType<typeof setInterval> | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const workletRef  = useRef<AudioWorkletNode | null>(null);
@@ -147,9 +160,36 @@ export default function PhonePage() {
     }
   };
 
+  const fetchCallLog = async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/phone/log`, {
+        headers: { 'X-API-Key': API_KEY },
+      });
+      if (res.ok) setCallLog(await res.json());
+    } catch {
+      // silently ignore
+    }
+  };
+
+  const handleHangup = async () => {
+    setHangingUp(true);
+    try {
+      await fetch(`${API_BASE_URL}/api/phone/hangup`, {
+        method: 'POST',
+        headers: { 'X-API-Key': API_KEY },
+      });
+      await fetchStatus();
+    } catch {
+      // ignore
+    } finally {
+      setHangingUp(false);
+    }
+  };
+
   useEffect(() => {
     fetchStatus();
     fetchContacts();
+    fetchCallLog();
     pollRef.current = setInterval(fetchStatus, 5000);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, []);
@@ -185,9 +225,13 @@ export default function PhonePage() {
     setTalking(false);
   }, []);
 
-  // Stop audio bridge when call ends
+  // Stop audio bridge + refresh call log when call ends
+  const prevActiveRef = useRef<boolean>(false);
   useEffect(() => {
-    if (!status?.active_call && talking) stopTalking();
+    const isActive = !!status?.active_call;
+    if (!isActive && talking) stopTalking();
+    if (!isActive && prevActiveRef.current) fetchCallLog();
+    prevActiveRef.current = isActive;
   }, [status?.active_call, talking, stopTalking]);
 
   const startTalking = async () => {
@@ -366,7 +410,7 @@ export default function PhonePage() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wide text-green-700 mb-1">
-                  Active call
+                  Active call · {status.active_call.mode === 'ai' ? 'AI handling' : 'You are live'}
                 </p>
                 <p className="text-xl font-bold text-green-900">
                   {status.active_call.caller_name || status.active_call.caller}
@@ -375,9 +419,15 @@ export default function PhonePage() {
                   <p className="text-sm text-green-700">{status.active_call.caller}</p>
                 )}
               </div>
-              <div className="text-right">
+              <div className="text-right space-y-2">
                 <p className="text-3xl font-mono font-bold text-green-800">{duration}</p>
-                <p className="text-xs text-green-600 mt-0.5">duration</p>
+                <button
+                  onClick={handleHangup}
+                  disabled={hangingUp}
+                  className="block w-full px-3 py-1.5 bg-red-600 text-white rounded-lg text-xs font-medium hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 disabled:opacity-50 transition-colors"
+                >
+                  {hangingUp ? 'Hanging up…' : '📵 Hang up'}
+                </button>
               </div>
             </div>
 
@@ -530,6 +580,53 @@ export default function PhonePage() {
                 )}
               </div>
             </>
+          )}
+        </div>
+
+        {/* Call log */}
+        <div className="bg-white rounded-lg shadow-sm p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold text-gray-800">Recent calls</h2>
+            <button
+              onClick={fetchCallLog}
+              className="text-xs text-gray-500 hover:text-gray-700 underline"
+            >
+              Reload
+            </button>
+          </div>
+          {callLog.length === 0 ? (
+            <p className="text-sm text-gray-400 text-center py-6">No calls recorded yet.</p>
+          ) : (
+            <div className="divide-y divide-gray-100">
+              {callLog.map((entry, i) => {
+                const mins = Math.floor(entry.duration_seconds / 60);
+                const secs = (entry.duration_seconds % 60).toString().padStart(2, '0');
+                const dur  = mins > 0 ? `${mins}m ${secs}s` : `${entry.duration_seconds}s`;
+                const when = new Date(entry.ts).toLocaleString();
+                return (
+                  <div key={i} className="py-3 flex items-center justify-between gap-4">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-mono text-gray-400">
+                          {entry.direction === 'inbound' ? '↙' : '↗'}
+                        </span>
+                        <p className="text-sm font-medium text-gray-900 truncate">
+                          {entry.caller_name || entry.caller}
+                        </p>
+                        {entry.caller_name && (
+                          <p className="text-xs text-gray-400 font-mono hidden sm:block">{entry.caller}</p>
+                        )}
+                      </div>
+                      <p className="text-xs text-gray-400 mt-0.5">{when}</p>
+                    </div>
+                    <div className="text-right flex-shrink-0">
+                      <p className="text-sm font-mono text-gray-600">{dur}</p>
+                      <p className="text-xs text-gray-400">{entry.turn_count} turns</p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           )}
         </div>
 
