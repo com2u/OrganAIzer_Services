@@ -51,7 +51,14 @@ def originate_call(
         return False, "FREESWITCH_ESL_OUTBOUND_HOST is not set in .env"
 
     cid = caller_id or config.COMTREXX_CALLER_ID or ""
-    vars_parts = ["hangup_after_bridge=false"]
+    vars_parts = [
+        "hangup_after_bridge=false",
+        "rtp_secure_media=true",
+        # Do not treat ringback / early media as an answered call.
+        # Without this, FreeSWITCH connects the outbound socket immediately
+        # and the recording captures 30 s of ringback tone instead of speech.
+        "ignore_early_media=true",
+    ]
     if cid:
         vars_parts.append(f"origination_caller_id_number={cid}")
         vars_parts.append(f"origination_caller_id_name=Teleprofi+Fulda")

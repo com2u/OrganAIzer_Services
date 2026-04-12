@@ -23,6 +23,11 @@ const TABS: { id: PageType; label: string; active: string }[] = [
 export default function App() {
   const [currentPage, setCurrentPage] = useState<PageType>('executive');
 
+  const navigateTo = (page: PageType) => {
+    setCurrentPage(page);
+    window.scrollTo({ top: 0, behavior: 'instant' });
+  };
+
   return (
     <div className="min-h-screen bg-gray-100">
       <TopNav />
@@ -34,7 +39,7 @@ export default function App() {
             {TABS.map(({ id, label, active }) => (
               <button
                 key={id}
-                onClick={() => setCurrentPage(id)}
+                onClick={() => navigateTo(id)}
                 className={`py-3.5 px-5 font-medium text-sm border-b-2 whitespace-nowrap transition-colors ${
                   currentPage === id
                     ? active
@@ -49,7 +54,7 @@ export default function App() {
       </div>
 
       <main>
-        {currentPage === 'executive'    && <ExecutiveAgent onPageChange={p => setCurrentPage(p as PageType)} />}
+        {currentPage === 'executive'    && <ExecutiveAgent onPageChange={p => navigateTo(p as PageType)} />}
         {currentPage === 'tts'          && <TTSPage />}
         {currentPage === 'stt'          && <STTPage />}
         {currentPage === 'image-gen'    && <ImageGenPage />}

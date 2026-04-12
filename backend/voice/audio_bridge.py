@@ -288,7 +288,7 @@ def transcribe_file(
         rms = 1.0  # proceed if unreadable — let the model decide
 
     if rms < _SILENCE_THRESHOLD:
-        logger.debug("transcribe_file: silent recording (RMS=%.4f), skipping", wav_path)
+        logger.debug("transcribe_file: silent recording (RMS=%.4f) %s, skipping", rms, wav_path)
         return "", AI_LANGUAGE
 
     model = _get_model()
@@ -302,7 +302,7 @@ def transcribe_file(
     segments, info = model.transcribe(
         wav_path,
         language=lang,
-        beam_size=5,
+        beam_size=1,                    # greedy — 3-4× faster on CPU, minimal accuracy drop
         condition_on_previous_text=False,
         vad_filter=True,
     )

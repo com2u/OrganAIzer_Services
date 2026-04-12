@@ -1,8 +1,63 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
-// AudioWorklet processor source — downsamples mic (browser rate → 8 kHz int16)
-// and upsamples received SIP audio (8 kHz int16 → browser rate float32).
-const PHONE_WORKLET_SRC = `
+const API_KEY      = (import.meta.env.VITE_API_KEY      as string) ?? '';
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string) ?? '';
+
+// ── types ─────────────────────────────────────────────────────────────────────
+
+interface ActiveCall {
+  caller: string;
+  caller_name?: string;
+  started_at: string;
+  mode: 'ai' | 'human';
+}
+
+interface RingingCall {
+  caller: string;
+  caller_name?: string;
+  ringing_since: string;
+  direction: 'inbound' | 'outbound';
+}
+
+interface EscalationAlert {
+  caller: string;
+  caller_name?: string;
+  reason: string;
+  summary: string;
+  email_sent: boolean;
+  at: string;
+}
+
+interface PhoneStatus {
+  registered: boolean;
+  extension: string;
+  server: string;
+  active_call: ActiveCall | null;
+  ringing_call: RingingCall | null;
+  last_escalation: EscalationAlert | null;
+}
+
+interface Contact {
+  name: string;
+  number: string;
+  status: string;
+}
+
+interface CallLogEntry {
+  ts: string;
+  direction: 'inbound' | 'outbound';
+  caller: string;
+  caller_name: string;
+  started_at: string;
+  duration_seconds: number;
+  turn_count: number;
+  summary: string;
+}
+
+// ── audio worklet source (inline blob) ───────────────────────────────────────
+// Downsamples mic audio (browser rate → 8 kHz int16) for the SIP side,
+// and upsamples received 8 kHz int16 back to browser rate for playback.
+const WORKLET_SRC = `
 class PhoneProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
@@ -51,60 +106,33 @@ class PhoneProcessor extends AudioWorkletProcessor {
 registerProcessor('phone-processor', PhoneProcessor);
 `;
 
-interface ActiveCall {
-  caller: string;
-  caller_name?: string;
-  started_at: string;
-  mode: 'ai' | 'human';
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+// The backend may return `caller` as a plain string OR as a parsed SIP address
+// object {raw, tag, address, number, caller, host}. Extract a display string.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function callerStr(v: any): string {
+  if (!v) return '';
+  if (typeof v === 'string') return v;
+  if (typeof v === 'object')
+    return v.number || v.caller || v.address || v.raw || JSON.stringify(v);
+  return String(v);
 }
 
-interface RingingCall {
-  caller: string;
-  caller_name?: string;
-  ringing_since: string;
-  direction: 'inbound' | 'outbound';
-}
-
-interface PhoneStatus {
-  registered: boolean;
-  extension: string;
-  server: string;
-  active_call: ActiveCall | null;
-  ringing_call: RingingCall | null;
-}
-
-interface Contact {
-  name: string;
-  number: string;
-  status: string;
-}
-
-interface CallLogEntry {
-  ts: string;
-  direction: 'inbound' | 'outbound';
-  caller: string;
-  caller_name: string;
-  started_at: string;
-  duration_seconds: number;
-  turn_count: number;
-  summary: string;
-}
-
-const API_KEY      = (import.meta.env.VITE_API_KEY      as string) ?? '';
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string) ?? '';
+// ── call duration hook ────────────────────────────────────────────────────────
 
 function useCallDuration(startedAt: string | null): string {
   const [elapsed, setElapsed] = useState(0);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
-    if (intervalRef.current) clearInterval(intervalRef.current);
-    if (!startedAt) return;
-    const start = new Date(startedAt).getTime();
-    const tick = () => setElapsed(Math.floor((Date.now() - start) / 1000));
+    if (timerRef.current) clearInterval(timerRef.current);
+    if (!startedAt) { setElapsed(0); return; }
+    const origin = new Date(startedAt).getTime();
+    const tick = () => setElapsed(Math.floor((Date.now() - origin) / 1000));
     tick();
-    intervalRef.current = setInterval(tick, 1000);
-    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+    timerRef.current = setInterval(tick, 1000);
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
   }, [startedAt]);
 
   const m = Math.floor(elapsed / 60).toString().padStart(2, '0');
@@ -112,137 +140,185 @@ function useCallDuration(startedAt: string | null): string {
   return `${m}:${s}`;
 }
 
+// ── component ─────────────────────────────────────────────────────────────────
+
 export default function PhonePage() {
-  const [status, setStatus]       = useState<PhoneStatus | null>(null);
-  const [contacts, setContacts]   = useState<Contact[]>([]);
-  const [search, setSearch]       = useState('');
-  const [dialNumber, setDialNumber] = useState('');
-  const [dialError, setDialError] = useState<string | null>(null);
-  const [dialing, setDialing]     = useState(false);
-  const [whisper, setWhisper]       = useState('');
-  const [whisperSent, setWhisperSent] = useState(false);
-  const [ringDeciding, setRingDeciding] = useState(false);
-  const [talking, setTalking]       = useState(false);
-  const [talkError, setTalkError]   = useState<string | null>(null);
-  const [hangingUp, setHangingUp]   = useState(false);
-  const [callLog, setCallLog]       = useState<CallLogEntry[]>([]);
-  const pollRef    = useRef<ReturnType<typeof setInterval> | null>(null);
-  const audioCtxRef = useRef<AudioContext | null>(null);
+  const [status,   setStatus]   = useState<PhoneStatus | null>(null);
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [callLog,  setCallLog]  = useState<CallLogEntry[]>([]);
+  const [search,   setSearch]   = useState('');
+  const [dialNum,  setDialNum]  = useState('');
+  const [dialErr,  setDialErr]  = useState<string | null>(null);
+  const [dialing,  setDialing]  = useState(false);
+  const [deciding, setDeciding] = useState(false);
+  const [hangingUp, setHangingUp] = useState(false);
+  const [whisper,  setWhisper]  = useState('');
+  const [whisperOk, setWhisperOk] = useState(false);
+  const [talking,  setTalking]  = useState(false);
+  const [talkErr,  setTalkErr]  = useState<string | null>(null);
+
+  const pollRef     = useRef<ReturnType<typeof setInterval> | null>(null);
+  const ctxRef      = useRef<AudioContext | null>(null);
   const workletRef  = useRef<AudioWorkletNode | null>(null);
-  const wsAudioRef  = useRef<WebSocket | null>(null);
+  const wsRef       = useRef<WebSocket | null>(null);
+  const prevActive  = useRef(false);
 
   const duration = useCallDuration(
-    status?.active_call?.started_at ?? null
+    status?.active_call?.started_at
+      ? String(status.active_call.started_at)
+      : null
   );
 
-  const fetchStatus = async () => {
+  // ── API helpers ──────────────────────────────────────────────────────────────
+
+  const headers = () => ({ 'X-API-Key': API_KEY });
+  const jsonHeaders = () => ({ 'X-API-Key': API_KEY, 'Content-Type': 'application/json' });
+
+  const loadStatus = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE_URL}/api/phone/status`, {
-        headers: { 'X-API-Key': API_KEY },
+      const r = await fetch(`${API_BASE_URL}/api/phone/status`, { headers: headers() });
+      if (r.ok) setStatus(await r.json());
+    } catch { /* offline */ }
+  }, []);
+
+  const loadContacts = async () => {
+    try {
+      const r = await fetch(`${API_BASE_URL}/api/phone/contacts`, { headers: headers() });
+      if (r.ok) setContacts(await r.json());
+    } catch { setContacts([]); }
+  };
+
+  const loadCallLog = async () => {
+    try {
+      const r = await fetch(`${API_BASE_URL}/api/phone/log`, { headers: headers() });
+      if (r.ok) setCallLog(await r.json());
+    } catch { /* ignore */ }
+  };
+
+  // ── lifecycle ────────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    loadStatus();
+    loadContacts();
+    loadCallLog();
+    pollRef.current = setInterval(loadStatus, 5000);
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, [loadStatus]);
+
+  // Refresh call log and stop audio bridge when active call ends
+  useEffect(() => {
+    const isActive = !!status?.active_call;
+    if (!isActive && talking) stopTalking();
+    if (!isActive && prevActive.current) loadCallLog();
+    prevActive.current = isActive;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status?.active_call]);
+
+  // ── dial ─────────────────────────────────────────────────────────────────────
+
+  const handleDial = async (number: string) => {
+    const n = number.trim();
+    if (!n) return;
+    setDialing(true);
+    setDialErr(null);
+    try {
+      const r = await fetch(`${API_BASE_URL}/api/phone/dial`, {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({ number: n }),
       });
-      if (res.ok) setStatus(await res.json());
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        setDialErr(d?.detail?.message ?? `Error ${r.status}`);
+      }
     } catch {
-      // silently ignore — offline state is shown via status===null
+      setDialErr('Could not reach the backend.');
+    } finally {
+      setDialing(false);
     }
   };
 
-  const fetchContacts = async () => {
+  // ── ring decision ────────────────────────────────────────────────────────────
+
+  const handleRingDecision = async (decision: 'ai' | 'human') => {
+    setDeciding(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/api/phone/contacts`, {
-        headers: { 'X-API-Key': API_KEY },
+      await fetch(`${API_BASE_URL}/api/phone/ring/${decision}`, {
+        method: 'POST',
+        headers: headers(),
       });
-      if (res.ok) setContacts(await res.json());
-    } catch {
-      setContacts([]);
+      await loadStatus();
+    } catch { /* ignore */ } finally {
+      setDeciding(false);
     }
   };
 
-  const fetchCallLog = async () => {
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/phone/log`, {
-        headers: { 'X-API-Key': API_KEY },
-      });
-      if (res.ok) setCallLog(await res.json());
-    } catch {
-      // silently ignore
-    }
-  };
+  // ── hang up ──────────────────────────────────────────────────────────────────
 
   const handleHangup = async () => {
     setHangingUp(true);
     try {
       await fetch(`${API_BASE_URL}/api/phone/hangup`, {
         method: 'POST',
-        headers: { 'X-API-Key': API_KEY },
+        headers: headers(),
       });
-      await fetchStatus();
-    } catch {
-      // ignore
-    } finally {
+      await loadStatus();
+    } catch { /* ignore */ } finally {
       setHangingUp(false);
     }
   };
 
-  useEffect(() => {
-    fetchStatus();
-    fetchContacts();
-    fetchCallLog();
-    pollRef.current = setInterval(fetchStatus, 5000);
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, []);
+  // ── whisper ──────────────────────────────────────────────────────────────────
 
-  const handleDial = async (number: string) => {
-    if (!number.trim()) return;
-    setDialing(true);
-    setDialError(null);
+  const handleWhisper = async () => {
+    if (!whisper.trim()) return;
     try {
-      const res = await fetch(`${API_BASE_URL}/api/phone/dial`, {
+      await fetch(`${API_BASE_URL}/api/phone/whisper`, {
         method: 'POST',
-        headers: { 'X-API-Key': API_KEY, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ number: number.trim() }),
+        headers: jsonHeaders(),
+        body: JSON.stringify({ instruction: whisper.trim() }),
       });
-      const data = await res.json();
-      if (!res.ok) {
-        setDialError(data?.detail?.message ?? `Error ${res.status}`);
-      }
-    } catch {
-      setDialError('Could not reach the backend.');
-    } finally {
-      setDialing(false);
-    }
+      setWhisper('');
+      setWhisperOk(true);
+      setTimeout(() => setWhisperOk(false), 2000);
+    } catch { /* ignore */ }
   };
 
+  // ── escalation dismiss ───────────────────────────────────────────────────────
+
+  const dismissEscalation = async () => {
+    try {
+      await fetch(`${API_BASE_URL}/api/phone/escalation/dismiss`, {
+        method: 'POST',
+        headers: headers(),
+      });
+      await loadStatus();
+    } catch { /* ignore */ }
+  };
+
+  // ── audio bridge ─────────────────────────────────────────────────────────────
+
   const stopTalking = useCallback(() => {
-    wsAudioRef.current?.close();
-    wsAudioRef.current = null;
+    wsRef.current?.close();
+    wsRef.current = null;
     workletRef.current?.disconnect();
     workletRef.current = null;
-    audioCtxRef.current?.close();
-    audioCtxRef.current = null;
+    ctxRef.current?.close();
+    ctxRef.current = null;
     setTalking(false);
   }, []);
 
-  // Stop audio bridge + refresh call log when call ends
-  const prevActiveRef = useRef<boolean>(false);
-  useEffect(() => {
-    const isActive = !!status?.active_call;
-    if (!isActive && talking) stopTalking();
-    if (!isActive && prevActiveRef.current) fetchCallLog();
-    prevActiveRef.current = isActive;
-  }, [status?.active_call, talking, stopTalking]);
-
   const startTalking = async () => {
-    setTalkError(null);
+    setTalkErr(null);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       const ctx = new AudioContext();
-      audioCtxRef.current = ctx;
+      ctxRef.current = ctx;
 
-      // Register worklet from inline source via Blob URL
-      const blob = new Blob([PHONE_WORKLET_SRC], { type: 'application/javascript' });
-      const blobUrl = URL.createObjectURL(blob);
-      await ctx.audioWorklet.addModule(blobUrl);
-      URL.revokeObjectURL(blobUrl);
+      const blob = new Blob([WORKLET_SRC], { type: 'application/javascript' });
+      const url  = URL.createObjectURL(blob);
+      await ctx.audioWorklet.addModule(url);
+      URL.revokeObjectURL(url);
 
       const worklet = new AudioWorkletNode(ctx, 'phone-processor', {
         numberOfInputs: 1,
@@ -252,99 +328,58 @@ export default function PhonePage() {
       workletRef.current = worklet;
       worklet.port.postMessage({ type: 'config', sampleRate: ctx.sampleRate });
 
-      // mic → worklet → speakers
       ctx.createMediaStreamSource(stream).connect(worklet);
       worklet.connect(ctx.destination);
 
-      // WebSocket audio bridge
       const wsBase = API_BASE_URL.replace(/^http/, 'ws');
       const ws = new WebSocket(`${wsBase}/api/phone/call-audio`);
-      wsAudioRef.current = ws;
+      wsRef.current = ws;
       ws.binaryType = 'arraybuffer';
 
-      ws.onopen = () => setTalking(true);
+      ws.onopen  = () => setTalking(true);
       ws.onclose = () => stopTalking();
-      ws.onerror = () => { setTalkError('Audio connection failed.'); stopTalking(); };
+      ws.onerror = () => { setTalkErr('Audio connection failed.'); stopTalking(); };
 
-      // SIP → browser: feed received PCM to worklet playback buffer
       ws.onmessage = (e: MessageEvent) => {
         worklet.port.postMessage({ type: 'audio', buffer: e.data }, [e.data as ArrayBuffer]);
       };
 
-      // browser → SIP: send captured PCM over WebSocket
       worklet.port.onmessage = (e: MessageEvent) => {
         if (e.data.type === 'capture' && ws.readyState === WebSocket.OPEN) {
           ws.send(e.data.buf as ArrayBuffer);
         }
       };
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setTalkError(`Microphone error: ${msg}`);
+      setTalkErr(`Microphone error: ${err instanceof Error ? err.message : String(err)}`);
       stopTalking();
     }
   };
 
-  const handleRingDecision = async (decision: 'ai' | 'human') => {
-    setRingDeciding(true);
-    try {
-      await fetch(`${API_BASE_URL}/api/phone/ring/${decision}`, {
-        method: 'POST',
-        headers: { 'X-API-Key': API_KEY },
-      });
-      await fetchStatus();
-    } catch {
-      // ignore
-    } finally {
-      setRingDeciding(false);
-    }
-  };
-
-  const handleWhisper = async () => {
-    if (!whisper.trim()) return;
-    try {
-      await fetch(`${API_BASE_URL}/api/phone/whisper`, {
-        method: 'POST',
-        headers: { 'X-API-Key': API_KEY, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ instruction: whisper.trim() }),
-      });
-      setWhisper('');
-      setWhisperSent(true);
-      setTimeout(() => setWhisperSent(false), 2000);
-    } catch {
-      // silently ignore
-    }
-  };
-
-  const filteredContacts = contacts.filter(c =>
-    c.name.toLowerCase().includes(search.toLowerCase()) ||
-    c.number.includes(search)
-  );
+  // ── derived ───────────────────────────────────────────────────────────────────
 
   const registered = status?.registered ?? false;
+  const filtered   = contacts.filter(c =>
+    c.name.toLowerCase().includes(search.toLowerCase()) || c.number.includes(search)
+  );
+
+  // ── render ────────────────────────────────────────────────────────────────────
 
   return (
     <div className="min-h-screen bg-gray-50 py-8 px-4">
       <div className="max-w-4xl mx-auto space-y-6">
 
-        {/* Header */}
+        {/* ── Header / registration status ── */}
         <div className="bg-white rounded-lg shadow-sm p-6">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between flex-wrap gap-3">
             <div>
-              <h1 className="text-3xl font-bold text-gray-900 mb-1">📞 AI Phone</h1>
-              <p className="text-gray-600 text-sm">
-                AI-powered voice calling via COMtrexx PBX
-              </p>
+              <h1 className="text-2xl font-bold text-gray-900">Phone</h1>
+              <p className="text-sm text-gray-500 mt-0.5">AI-powered voice calling via COMtrexx PBX</p>
             </div>
-            {/* Registration pill */}
-            <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium ${
-              registered
-                ? 'bg-green-100 text-green-800'
-                : 'bg-gray-100 text-gray-600'
+            <span className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium ${
+              registered ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-500'
             }`}>
               <span className={`w-2 h-2 rounded-full ${registered ? 'bg-green-500' : 'bg-gray-400'}`} />
-              {registered
-                ? `Registered — ext. ${status?.extension}`
-                : 'Offline — SIP not connected'}
+              {registered ? `Registered — ext. ${status?.extension}` : 'Offline — SIP not connected'}
             </span>
           </div>
           {registered && status?.server && (
@@ -353,47 +388,92 @@ export default function PhonePage() {
           {!registered && (
             <p className="mt-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
               Set <code className="font-mono">COMTREXX_SIP_USER</code>,{' '}
-              <code className="font-mono">COMTREXX_SIP_PASS</code>, and{' '}
+              <code className="font-mono">COMTREXX_SIP_PASS</code> and{' '}
               <code className="font-mono">COMTREXX_EXTENSION</code> in{' '}
               <code className="font-mono">backend/.env</code> to activate.
             </p>
           )}
         </div>
 
-        {/* Ringing / decision card */}
+        {/* ── Escalation alert ── */}
+        {status?.last_escalation && (
+          <div className="bg-red-50 border-2 border-red-400 rounded-lg p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-semibold uppercase tracking-wide text-red-700 mb-1">
+                  Caller requested a human
+                </p>
+                <p className="text-lg font-bold text-red-900">
+                  {callerStr(status.last_escalation.caller_name) || callerStr(status.last_escalation.caller)}
+                  {status.last_escalation.caller_name && (
+                    <span className="ml-2 text-sm font-mono font-normal text-red-700">
+                      {callerStr(status.last_escalation.caller)}
+                    </span>
+                  )}
+                </p>
+                {status.last_escalation.reason && (
+                  <p className="text-sm text-red-800 mt-1">
+                    <span className="font-medium">Reason:</span> {status.last_escalation.reason}
+                  </p>
+                )}
+                {status.last_escalation.summary && (
+                  <p className="text-sm text-red-700 mt-2 italic">
+                    {status.last_escalation.summary}
+                  </p>
+                )}
+                <div className="flex items-center gap-4 mt-3 text-xs text-red-600">
+                  <span>{new Date(status.last_escalation.at).toLocaleTimeString()}</span>
+                  <span>
+                    {status.last_escalation.email_sent
+                      ? '✓ Escalation email sent'
+                      : '⚠ Email not sent — check SMTP / Gmail config'}
+                  </span>
+                </div>
+              </div>
+              <button
+                onClick={dismissEscalation}
+                className="flex-shrink-0 px-3 py-1.5 bg-red-700 text-white rounded-lg text-xs font-medium hover:bg-red-800 transition-colors"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── Ringing card ── */}
         {status?.ringing_call && !status?.active_call && (
-          <div className="bg-yellow-50 border-2 border-yellow-400 rounded-lg p-5 animate-pulse-subtle">
+          <div className="bg-yellow-50 border-2 border-yellow-400 rounded-lg p-5">
             <div className="flex items-start justify-between mb-4">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wide text-yellow-700 mb-1">
-                  {status.ringing_call.direction === 'inbound' ? '📲 Incoming call' : '📞 Call answered'}
+                  {status.ringing_call.direction === 'inbound' ? 'Incoming call' : 'Outbound — answered'}
                 </p>
                 <p className="text-xl font-bold text-yellow-900">
-                  {status.ringing_call.caller_name || status.ringing_call.caller}
+                  {callerStr(status.ringing_call.caller_name) || callerStr(status.ringing_call.caller)}
                 </p>
                 {status.ringing_call.caller_name && (
-                  <p className="text-sm text-yellow-700 font-mono">{status.ringing_call.caller}</p>
+                  <p className="text-sm font-mono text-yellow-700">{callerStr(status.ringing_call.caller)}</p>
                 )}
-                <p className="text-xs text-yellow-600 mt-1">
-                  {status.ringing_call.direction === 'inbound'
-                    ? 'Who should answer?'
-                    : 'The other person picked up — who handles it?'}
-                </p>
               </div>
               <span className="text-3xl">{status.ringing_call.direction === 'inbound' ? '🔔' : '📡'}</span>
             </div>
+            <p className="text-xs text-yellow-700 mb-3">
+              {status.ringing_call.direction === 'inbound'
+                ? 'Who should answer?'
+                : 'The other side picked up — who handles this?'}
+            </p>
             <div className="flex gap-3">
               <button
                 onClick={() => handleRingDecision('ai')}
-                disabled={ringDeciding}
-                className="flex-1 py-2.5 bg-green-600 text-white rounded-lg font-medium text-sm hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 disabled:opacity-50 transition-colors"
+                disabled={deciding}
+                className="flex-1 py-2.5 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 disabled:opacity-50 transition-colors"
               >
                 AI answers
               </button>
               <button
                 onClick={() => handleRingDecision('human')}
-                disabled={ringDeciding}
-                className="flex-1 py-2.5 bg-blue-600 text-white rounded-lg font-medium text-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 transition-colors"
+                disabled={deciding}
+                className="flex-1 py-2.5 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
               >
                 I'll take it
               </button>
@@ -401,7 +481,7 @@ export default function PhonePage() {
           </div>
         )}
 
-        {/* Active call card */}
+        {/* ── Active call card ── */}
         {status?.active_call && (
           <div className="bg-green-50 border border-green-300 rounded-lg p-5 space-y-4">
             <div className="flex items-center justify-between">
@@ -410,10 +490,10 @@ export default function PhonePage() {
                   Active call · {status.active_call.mode === 'ai' ? 'AI handling' : 'You are live'}
                 </p>
                 <p className="text-xl font-bold text-green-900">
-                  {status.active_call.caller_name || status.active_call.caller}
+                  {callerStr(status.active_call.caller_name) || callerStr(status.active_call.caller)}
                 </p>
                 {status.active_call.caller_name && (
-                  <p className="text-sm text-green-700">{status.active_call.caller}</p>
+                  <p className="text-sm text-green-700 font-mono">{callerStr(status.active_call.caller)}</p>
                 )}
               </div>
               <div className="text-right space-y-2">
@@ -421,14 +501,14 @@ export default function PhonePage() {
                 <button
                   onClick={handleHangup}
                   disabled={hangingUp}
-                  className="block w-full px-3 py-1.5 bg-red-600 text-white rounded-lg text-xs font-medium hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 disabled:opacity-50 transition-colors"
+                  className="block w-full px-3 py-1.5 bg-red-600 text-white rounded-lg text-xs font-medium hover:bg-red-700 disabled:opacity-50 transition-colors"
                 >
-                  {hangingUp ? 'Hanging up…' : '📵 Hang up'}
+                  {hangingUp ? 'Hanging up…' : 'Hang up'}
                 </button>
               </div>
             </div>
 
-            {/* Talk button — only when operator is bridged in */}
+            {/* Microphone — human mode */}
             {status.active_call.mode === 'human' && (
               <div className="border-t border-green-200 pt-4">
                 <p className="text-xs font-semibold uppercase tracking-wide text-green-700 mb-2">
@@ -437,106 +517,98 @@ export default function PhonePage() {
                 <div className="flex items-center gap-3">
                   <button
                     onClick={talking ? stopTalking : startTalking}
-                    className={`flex items-center gap-2 px-4 py-2.5 rounded-lg font-medium text-sm focus:outline-none focus:ring-2 transition-colors ${
+                    className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${
                       talking
-                        ? 'bg-red-600 text-white hover:bg-red-700 focus:ring-red-500 animate-pulse'
-                        : 'bg-green-700 text-white hover:bg-green-800 focus:ring-green-500'
+                        ? 'bg-red-600 text-white hover:bg-red-700 animate-pulse'
+                        : 'bg-green-700 text-white hover:bg-green-800'
                     }`}
                   >
-                    <span>{talking ? '🔴' : '🎙'}</span>
-                    {talking ? 'Stop talking' : 'Talk'}
+                    {talking ? '🔴 Stop talking' : '🎙 Talk'}
                   </button>
-                  {talking && (
-                    <span className="text-xs text-green-700">Live — caller can hear you</span>
-                  )}
-                  {talkError && (
-                    <span className="text-xs text-red-600">{talkError}</span>
-                  )}
+                  {talking && <span className="text-xs text-green-700">Live — caller can hear you</span>}
+                  {talkErr  && <span className="text-xs text-red-600">{talkErr}</span>}
                 </div>
               </div>
             )}
 
-            {/* Operator whisper — only when AI is on the call */}
-            {status.active_call.mode === 'ai' && <div className="border-t border-green-200 pt-4">
-              <p className="text-xs font-semibold uppercase tracking-wide text-green-700 mb-2">
-                Whisper to AI
-              </p>
-              <p className="text-xs text-green-600 mb-2">
-                Type an instruction — the AI will follow it on the next reply. The caller won't hear this.
-              </p>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  placeholder="e.g. Focus on the calendar feature now"
-                  value={whisper}
-                  onChange={e => setWhisper(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && handleWhisper()}
-                  className="flex-1 border border-green-300 rounded-lg px-3 py-2 text-sm text-gray-900 placeholder-gray-400 bg-white focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                />
-                <button
-                  onClick={handleWhisper}
-                  disabled={!whisper.trim()}
-                  className="px-4 py-2 bg-green-700 text-white rounded-lg text-sm font-medium hover:bg-green-800 focus:outline-none focus:ring-2 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                >
-                  {whisperSent ? 'Sent ✓' : 'Send'}
-                </button>
+            {/* Whisper — AI mode */}
+            {status.active_call.mode === 'ai' && (
+              <div className="border-t border-green-200 pt-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-green-700 mb-1">
+                  Whisper to AI
+                </p>
+                <p className="text-xs text-green-600 mb-2">
+                  Give the AI a silent instruction — the caller won't hear it.
+                </p>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="e.g. Ask about their budget"
+                    value={whisper}
+                    onChange={e => setWhisper(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && handleWhisper()}
+                    className="flex-1 border border-green-300 rounded-lg px-3 py-2 text-sm text-gray-900 placeholder-gray-400 bg-white focus:outline-none focus:ring-2 focus:ring-green-500"
+                  />
+                  <button
+                    onClick={handleWhisper}
+                    disabled={!whisper.trim()}
+                    className="px-4 py-2 bg-green-700 text-white rounded-lg text-sm font-medium hover:bg-green-800 disabled:opacity-50 transition-colors"
+                  >
+                    {whisperOk ? 'Sent ✓' : 'Send'}
+                  </button>
+                </div>
               </div>
-            </div>}
+            )}
           </div>
         )}
 
-        {/* Dial pad */}
+        {/* ── Dial pad ── */}
         <div className="bg-white rounded-lg shadow-sm p-6">
           <h2 className="text-lg font-semibold text-gray-800 mb-4">Dial</h2>
           <div className="flex gap-3">
             <input
               type="tel"
               placeholder="+49 xxx xxxxxxx"
-              value={dialNumber}
-              onChange={e => { setDialNumber(e.target.value); setDialError(null); }}
-              onKeyDown={e => e.key === 'Enter' && handleDial(dialNumber)}
-              className="flex-1 border border-gray-300 rounded-lg px-4 py-2.5 text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+              value={dialNum}
+              onChange={e => { setDialNum(e.target.value); setDialErr(null); }}
+              onKeyDown={e => e.key === 'Enter' && handleDial(dialNum)}
+              className="flex-1 border border-gray-300 rounded-lg px-4 py-2.5 text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-green-500"
             />
             <button
-              onClick={() => handleDial(dialNumber)}
-              disabled={dialing || !dialNumber.trim()}
-              className="px-6 py-2.5 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              onClick={() => handleDial(dialNum)}
+              disabled={dialing || !dialNum.trim()}
+              className="px-6 py-2.5 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {dialing ? 'Calling…' : 'Call'}
             </button>
           </div>
-          {dialError && (
+          {dialErr && (
             <p className="mt-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
-              {dialError}
+              {dialErr}
             </p>
           )}
         </div>
 
-        {/* Contacts */}
+        {/* ── Contacts ── */}
         <div className="bg-white rounded-lg shadow-sm p-6">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-semibold text-gray-800">
               Contacts
               {contacts.length > 0 && (
-                <span className="ml-2 text-sm font-normal text-gray-500">
-                  ({contacts.length})
-                </span>
+                <span className="ml-2 text-sm font-normal text-gray-400">({contacts.length})</span>
               )}
             </h2>
-            <button
-              onClick={fetchContacts}
-              className="text-xs text-gray-500 hover:text-gray-700 underline"
-            >
+            <button onClick={loadContacts} className="text-xs text-gray-400 hover:text-gray-600 underline">
               Reload
             </button>
           </div>
 
           {contacts.length === 0 ? (
-            <p className="text-sm text-gray-500 text-center py-6">
+            <p className="text-sm text-gray-400 text-center py-6">
               No contacts loaded.{' '}
-              <span className="text-gray-400">
-                Place <code className="font-mono">AI_Phone_Contacts.xlsx</code> in the{' '}
-                <code className="font-mono">backend/</code> folder and click Reload.
+              <span>
+                Place <code className="font-mono">AI_Phone_Contacts.xlsx</code> in{' '}
+                <code className="font-mono">backend/</code> and click Reload.
               </span>
             </p>
           ) : (
@@ -546,28 +618,21 @@ export default function PhonePage() {
                 placeholder="Search by name or number…"
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                className="w-full mb-4 border border-gray-200 rounded-lg px-4 py-2 text-sm text-gray-700 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                className="w-full mb-4 border border-gray-200 rounded-lg px-4 py-2 text-sm text-gray-700 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-green-500"
               />
               <div className="divide-y divide-gray-100">
-                {filteredContacts.length === 0 ? (
+                {filtered.length === 0 ? (
                   <p className="text-sm text-gray-400 text-center py-4">No matches.</p>
                 ) : (
-                  filteredContacts.map((c, i) => (
-                    <div
-                      key={i}
-                      className="flex items-center justify-between py-3 group"
-                    >
+                  filtered.map((c, i) => (
+                    <div key={i} className="flex items-center justify-between py-3 group">
                       <div className="min-w-0">
-                        <p className="text-sm font-medium text-gray-900 truncate">
-                          {c.name || <span className="text-gray-400 italic">No name</span>}
-                        </p>
+                        <p className="text-sm font-medium text-gray-900 truncate">{c.name || '—'}</p>
                         <p className="text-xs text-gray-500 font-mono">{c.number}</p>
-                        {c.status && (
-                          <p className="text-xs text-gray-400 mt-0.5">{c.status}</p>
-                        )}
+                        {c.status && <p className="text-xs text-gray-400 mt-0.5">{c.status}</p>}
                       </div>
                       <button
-                        onClick={() => { setDialNumber(c.number); setDialError(null); }}
+                        onClick={() => { setDialNum(c.number); setDialErr(null); }}
                         className="ml-4 flex-shrink-0 text-xs text-green-600 border border-green-200 rounded px-2.5 py-1 opacity-0 group-hover:opacity-100 hover:bg-green-50 transition-all"
                       >
                         Dial
@@ -580,17 +645,15 @@ export default function PhonePage() {
           )}
         </div>
 
-        {/* Call log */}
+        {/* ── Call log ── */}
         <div className="bg-white rounded-lg shadow-sm p-6">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-semibold text-gray-800">Recent calls</h2>
-            <button
-              onClick={fetchCallLog}
-              className="text-xs text-gray-500 hover:text-gray-700 underline"
-            >
+            <button onClick={loadCallLog} className="text-xs text-gray-400 hover:text-gray-600 underline">
               Reload
             </button>
           </div>
+
           {callLog.length === 0 ? (
             <p className="text-sm text-gray-400 text-center py-6">No calls recorded yet.</p>
           ) : (
@@ -599,7 +662,6 @@ export default function PhonePage() {
                 const mins = Math.floor(entry.duration_seconds / 60);
                 const secs = (entry.duration_seconds % 60).toString().padStart(2, '0');
                 const dur  = mins > 0 ? `${mins}m ${secs}s` : `${entry.duration_seconds}s`;
-                const when = new Date(entry.ts).toLocaleString();
                 return (
                   <div key={i} className="py-3 flex items-center justify-between gap-4">
                     <div className="min-w-0">
@@ -608,13 +670,15 @@ export default function PhonePage() {
                           {entry.direction === 'inbound' ? '↙' : '↗'}
                         </span>
                         <p className="text-sm font-medium text-gray-900 truncate">
-                          {entry.caller_name || entry.caller}
+                          {callerStr(entry.caller_name) || callerStr(entry.caller)}
                         </p>
                         {entry.caller_name && (
-                          <p className="text-xs text-gray-400 font-mono hidden sm:block">{entry.caller}</p>
+                          <p className="text-xs text-gray-400 font-mono hidden sm:block">{callerStr(entry.caller)}</p>
                         )}
                       </div>
-                      <p className="text-xs text-gray-400 mt-0.5">{when}</p>
+                      <p className="text-xs text-gray-400 mt-0.5">
+                        {new Date(entry.ts).toLocaleString()}
+                      </p>
                     </div>
                     <div className="text-right flex-shrink-0">
                       <p className="text-sm font-mono text-gray-600">{dur}</p>

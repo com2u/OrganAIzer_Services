@@ -93,6 +93,48 @@ async def lifespan(app: FastAPI):
         _voice_config.FREESWITCH_ESL_OUTBOUND_PORT,
     )
 
+    # ── Gateway registration watchdog ─────────────────────────────────────────
+    # FreeSWITCH manages SIP registration (not Python/pyVoIP).  Poll the ESL
+    # "sofia status gateway comtrexx" command every 30 s to keep phone_state
+    # ["registered"] accurate so the frontend shows the real connection status.
+    import threading as _threading
+
+    _gw_stop = _threading.Event()
+
+    def _gateway_watchdog() -> None:
+        while not _gw_stop.wait(timeout=30):
+            try:
+                result = _esl_cmd("sofia status gateway comtrexx")
+                reged  = bool(result) and "REGED" in result
+                _phone_state["registered"] = reged
+                if reged:
+                    _phone_state["extension"] = _voice_config.COMTREXX_EXTENSION or "003010"
+                    _phone_state["server"]    = _voice_config.COMTREXX_IP
+                else:
+                    # Don't wipe extension/server so the last known value stays
+                    pass
+                logger.debug("Gateway watchdog: comtrexx REGED=%s", reged)
+            except Exception as _e:
+                logger.warning("Gateway watchdog error: %s", _e)
+
+    # Run once immediately so the first /api/phone/status call is accurate
+    _initial_gw = _esl_cmd("sofia status gateway comtrexx")
+    if _initial_gw and "REGED" in _initial_gw:
+        _phone_state["registered"] = True
+        _phone_state["extension"]  = _voice_config.COMTREXX_EXTENSION or "003010"
+        _phone_state["server"]     = _voice_config.COMTREXX_IP
+        logger.info("Gateway comtrexx: REGISTERED")
+    else:
+        logger.warning(
+            "Gateway comtrexx not yet REGED at startup — "
+            "status: %s", (_initial_gw or "ESL unreachable")[:100]
+        )
+
+    _gw_thread = _threading.Thread(
+        target=_gateway_watchdog, daemon=True, name="gateway-watchdog"
+    )
+    _gw_thread.start()
+
     # Ensure required directories exist
     config.ensure_directories()
     logger.info(f"TTS temporary directory: {config.TTS_TEMP_DIR}")
@@ -118,6 +160,7 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Shutting down OrganAIzer Services API")
+    _gw_stop.set()
     if hasattr(app.state, "esl_server"):
         app.state.esl_server.stop()
 

@@ -52,13 +52,21 @@
     <param name="register-transport"  value="tls"/>
     <param name="contact-params"      value="transport=tls"/>
 
-    <!-- Registration -->
+    <!-- Registration — longer expiry reduces re-registration churn -->
     <param name="register"            value="true"/>
-    <param name="expire-seconds"      value="120"/>
+    <param name="expire-seconds"      value="300"/>
     <param name="retry-seconds"       value="30"/>
-    <param name="ping"                value="25"/>
+
+    <!-- Ping — require 3 consecutive failures before marking DOWN
+         so a single dropped packet does not trigger unregister/re-register -->
+    <param name="ping"                value="30"/>
+    <param name="ping-max"            value="3"/>
+    <param name="ping-min"            value="1"/>
 
     <!-- Caller ID behaviour -->
     <param name="caller-id-in-from"   value="false"/>
+
+    <!-- SRTP required by COMtrexx when signalling is over TLS -->
+    <param name="rtp-secure-media"    value="true"/>
   </gateway>
 </include>

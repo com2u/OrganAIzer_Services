@@ -130,9 +130,9 @@ def prewarm_fillers() -> None:
 # silence_timeout_ms: consecutive silence needed to stop recording (1500ms)
 _RECORD_MAX_SECS        = 30
 _RECORD_SILENCE_THRESH  = config.AI_RECORD_SILENCE_THRESHOLD_MS
-_RECORD_SILENCE_TIMEOUT = 75    # silence_hits × 20 ms/frame = 1 500 ms of silence
-                                # Note: Tune _RECORD_SILENCE_THRESH based on local
-                                # line noise (typically 300–600 on VoIP).
+_RECORD_SILENCE_TIMEOUT = 40    # silence_hits × 20 ms/frame = 800 ms of silence
+                                # 800 ms feels natural — fast enough to not lag,
+                                # long enough not to cut off mid-sentence.
 
 _PLAYBACK_TIMEOUT       = 60.0  # s — max wait for TTS playback to complete
 _RECORD_TIMEOUT         = _RECORD_MAX_SECS + 5.0   # s — execute() timeout
@@ -236,6 +236,7 @@ def _conversation_loop(
     turn_count_ref: list[int],
     uuid: str,
     call_rec_path: Optional[Path] = None,
+    initial_lang: str = "de",
 ) -> bool:
     """
     Core record → transcribe → LLM → speak loop.
@@ -248,8 +249,11 @@ def _conversation_loop(
     audio_dir = _audio_dir()
     turn = 0
     # Track conversation language so TTS and STT stay in sync after a switch.
-    # Starts as German; updates each turn based on the AI reply language.
-    conv_lang = "de"
+    # Starts at initial_lang (passed from call context); updates each turn.
+    conv_lang = initial_lang
+    # Prevent infinite filler loops when the caller goes silent or audio is lost.
+    _empty_turns = 0
+    _MAX_EMPTY_TURNS = 4  # ~4 × 800 ms silence = ~3 s before giving up
 
     while not handler.is_hung_up:
         # ── check max call duration ───────────────────────────────────────────
@@ -292,8 +296,9 @@ def _conversation_loop(
         ) -> None:
             t, stt_lang = "", conv_lang
             if Path(_rec).exists():
-                # Pass lang=None so Whisper auto-detects German vs English.
-                t, stt_lang = transcribe_file(_rec)
+                # Pass the current conversation language so Whisper doesn't
+                # misidentify German phone audio as English (common on noisy lines).
+                t, stt_lang = transcribe_file(_rec, lang=conv_lang)
             _cleanup(_rec)
             if not t:
                 _proc_done.set()
@@ -350,8 +355,19 @@ def _conversation_loop(
             break
 
         if not _proc["text"]:
-            # Silent / empty recording — record again
+            # Silent / empty recording — record again, but bail after too many
+            _empty_turns += 1
+            if _empty_turns >= _MAX_EMPTY_TURNS:
+                logger.info("Too many consecutive silent turns (%d), ending call.", _empty_turns)
+                farewell = (
+                    "I haven't heard anything for a while. I'll end the call now. Goodbye!"
+                    if conv_lang == "en"
+                    else "Ich konnte Sie leider nicht verstehen. Ich beende das Gespräch. Auf Wiederhören!"
+                )
+                _speak_and_play(handler, farewell, lang=conv_lang)
+                break
             continue
+        _empty_turns = 0  # reset on any real utterance
 
         turn_count_ref[0] += 1
         turn += 1
@@ -417,10 +433,28 @@ def _conversation_loop(
             # the transfer below (outbound socket, "ext XML default") is the
             # single authoritative handoff.
             rec_file = str(call_rec_path) if call_rec_path and call_rec_path.exists() else None
-            handle_escalation(caller, caller_name, history, reason, started_at,
-                              call_uuid=uuid, esl_handler=handler,
-                              recording_consent=recording_consent,
-                              recording_path=rec_file)
+            esc_result = handle_escalation(
+                caller, caller_name, history, reason, started_at,
+                call_uuid=uuid, esl_handler=handler,
+                recording_consent=recording_consent,
+                recording_path=rec_file,
+            )
+
+            # Notify the operator via phone_state so the frontend shows an alert.
+            # This is the only reliable notification path when email is not configured.
+            try:
+                from api.phone import phone_state as _ps
+                from datetime import timezone as _tz
+                _ps["last_escalation"] = {
+                    "caller":      caller,
+                    "caller_name": caller_name,
+                    "reason":      reason,
+                    "summary":     esc_result.get("summary", ""),
+                    "email_sent":  esc_result.get("email_sent", False),
+                    "at":          datetime.now(_tz.utc).isoformat(),
+                }
+            except Exception as _e:
+                logger.warning("Could not set last_escalation in phone_state: %s", _e)
 
             # Park the call at COMtrexx orbit 778/779 using SIP REFER (deflect).
             # Since 003010 is an internal COMtrexx extension, a REFER to a park
@@ -562,6 +596,7 @@ def handle_esl_call(handler, phone_state: dict) -> None:
                 system_prompt=outbound_ctx["system_prompt"],
                 turn_count_ref=turn_ref,
                 uuid=uuid, call_rec_path=call_rec_path,
+                initial_lang=greeting_lang,
             )
             turn_count = turn_ref[0]
             return

@@ -26,15 +26,18 @@ router = APIRouter(tags=["phone"])
 # sip_client.py / call_handler.py import and mutate this dict.
 # All values here are safe offline defaults.
 phone_state: dict = {
-    "registered":    False,
-    "extension":     "",
-    "server":        "",
-    "active_call":   None,   # None or {"caller": str, "started_at": str}
-    "ringing_call":  None,   # None or {"caller": str, "caller_name": str|None,
-                             #          "ringing_since": str, "direction": "inbound"|"outbound"}
-    "whisper_queue": _queue.Queue(),  # thread-safe queue of operator instructions
-    "bridge_call":   None,   # ESLOutboundHandler when operator takes the call
-    "esl_handler":   None,   # ESLOutboundHandler for the current call (AI or human)
+    "registered":      False,
+    "extension":       "",
+    "server":          "",
+    "active_call":     None,   # None or {"caller": str, "started_at": str}
+    "ringing_call":    None,   # None or {"caller": str, "caller_name": str|None,
+                               #          "ringing_since": str, "direction": "inbound"|"outbound"}
+    "whisper_queue":   _queue.Queue(),  # thread-safe queue of operator instructions
+    "bridge_call":     None,   # ESLOutboundHandler when operator takes the call
+    "esl_handler":     None,   # ESLOutboundHandler for the current call (AI or human)
+    "last_escalation": None,   # set when escalation fires; cleared by POST /ring/escalation/dismiss
+                               # {"caller": str, "caller_name": str|None, "reason": str,
+                               #  "summary": str, "email_sent": bool, "at": ISO-8601}
 }
 
 # ── ring decision synchronisation ─────────────────────────────────────────────
@@ -79,12 +82,22 @@ class RingingCall(BaseModel):
     direction: str              # "inbound" or "outbound"
 
 
+class EscalationAlert(BaseModel):
+    caller: str
+    caller_name: Optional[str] = None
+    reason: str
+    summary: str
+    email_sent: bool
+    at: str   # ISO-8601
+
+
 class PhoneStatus(BaseModel):
     registered: bool
     extension: str
     server: str
     active_call: Optional[ActiveCall] = None
     ringing_call: Optional[RingingCall] = None
+    last_escalation: Optional[EscalationAlert] = None
 
 
 class ContactEntry(BaseModel):
@@ -133,12 +146,25 @@ async def get_status() -> PhoneStatus:
             direction=raw_ring.get("direction", "inbound"),
         )
 
+    raw_esc = phone_state.get("last_escalation")
+    escalation: Optional[EscalationAlert] = None
+    if raw_esc:
+        escalation = EscalationAlert(
+            caller=raw_esc.get("caller", ""),
+            caller_name=raw_esc.get("caller_name"),
+            reason=raw_esc.get("reason", ""),
+            summary=raw_esc.get("summary", ""),
+            email_sent=raw_esc.get("email_sent", False),
+            at=raw_esc.get("at", ""),
+        )
+
     return PhoneStatus(
         registered=phone_state.get("registered", False),
         extension=phone_state.get("extension", ""),
         server=phone_state.get("server", ""),
         active_call=active,
         ringing_call=ringing,
+        last_escalation=escalation,
     )
 
 
@@ -173,7 +199,7 @@ async def dial(request: DialRequest):
     Returns 502 if FreeSWITCH rejects the originate command.
     """
     from voice.outbound import originate_call
-    from voice.llm_bridge import OUTBOUND_SYSTEM_PROMPT
+    from voice.llm_bridge import _SYSTEM_PROMPT as _INBOUND_SYSTEM_PROMPT
     from voice import config as _vc
 
     if phone_state.get("active_call") is not None or phone_state.get("ringing_call") is not None:
@@ -183,7 +209,9 @@ async def dial(request: DialRequest):
         )
 
     lang = request.lang or _vc.AI_LANGUAGE
-    system_prompt = request.system_prompt or OUTBOUND_SYSTEM_PROMPT
+    # Use the same company-aware system prompt as inbound calls so the AI knows
+    # the Teleprofi Fulda context and can hold a real conversation after "yes".
+    system_prompt = request.system_prompt or _INBOUND_SYSTEM_PROMPT
 
     opening_line = request.opening_line or (
         "Hello! This is the AI assistant from Teleprofi Fulda calling. "
@@ -193,10 +221,18 @@ async def dial(request: DialRequest):
              "Ich hoffe ich störe nicht — hätten Sie kurz einen Moment?"
     )
 
+    # Append a short context note so the LLM knows this is an outbound call it placed.
+    outbound_note = (
+        "\n\n[Context: You placed this outbound call. You already delivered the opening line. "
+        "The person has answered — continue the conversation naturally from there. "
+        "Do not re-introduce yourself. Respond to whatever they say next.]"
+    )
+    system_prompt_out = system_prompt + outbound_note
+
     success, result = originate_call(
         number=request.number,
         opening_line=opening_line,
-        system_prompt=system_prompt,
+        system_prompt=system_prompt_out,
         lang=lang,
     )
 
@@ -267,6 +303,16 @@ async def whisper(request: WhisperRequest):
     phone_state["whisper_queue"].put_nowait(instruction)
     logger.info("Operator whisper queued: %s", instruction[:120])
     return {"status": "queued", "instruction": instruction}
+
+
+@router.post("/escalation/dismiss")
+async def dismiss_escalation():
+    """
+    Clear the last_escalation alert so the frontend banner disappears.
+    Safe to call even if there is no pending escalation.
+    """
+    phone_state["last_escalation"] = None
+    return {"status": "dismissed"}
 
 
 @router.post("/hangup")
