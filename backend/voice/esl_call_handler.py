@@ -128,10 +128,10 @@ def prewarm_fillers() -> None:
 # FS record app args: <max_seconds> <silence_threshold_ms> <silence_timeout_ms>
 # silence_threshold_ms: energy level below which audio counts as silence (200 = default)
 # silence_timeout_ms: consecutive silence needed to stop recording (1500ms)
-_RECORD_MAX_SECS        = 30
+_RECORD_MAX_SECS        = 12
 _RECORD_SILENCE_THRESH  = config.AI_RECORD_SILENCE_THRESHOLD_MS
-_RECORD_SILENCE_TIMEOUT = 40    # silence_hits × 20 ms/frame = 800 ms of silence
-                                # 800 ms feels natural — fast enough to not lag,
+_RECORD_SILENCE_TIMEOUT = 25    # silence_hits × 20 ms/frame = 500 ms of silence
+                                # 500 ms feels natural — fast enough to not lag,
                                 # long enough not to cut off mid-sentence.
 
 _PLAYBACK_TIMEOUT       = 60.0  # s — max wait for TTS playback to complete
