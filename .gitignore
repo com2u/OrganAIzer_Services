@@ -5,7 +5,7 @@
 .env.*
 backend/credentials.json
 backend/keys.csv
-
+backend/.venv-wsl/
 # ==============================================================================
 # OAUTH TOKENS & TOKEN CACHES — Runtime data, not source code
 # ==============================================================================
