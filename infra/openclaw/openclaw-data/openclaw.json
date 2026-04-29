@@ -1,0 +1,22 @@
+{
+  // OpenClaw configuration for bounded access
+  gateway: {
+    mode: "local",
+    bind: "lan",
+    auth: {
+      mode: "token"
+    }
+  },
+  tools: {
+    profile: "minimal",
+    // Explicitly deny broad tool groups that are not needed yet
+    deny: [
+      "browser",
+      "cron",
+      "heartbeat",
+      "channels",
+      "runtime",
+      "filesystem"
+    ]
+  }
+}

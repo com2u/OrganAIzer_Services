@@ -70,3 +70,9 @@ frontend/dist/
 *.swo
 .DS_Store
 Thumbs.db
+
+# ==============================================================================
+# OPENCLAW DATA
+# ==============================================================================
+infra/openclaw/openclaw-data/*
+!infra/openclaw/openclaw-data/openclaw.json

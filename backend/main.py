@@ -18,7 +18,7 @@ from core.error_handling import (
     validation_error_handler,
     generic_error_handler
 )
-from api import tts, stt, image_gen, youtube, video, chat, document, translation, knowledge_base, integrations, executive_agent, voice_mode, phone
+from api import tts, stt, image_gen, youtube, video, chat, document, translation, knowledge_base, integrations, executive_agent, voice_mode, phone, openclaw
 
 # Set up logging
 setup_logging()
@@ -256,6 +256,7 @@ app.include_router(integrations.router, prefix="/api")  # External integrations 
 app.include_router(executive_agent.router, prefix="/api/agent", tags=["executive-agent"])  # Executive Agent endpoints
 app.include_router(voice_mode.router, prefix="/api/voice")  # Realtime Voice Mode WebSocket
 app.include_router(phone.router, prefix="/api/phone")        # AI Phone (SIP calling)
+app.include_router(openclaw.router, prefix="/api/openclaw")   # OpenClaw integration
 
 
 @app.get("/health")
