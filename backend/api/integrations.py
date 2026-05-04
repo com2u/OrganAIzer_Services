@@ -416,7 +416,7 @@ async def google_calendar_list_events(
         )
         
     except HttpError as e:
-        logger.error(f"Google Calendar API error: {e}")
+        logger.error("Google Calendar API error: status=%s", getattr(getattr(e, "resp", None), "status", "unknown"))
         if e.resp.status in [401, 403]:
             raise HTTPException(
                 status_code=401,
@@ -537,8 +537,7 @@ async def google_calendar_create_event(
         # FIX: Wait for Google's eventual consistency so the event is immediately
         # findable by follow-up list() or get() calls (avoids post-create sync issues).
         time.sleep(1.5)
-        logger.info(f"✅ Created calendar event '{request.summary}' for user {user_id}")
-        logger.info(f"📋 Event ID: {created_event.get('id')}")
+        logger.info(f"✅ Created calendar event for user {user_id}, event_id={created_event.get('id')}")
         
         # Convert to our event model
         start_time = created_event['start'].get('dateTime', created_event['start'].get('date'))
@@ -558,7 +557,7 @@ async def google_calendar_create_event(
     except HTTPException:
         raise
     except HttpError as e:
-        logger.error(f"Google Calendar API error: {e}")
+        logger.error("Google Calendar API error: status=%s", getattr(getattr(e, "resp", None), "status", "unknown"))
         if e.resp.status in [401, 403]:
             raise HTTPException(
                 status_code=401,
@@ -636,7 +635,7 @@ async def google_calendar_get_event(
     except HTTPException:
         raise
     except HttpError as e:
-        logger.error(f"Google Calendar get event error: {e}")
+        logger.error("Google Calendar get event error: status=%s", getattr(getattr(e, "resp", None), "status", "unknown"))
         if e.resp.status == 404:
             raise HTTPException(status_code=404, detail={"code": "EVENT_NOT_FOUND", "message": f"Event {event_id} not found."})
         if e.resp.status in (401, 403):
@@ -724,7 +723,7 @@ async def google_calendar_update_event(
     except HTTPException:
         raise
     except HttpError as e:
-        logger.error(f"Google Calendar update error: {e}")
+        logger.error("Google Calendar update error: status=%s", getattr(getattr(e, "resp", None), "status", "unknown"))
         if e.resp.status in (401, 403):
             raise HTTPException(
                 status_code=401,
@@ -787,7 +786,7 @@ async def google_calendar_delete_event(
     except HTTPException:
         raise
     except HttpError as e:
-        logger.error(f"Google Calendar delete error: {e}")
+        logger.error("Google Calendar delete error: status=%s", getattr(getattr(e, "resp", None), "status", "unknown"))
         if e.resp.status in (401, 403):
             raise HTTPException(
                 status_code=401,
@@ -894,11 +893,11 @@ async def google_gmail_list_messages(
                 "unread": "UNREAD" in label_ids,
             })
 
-        logger.info(f"✅ Gmail list: user={user_id}, count={len(emails)}, query={query!r}")
+        logger.info(f"✅ Gmail list: user={user_id}, count={len(emails)}")
         return {"emails": emails, "total": len(emails)}
 
     except HttpError as e:
-        logger.error(f"Gmail list error: {e}")
+        logger.error("Gmail list error: status=%s", getattr(getattr(e, "resp", None), "status", "unknown"))
         status = e.resp.status if hasattr(e, "resp") else 500
         if status in (401, 403):
             raise HTTPException(status_code=401, detail={
@@ -975,7 +974,7 @@ async def google_gmail_send(
         service = build("gmail", "v1", credentials=credentials)
         sent = service.users().messages().send(userId="me", body=send_body).execute()
 
-        logger.info(f"✅ Gmail sent: user={user_id}, to={to_list}, msg_id={sent.get('id')}")
+        logger.info(f"✅ Gmail sent: user={user_id}, recipient_count={len(to_list)}, msg_id={sent.get('id')}")
         return MailSendResponse(
             success=True,
             message=f"Email sent successfully to {', '.join(to_list)}",
@@ -983,7 +982,7 @@ async def google_gmail_send(
         )
 
     except HttpError as e:
-        logger.error(f"Gmail API error: {e}")
+        logger.error("Gmail API error: status=%s", getattr(getattr(e, "resp", None), "status", "unknown"))
         status = e.resp.status if hasattr(e, "resp") else 500
         if status in (401, 403):
             raise HTTPException(status_code=401, detail={
@@ -1075,10 +1074,9 @@ def _ms_request(
     if m in ("POST", "PATCH", "PUT"):
         headers["Content-Type"] = "application/json"
 
-    auth_prefix = f"Bearer {access_token[:16]}..." if access_token else "Bearer (EMPTY!)"
     logger.info(
-        "[MS_GRAPH] → %s %s  auth_prefix=%s",
-        m, url, auth_prefix,
+        "[MS_GRAPH] → %s %s",
+        m, url,
     )
     resp = http_requests.request(method=m, url=url, headers=headers, **kwargs)
     logger.info("[MS_GRAPH] ← %s %s  status=%s", method.upper(), url, resp.status_code)
@@ -1096,10 +1094,9 @@ def _ms_request(
             "[MS_GRAPH] 401 Unauthorized.\n"
             "  endpoint        = %s\n"
             "  status          = 401\n"
-            "  body            = %.500s\n"
             "  WWW-Authenticate= %s\n"
             "  request-id      = %s",
-            url, resp_body_401, www_auth_401, req_id_401,
+            url, www_auth_401, req_id_401,
         )
         if user_id:
             try:
@@ -1131,10 +1128,9 @@ def _ms_request(
                     logger.error(
                         "[MS_GRAPH] Retry also failed.\n"
                         "  status          = %s\n"
-                        "  body            = %.300s\n"
                         "  WWW-Authenticate= %s\n"
                         "  request-id      = %s",
-                        retry_resp.status_code, retry_resp.text, retry_www, retry_req_id,
+                        retry_resp.status_code, retry_www, retry_req_id,
                     )
             except HTTPException:
                 pass  # refresh failed; fall through to 401
@@ -1169,10 +1165,9 @@ def _ms_request(
         logger.error(
             "[MS_GRAPH] 403 Forbidden.\n"
             "  endpoint        = %s\n"
-            "  body            = %.500s\n"
             "  WWW-Authenticate= %s\n"
             "  request-id      = %s",
-            url, resp_body_403, www_auth_403, req_id_403,
+            url, www_auth_403, req_id_403,
         )
         raise HTTPException(
             status_code=403,
@@ -1204,10 +1199,9 @@ def _ms_request(
             "[MS_GRAPH] Non-2xx error.\n"
             "  endpoint        = %s\n"
             "  status          = %s\n"
-            "  body            = %.500s\n"
             "  WWW-Authenticate= %s\n"
             "  request-id      = %s",
-            url, resp.status_code, resp_body_err, www_auth_err, req_id_err,
+            url, resp.status_code, www_auth_err, req_id_err,
         )
         raise HTTPException(
             status_code=502,
@@ -1451,7 +1445,7 @@ async def microsoft_calendar_create_event(
             body["recurrence"] = {"pattern": recurrence_pattern, "range": recurrence_range}
 
         created = _ms_request("POST", "/me/calendar/events", access_token, user_id=user_id, json=body)
-        logger.info(f"✅ Created Outlook calendar event '{request.summary}' for user {user_id}")
+        logger.info(f"✅ Created Outlook calendar event for user {user_id}, event_id={created.get('id')}")
         return CalendarEvent(
             id=created["id"],
             summary=created.get("subject", request.summary),
@@ -1654,7 +1648,10 @@ async def microsoft_mail_send(
                 message["bccRecipients"] = [{"emailAddress": {"address": e}} for e in bcc_list]
             _ms_request("POST", "/me/sendMail", access_token, user_id=user_id, json={"message": message, "saveToSentItems": True})
 
-        logger.info(f"✅ Outlook email sent: user={user_id}, to={to_list}, subject='{request.subject}', reply_to_id={request.reply_to_id}")
+        logger.info(
+            f"✅ Outlook email sent: user={user_id}, recipient_count={len(to_list)}, "
+            f"reply_to_id_present={request.reply_to_id is not None}"
+        )
         return MailSendResponse(
             success=True,
             message=f"Email sent successfully via Outlook to {', '.join(to_list)}",
@@ -1863,9 +1860,9 @@ async def microsoft_debug_me(user_id: str = Query("default_user")):
     }
 
     logger.info(
-        "[DEBUG_ME] user=%s  token_len=%d  token_prefix=%s  "
+        "[DEBUG_ME] user=%s  token_len=%d  "
         "jwt.aud=%s  jwt.iss=%s  jwt.scp=%s  jwt.tid=%s",
-        user_id, token_len, token_prefix,
+        user_id, token_len,
         token_info["aud"], token_info["iss"], token_info["scp"], token_info["tid"],
     )
 
@@ -1894,8 +1891,8 @@ async def microsoft_debug_me(user_id: str = Query("default_user")):
         body_snippet = me_resp.text[:500]
 
     logger.info(
-        "[DEBUG_ME] user=%s  GET /me → status=%s  www_authenticate=%s  request_id=%s  body=%.300s",
-        user_id, resp_status, www_auth, ms_request_id, body_snippet,
+        "[DEBUG_ME] user=%s  GET /me → status=%s  www_authenticate_present=%s  request_id=%s",
+        user_id, resp_status, www_auth is not None, ms_request_id,
     )
 
     if me_resp.ok:

@@ -226,8 +226,8 @@ class ExecutiveAgent:
               "error":         str | None,
           }
         """
-        logger.info("[AGENT] message='%s' user=%s cal=%s mail=%s",
-                    user_message, user_id, calendar_provider, mail_provider)
+        logger.info("[AGENT] message received user=%s cal=%s mail=%s chars=%d",
+                    user_id, calendar_provider, mail_provider, len(user_message or ""))
 
         self.memory.current_user_id = user_id
         self.memory.add_message("user", user_message)
@@ -440,10 +440,10 @@ class ExecutiveAgent:
                 try:
                     args = json.loads(raw_args)
                 except json.JSONDecodeError:
-                    logger.warning("[LOOP] Could not parse tool args for %s: %s", name, raw_args)
+                    logger.warning("[LOOP] Could not parse tool args for %s", name)
                     args = {}
 
-                logger.info("[LOOP] Tool call: %s | args=%s", name, list(args.keys()))
+                logger.info("[LOOP] Tool call: %s | arg_count=%d", name, len(args))
 
                 if name in CONFIRMATION_REQUIRED_TOOLS:
                     # Resolve provider before storing
@@ -703,7 +703,13 @@ class ExecutiveAgent:
         base_url = os.getenv("BACKEND_URL", "http://localhost:8000")
         endpoint = f"{base_url}/api/integrations/{provider}/calendar/events"
 
-        logger.info("[EXEC] Calendar create → %s payload=%s", endpoint, json.dumps(payload))
+        logger.info(
+            "[EXEC] Calendar create requested provider=%s attendee_count=%d has_description=%s has_location=%s",
+            provider,
+            len(payload.get("attendees") or []),
+            bool(payload.get("description")),
+            bool(payload.get("location")),
+        )
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -806,7 +812,11 @@ class ExecutiveAgent:
         base_url = os.getenv("BACKEND_URL", "http://localhost:8000")
         endpoint = f"{base_url}/api/integrations/{provider}/calendar/events"
 
-        logger.info("[EXEC] Recurring calendar create → %s recurrence=%s", endpoint, payload.get("recurrence"))
+        logger.info(
+            "[EXEC] Recurring calendar create requested provider=%s recurrence=%s",
+            provider,
+            bool(payload.get("recurrence")),
+        )
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -883,7 +893,12 @@ class ExecutiveAgent:
         base_url = os.getenv("BACKEND_URL", "http://localhost:8000")
         endpoint = f"{base_url}/api/integrations/{provider}/calendar/events/{event_id}"
 
-        logger.info("[EXEC] Calendar update → PATCH %s payload=%s", endpoint, json.dumps(payload))
+        logger.info(
+            "[EXEC] Calendar update requested provider=%s event_id=%s field_count=%d",
+            provider,
+            event_id,
+            len(payload),
+        )
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -992,7 +1007,12 @@ class ExecutiveAgent:
         else:
             endpoint = f"{base_url}/api/integrations/microsoft/mail/send"
 
-        logger.info("[EXEC] Email send → %s to=%s subject=%s", endpoint, to_str, subject)
+        logger.info(
+            "[EXEC] Email send requested provider=%s recipient_count=%d has_subject=%s",
+            provider,
+            len([addr for addr in to_str.split(",") if addr.strip()]),
+            bool(subject),
+        )
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -1064,7 +1084,7 @@ class ExecutiveAgent:
         base_url = os.getenv("BACKEND_URL", "http://localhost:8000")
         endpoint = f"{base_url}/api/integrations/{endpoint_path}"
 
-        logger.info("[EXEC] Email reply → %s thread=%s", endpoint, thread_id)
+        logger.info("[EXEC] Email reply requested provider=%s", provider)
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:

@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, st
 from pydantic import BaseModel
 
 from voice import contacts as _contacts
+from voice.call_trigger import mask_number
 
 logger = logging.getLogger(__name__)
 
@@ -243,7 +244,7 @@ async def dial(request: DialRequest):
             detail={"code": "DIAL_FAILED", "message": result},
         )
 
-    logger.info("Outbound call initiated: number=%s uuid=%s", request.number, result)
+    logger.info("Outbound call initiated: masked_number=%s uuid=%s", mask_number(request.number), result)
     return {"status": "dialing", "number": request.number, "uuid": result}
 
 
@@ -302,7 +303,7 @@ async def whisper(request: WhisperRequest):
             detail={"code": "EMPTY_INSTRUCTION", "message": "Instruction cannot be empty."},
         )
     phone_state["whisper_queue"].put_nowait(instruction)
-    logger.info("Operator whisper queued: %s", instruction[:120])
+    logger.info("Operator whisper queued: length=%d", len(instruction))
     return {"status": "queued", "instruction": instruction}
 
 

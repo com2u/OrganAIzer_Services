@@ -15,6 +15,7 @@ import threading
 from typing import Optional
 
 from voice import config
+from voice.call_trigger import mask_number
 from voice.esl_client import send_api_command
 
 logger = logging.getLogger(__name__)
@@ -70,7 +71,7 @@ def originate_call(
     endpoint = f"sofia/gateway/comtrexx/{number}"
     cmd = f"originate {vars_str}{endpoint} &socket({socket_addr} async full)"
 
-    logger.info("ESL originate → %s", number)
+    logger.info("ESL originate → masked_number=%s", mask_number(number))
     result = send_api_command(cmd)
 
     if not result:
@@ -82,7 +83,7 @@ def originate_call(
         return False, result
 
     uuid = result[3:].strip()   # "+OK <uuid>" → "<uuid>"
-    logger.info("ESL originate accepted: uuid=%s number=%s", uuid, number)
+    logger.info("ESL originate accepted: uuid=%s masked_number=%s", uuid, mask_number(number))
 
     with _lock:
         _pending[uuid] = {
