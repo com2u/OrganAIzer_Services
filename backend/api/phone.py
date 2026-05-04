@@ -10,6 +10,7 @@ Endpoints:
 import asyncio
 import logging
 import queue as _queue
+import re
 import threading
 from typing import Optional
 
@@ -17,11 +18,17 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, st
 from pydantic import BaseModel
 
 from voice import contacts as _contacts
-from voice.call_trigger import mask_number
+from voice.call_trigger import is_german_number, mask_number
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["phone"])
+
+_AFFIRMATIVE_MESSAGE_RE = re.compile(
+    r"^(yes|ja|ok|okay|yep|yeah|sure|yup|"
+    r"klar|genau|stimmt|gerne|bitte|los|weiter|mach es|ruf an|anrufen)$",
+    re.IGNORECASE,
+)
 
 # ── shared state ──────────────────────────────────────────────────────────────
 # sip_client.py / call_handler.py import and mutate this dict.
@@ -207,6 +214,15 @@ async def dial(request: DialRequest):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "CALL_IN_PROGRESS", "message": "A call is already active."},
+        )
+
+    if not is_german_number(request.number):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "NON_GERMAN_NUMBER",
+                "message": "Ich kann aktuell nur deutsche Telefonnummern anrufen.",
+            },
         )
 
     lang = request.lang or _vc.AI_LANGUAGE
@@ -557,6 +573,13 @@ async def handle_call_message(request: CallMessageRequest):
     per-session confirmation state, and fires originate_call() on approval.
     Returns 409 if action == "calling" but a call is already active.
     """
+    if _AFFIRMATIVE_MESSAGE_RE.match(request.message.strip()):
+        if phone_state.get("active_call") or phone_state.get("ringing_call"):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "CALL_IN_PROGRESS", "message": "A call is already active."},
+            )
+
     from voice.call_trigger import handle_message
 
     result = handle_message(request.message, request.session_id)
