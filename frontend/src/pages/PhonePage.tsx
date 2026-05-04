@@ -54,6 +54,17 @@ interface CallLogEntry {
   summary: string;
 }
 
+interface CallMessageOption {
+  display_name?: string;
+  masked_number?: string;
+}
+
+interface CallMessageResponse {
+  action?: 'confirm_prompt' | 'calling' | 'cancelled' | 'error' | 'clarification_needed' | 'none' | string;
+  message?: string;
+  options?: CallMessageOption[];
+}
+
 // ── audio worklet source (inline blob) ───────────────────────────────────────
 // Downsamples mic audio (browser rate → 8 kHz int16) for the SIP side,
 // and upsamples received 8 kHz int16 back to browser rate for playback.
@@ -150,6 +161,11 @@ export default function PhonePage() {
   const [dialNum,  setDialNum]  = useState('');
   const [dialErr,  setDialErr]  = useState<string | null>(null);
   const [dialing,  setDialing]  = useState(false);
+  const [callRequest, setCallRequest] = useState('');
+  const [callFlowMsg, setCallFlowMsg] = useState<string | null>(null);
+  const [callFlowAction, setCallFlowAction] = useState<string | null>(null);
+  const [callFlowOptions, setCallFlowOptions] = useState<CallMessageOption[]>([]);
+  const [callFlowLoading, setCallFlowLoading] = useState(false);
   const [deciding, setDeciding] = useState(false);
   const [hangingUp, setHangingUp] = useState(false);
   const [whisper,  setWhisper]  = useState('');
@@ -239,6 +255,56 @@ export default function PhonePage() {
   };
 
   // ── ring decision ────────────────────────────────────────────────────────────
+
+  const handleCallMessage = async (message: string) => {
+    const text = message.trim();
+    if (!text) return;
+
+    setCallFlowLoading(true);
+    setCallFlowMsg(null);
+    setCallFlowOptions([]);
+
+    try {
+      const r = await fetch(`${API_BASE_URL}/api/phone/message`, {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({ message: text, session_id: 'phone_page' }),
+      });
+      const data = await r.json().catch(() => ({}));
+
+      if (!r.ok) {
+        setCallFlowAction('error');
+        setCallFlowMsg(
+          r.status === 409
+            ? data?.detail?.message ?? 'A call is already active.'
+            : data?.detail?.message ?? `Error ${r.status}`
+        );
+        return;
+      }
+
+      const result = data as CallMessageResponse;
+      const action = result.action ?? 'none';
+      setCallFlowAction(action);
+      setCallFlowOptions(result.options ?? []);
+
+      if (action === 'none') {
+        setCallFlowMsg('No call request detected');
+      } else {
+        setCallFlowMsg(result.message ?? '');
+      }
+
+      if (action === 'calling') {
+        setCallRequest('');
+        setCallFlowOptions([]);
+        await loadStatus();
+      }
+    } catch {
+      setCallFlowAction('error');
+      setCallFlowMsg('Could not reach the backend.');
+    } finally {
+      setCallFlowLoading(false);
+    }
+  };
 
   const handleRingDecision = async (decision: 'ai' | 'human') => {
     setDeciding(true);
@@ -563,6 +629,68 @@ export default function PhonePage() {
         )}
 
         {/* ── Dial pad ── */}
+        <div className="bg-white rounded-lg shadow-sm p-6">
+          <h2 className="text-lg font-semibold text-gray-800 mb-4">AI call request</h2>
+          <div className="space-y-3">
+            <textarea
+              rows={3}
+              placeholder="Rufe Max an und sag ihm, dass der Termin verschoben wurde"
+              value={callRequest}
+              onChange={e => {
+                setCallRequest(e.target.value);
+                setCallFlowMsg(null);
+                setCallFlowOptions([]);
+              }}
+              className="w-full border border-gray-300 rounded-lg px-4 py-2.5 text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-green-500 resize-none"
+            />
+            <div className="flex flex-wrap gap-3">
+              <button
+                onClick={() => handleCallMessage(callRequest)}
+                disabled={callFlowLoading || !callRequest.trim()}
+                className="px-5 py-2.5 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {callFlowLoading ? 'Sending...' : 'Send request'}
+              </button>
+              {callFlowAction === 'confirm_prompt' && (
+                <>
+                  <button
+                    onClick={() => handleCallMessage('ja')}
+                    disabled={callFlowLoading}
+                    className="px-4 py-2.5 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                  >
+                    Ja
+                  </button>
+                  <button
+                    onClick={() => handleCallMessage('nein')}
+                    disabled={callFlowLoading}
+                    className="px-4 py-2.5 border border-gray-300 text-gray-700 rounded-lg font-medium hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                  >
+                    Nein
+                  </button>
+                </>
+              )}
+            </div>
+            {callFlowMsg && (
+              <div className={`text-sm rounded px-3 py-2 border ${
+                callFlowAction === 'error'
+                  ? 'bg-amber-50 border-amber-200 text-amber-700'
+                  : 'bg-green-50 border-green-200 text-green-800'
+              }`}>
+                <p>{callFlowMsg}</p>
+                {callFlowAction === 'clarification_needed' && callFlowOptions.length > 0 && (
+                  <ul className="mt-2 list-disc pl-5 space-y-1">
+                    {callFlowOptions.map((option, idx) => (
+                      <li key={idx}>
+                        {[option.display_name, option.masked_number].filter(Boolean).join(' - ')}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
         <div className="bg-white rounded-lg shadow-sm p-6">
           <h2 className="text-lg font-semibold text-gray-800 mb-4">Dial</h2>
           <div className="flex gap-3">
