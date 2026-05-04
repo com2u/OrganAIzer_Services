@@ -1,0 +1,455 @@
+"""
+Executive Agent safety tests for services/executive_agent_service.py.
+
+Covers:
+  - Every propose_* tool returns type="confirmation_required" and does NOT
+    make any HTTP call (no email sent, no calendar mutated)
+  - cancel clears pending_action and makes no HTTP call
+  - CONFIRMATION_REQUIRED_TOOLS is complete and correct
+
+No real LLM calls, no real HTTP calls, no real Google/Microsoft API.
+chat_with_tools is mocked for every test that reaches the LLM loop.
+httpx.AsyncClient is patched to assert it is never called on propose_ paths.
+"""
+
+import asyncio
+import json
+import sys
+import os
+from unittest.mock import patch, MagicMock, AsyncMock
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from services.tool_definitions import TOOLS, CONFIRMATION_REQUIRED_TOOLS
+from services.executive_agent_service import ExecutiveAgent
+
+
+def _run(coro):
+    return asyncio.get_event_loop().run_until_complete(coro)
+
+
+def _llm_response(tool_name: str, args: dict) -> dict:
+    """Fake chat_with_tools return value containing one tool call."""
+    return {
+        "tool_calls": [
+            {
+                "function": {
+                    "name": tool_name,
+                    "arguments": json.dumps(args),
+                },
+                "id": f"call_{tool_name}",
+            }
+        ],
+        "content": None,
+    }
+
+
+def _mock_chat_service(response: dict) -> MagicMock:
+    """Mock ChatService whose chat_with_tools always returns response."""
+    svc = MagicMock()
+    svc.chat_with_tools = AsyncMock(return_value=response)
+    return svc
+
+
+def _clear_sessions():
+    ExecutiveAgent.sessions.clear()
+
+
+# =============================================================================
+# CONFIRMATION_REQUIRED_TOOLS completeness — no mocks needed
+# =============================================================================
+
+class TestConfirmationRequiredToolsCompleteness:
+    """Pure data tests: the safety gate set must be exactly right."""
+
+    def test_all_propose_tools_in_confirmation_set(self):
+        propose_names = {
+            t["function"]["name"]
+            for t in TOOLS
+            if t["function"]["name"].startswith("propose_")
+        }
+        for name in propose_names:
+            assert name in CONFIRMATION_REQUIRED_TOOLS, (
+                f"{name} is a propose_ tool but missing from CONFIRMATION_REQUIRED_TOOLS"
+            )
+
+    def test_read_tools_not_in_confirmation_set(self):
+        for name in ("list_calendar_events", "read_emails", "lookup_contact"):
+            assert name not in CONFIRMATION_REQUIRED_TOOLS
+
+    def test_confirmation_set_has_exactly_six_tools(self):
+        assert len(CONFIRMATION_REQUIRED_TOOLS) == 6
+
+    def test_all_confirmation_tools_are_propose_tools(self):
+        for name in CONFIRMATION_REQUIRED_TOOLS:
+            assert name.startswith("propose_"), (
+                f"{name!r} in CONFIRMATION_REQUIRED_TOOLS does not start with 'propose_'"
+            )
+
+    def test_confirmation_set_contains_expected_tools(self):
+        expected = {
+            "propose_create_calendar_event",
+            "propose_update_calendar_event",
+            "propose_delete_calendar_event",
+            "propose_send_email",
+            "propose_reply_email",
+            "propose_create_recurring_event",
+        }
+        assert CONFIRMATION_REQUIRED_TOOLS == expected
+
+
+# =============================================================================
+# propose_send_email and propose_reply_email — no email sent
+# =============================================================================
+
+class TestProposeEmailDoesNotSend:
+
+    def setup_method(self):
+        _clear_sessions()
+
+    def teardown_method(self):
+        _clear_sessions()
+
+    def test_propose_send_email_returns_confirmation_required(self):
+        sid = "test_exec_send_email_cr"
+        args = {"to": ["alice@example.com"], "subject": "Hello", "body": "Test body"}
+        svc = _mock_chat_service(_llm_response("propose_send_email", args))
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc):
+            agent = ExecutiveAgent(session_id=sid)
+            result = _run(agent.process_message("send an email to alice", user_id="test_user"))
+
+        assert result["type"] == "confirmation_required"
+        assert result["success"] is True
+
+    def test_propose_send_email_does_not_call_http(self):
+        sid = "test_exec_send_email_http"
+        args = {"to": ["alice@example.com"], "subject": "Hello", "body": "Test body"}
+        svc = _mock_chat_service(_llm_response("propose_send_email", args))
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc):
+            with patch("services.executive_agent_service.httpx.AsyncClient") as mock_client:
+                agent = ExecutiveAgent(session_id=sid)
+                _run(agent.process_message("send an email to alice", user_id="test_user"))
+
+        mock_client.assert_not_called()
+
+    def test_propose_send_email_sets_pending_action(self):
+        sid = "test_exec_send_email_pend"
+        args = {"to": ["alice@example.com"], "subject": "Hello", "body": "Test body"}
+        svc = _mock_chat_service(_llm_response("propose_send_email", args))
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc):
+            agent = ExecutiveAgent(session_id=sid)
+            _run(agent.process_message("send an email to alice", user_id="test_user"))
+
+        pending = agent.memory.get_pending_action()
+        assert pending is not None
+        assert pending["type"] == "propose_send_email"
+
+    def test_propose_reply_email_returns_confirmation_required(self):
+        sid = "test_exec_reply_email_cr"
+        args = {
+            "thread_id": "thread-123",
+            "original_subject": "Meeting update",
+            "body": "Sounds good, see you then.",
+        }
+        svc = _mock_chat_service(_llm_response("propose_reply_email", args))
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc):
+            agent = ExecutiveAgent(session_id=sid)
+            result = _run(agent.process_message("reply to the meeting email", user_id="test_user"))
+
+        assert result["type"] == "confirmation_required"
+
+    def test_propose_reply_email_does_not_call_http(self):
+        sid = "test_exec_reply_email_http"
+        args = {
+            "thread_id": "thread-123",
+            "original_subject": "Meeting update",
+            "body": "Sounds good, see you then.",
+        }
+        svc = _mock_chat_service(_llm_response("propose_reply_email", args))
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc):
+            with patch("services.executive_agent_service.httpx.AsyncClient") as mock_client:
+                agent = ExecutiveAgent(session_id=sid)
+                _run(agent.process_message("reply to the meeting email", user_id="test_user"))
+
+        mock_client.assert_not_called()
+
+
+# =============================================================================
+# Calendar propose_ tools — no calendar mutated
+# =============================================================================
+
+class TestProposeCalendarDoesNotMutate:
+
+    def setup_method(self):
+        _clear_sessions()
+
+    def teardown_method(self):
+        _clear_sessions()
+
+    def test_propose_create_event_returns_confirmation_required(self):
+        sid = "test_exec_create_cal_cr"
+        args = {
+            "title": "Team Meeting",
+            "start": "2026-06-01T10:00:00",
+            "end": "2026-06-01T11:00:00",
+        }
+        svc = _mock_chat_service(_llm_response("propose_create_calendar_event", args))
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc):
+            agent = ExecutiveAgent(session_id=sid)
+            result = _run(agent.process_message("create a meeting", user_id="test_user"))
+
+        assert result["type"] == "confirmation_required"
+
+    def test_propose_create_event_does_not_call_http(self):
+        sid = "test_exec_create_cal_http"
+        args = {
+            "title": "Team Meeting",
+            "start": "2026-06-01T10:00:00",
+            "end": "2026-06-01T11:00:00",
+        }
+        svc = _mock_chat_service(_llm_response("propose_create_calendar_event", args))
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc):
+            with patch("services.executive_agent_service.httpx.AsyncClient") as mock_client:
+                agent = ExecutiveAgent(session_id=sid)
+                _run(agent.process_message("create a meeting", user_id="test_user"))
+
+        mock_client.assert_not_called()
+
+    def test_propose_update_event_returns_confirmation_required(self):
+        sid = "test_exec_update_cal_cr"
+        args = {
+            "event_id": "abc123",
+            "event_title": "Team Meeting",
+            "new_title": "Project Sync",
+        }
+        svc = _mock_chat_service(_llm_response("propose_update_calendar_event", args))
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc):
+            agent = ExecutiveAgent(session_id=sid)
+            result = _run(agent.process_message("rename my meeting", user_id="test_user"))
+
+        assert result["type"] == "confirmation_required"
+
+    def test_propose_update_event_does_not_call_http(self):
+        sid = "test_exec_update_cal_http"
+        args = {
+            "event_id": "abc123",
+            "event_title": "Team Meeting",
+            "new_title": "Project Sync",
+        }
+        svc = _mock_chat_service(_llm_response("propose_update_calendar_event", args))
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc):
+            with patch("services.executive_agent_service.httpx.AsyncClient") as mock_client:
+                agent = ExecutiveAgent(session_id=sid)
+                _run(agent.process_message("rename my meeting", user_id="test_user"))
+
+        mock_client.assert_not_called()
+
+    def test_propose_delete_event_returns_confirmation_required(self):
+        sid = "test_exec_delete_cal_cr"
+        args = {"event_id": "abc123", "event_title": "Team Meeting"}
+        svc = _mock_chat_service(_llm_response("propose_delete_calendar_event", args))
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc):
+            agent = ExecutiveAgent(session_id=sid)
+            result = _run(agent.process_message("delete my meeting", user_id="test_user"))
+
+        assert result["type"] == "confirmation_required"
+
+    def test_propose_delete_event_does_not_call_http(self):
+        sid = "test_exec_delete_cal_http"
+        args = {"event_id": "abc123", "event_title": "Team Meeting"}
+        svc = _mock_chat_service(_llm_response("propose_delete_calendar_event", args))
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc):
+            with patch("services.executive_agent_service.httpx.AsyncClient") as mock_client:
+                agent = ExecutiveAgent(session_id=sid)
+                _run(agent.process_message("delete my meeting", user_id="test_user"))
+
+        mock_client.assert_not_called()
+
+    def test_propose_create_recurring_event_returns_confirmation_required(self):
+        sid = "test_exec_recurring_cr"
+        args = {
+            "title": "Weekly Standup",
+            "start": "2026-06-02T09:00:00",
+            "end": "2026-06-02T09:30:00",
+            "recurrence": "weekly",
+        }
+        svc = _mock_chat_service(_llm_response("propose_create_recurring_event", args))
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc):
+            agent = ExecutiveAgent(session_id=sid)
+            result = _run(agent.process_message("create weekly standup", user_id="test_user"))
+
+        assert result["type"] == "confirmation_required"
+
+    def test_propose_create_recurring_event_does_not_call_http(self):
+        sid = "test_exec_recurring_http"
+        args = {
+            "title": "Weekly Standup",
+            "start": "2026-06-02T09:00:00",
+            "end": "2026-06-02T09:30:00",
+            "recurrence": "weekly",
+        }
+        svc = _mock_chat_service(_llm_response("propose_create_recurring_event", args))
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc):
+            with patch("services.executive_agent_service.httpx.AsyncClient") as mock_client:
+                agent = ExecutiveAgent(session_id=sid)
+                _run(agent.process_message("create weekly standup", user_id="test_user"))
+
+        mock_client.assert_not_called()
+
+
+# =============================================================================
+# cancel clears pending_action — no HTTP call
+# =============================================================================
+
+class TestCancelClearsPendingAction:
+
+    def setup_method(self):
+        _clear_sessions()
+
+    def teardown_method(self):
+        _clear_sessions()
+
+    def test_cancel_after_propose_email_clears_pending(self):
+        sid = "test_exec_cancel_email"
+        args = {"to": ["bob@example.com"], "subject": "Test", "body": "Hi"}
+        svc = _mock_chat_service(_llm_response("propose_send_email", args))
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc):
+            agent = ExecutiveAgent(session_id=sid)
+            _run(agent.process_message("send email to bob", user_id="test_user"))
+
+        assert agent.memory.get_pending_action() is not None
+
+        cancel_result = _run(agent.process_message("cancel", user_id="test_user"))
+
+        assert cancel_result["type"] == "cancelled"
+        assert cancel_result["success"] is True
+        assert agent.memory.get_pending_action() is None
+
+    def test_no_after_propose_cancels(self):
+        sid = "test_exec_cancel_no"
+        args = {"to": ["carol@example.com"], "subject": "Hello", "body": "Hi"}
+        svc = _mock_chat_service(_llm_response("propose_send_email", args))
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc):
+            agent = ExecutiveAgent(session_id=sid)
+            _run(agent.process_message("send email to carol", user_id="test_user"))
+
+        cancel_result = _run(agent.process_message("no", user_id="test_user"))
+
+        assert cancel_result["type"] == "cancelled"
+        assert agent.memory.get_pending_action() is None
+
+    def test_stop_after_propose_calendar_cancels(self):
+        sid = "test_exec_cancel_stop"
+        args = {"event_id": "ev-456", "event_title": "Old Meeting"}
+        svc = _mock_chat_service(_llm_response("propose_delete_calendar_event", args))
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc):
+            agent = ExecutiveAgent(session_id=sid)
+            _run(agent.process_message("delete the meeting", user_id="test_user"))
+
+        cancel_result = _run(agent.process_message("stop", user_id="test_user"))
+
+        assert cancel_result["type"] == "cancelled"
+        assert agent.memory.get_pending_action() is None
+
+    def test_cancel_makes_no_http_call(self):
+        sid = "test_exec_cancel_http"
+        args = {"to": ["bob@example.com"], "subject": "Test", "body": "Hi"}
+        svc = _mock_chat_service(_llm_response("propose_send_email", args))
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc):
+            with patch("services.executive_agent_service.httpx.AsyncClient") as mock_client:
+                agent = ExecutiveAgent(session_id=sid)
+                _run(agent.process_message("send email to bob", user_id="test_user"))
+                _run(agent.process_message("cancel", user_id="test_user"))
+
+        mock_client.assert_not_called()
+
+
+# =============================================================================
+# No HTTP on first turn — all 6 propose_ tools
+# =============================================================================
+
+class TestNoHttpOnAnyProposeTool:
+    """httpx.AsyncClient must never be entered on any propose_ first turn."""
+
+    def setup_method(self):
+        _clear_sessions()
+
+    def teardown_method(self):
+        _clear_sessions()
+
+    def _assert_no_http_and_confirm(self, sid: str, tool_name: str, args: dict):
+        svc = _mock_chat_service(_llm_response(tool_name, args))
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc):
+            with patch("services.executive_agent_service.httpx.AsyncClient") as mock_client:
+                agent = ExecutiveAgent(session_id=sid)
+                result = _run(agent.process_message("do it", user_id="test_user"))
+
+        assert result["type"] == "confirmation_required", (
+            f"{tool_name}: expected type='confirmation_required', got {result['type']!r}"
+        )
+        mock_client.assert_not_called()
+
+    def test_no_http_on_propose_send_email(self):
+        self._assert_no_http_and_confirm(
+            "test_exec_nhttp_send",
+            "propose_send_email",
+            {"to": ["x@y.com"], "subject": "S", "body": "B"},
+        )
+
+    def test_no_http_on_propose_reply_email(self):
+        self._assert_no_http_and_confirm(
+            "test_exec_nhttp_reply",
+            "propose_reply_email",
+            {"thread_id": "t1", "original_subject": "Test", "body": "OK"},
+        )
+
+    def test_no_http_on_propose_create_calendar_event(self):
+        self._assert_no_http_and_confirm(
+            "test_exec_nhttp_create",
+            "propose_create_calendar_event",
+            {"title": "Meeting", "start": "2026-07-01T10:00:00", "end": "2026-07-01T11:00:00"},
+        )
+
+    def test_no_http_on_propose_update_calendar_event(self):
+        self._assert_no_http_and_confirm(
+            "test_exec_nhttp_update",
+            "propose_update_calendar_event",
+            {"event_id": "ev1", "event_title": "Meeting", "new_title": "Sync"},
+        )
+
+    def test_no_http_on_propose_delete_calendar_event(self):
+        self._assert_no_http_and_confirm(
+            "test_exec_nhttp_delete",
+            "propose_delete_calendar_event",
+            {"event_id": "ev2", "event_title": "Old Meeting"},
+        )
+
+    def test_no_http_on_propose_create_recurring_event(self):
+        self._assert_no_http_and_confirm(
+            "test_exec_nhttp_recurring",
+            "propose_create_recurring_event",
+            {
+                "title": "Standup",
+                "start": "2026-07-01T09:00:00",
+                "end": "2026-07-01T09:30:00",
+                "recurrence": "weekly",
+            },
+        )
