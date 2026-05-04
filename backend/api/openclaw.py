@@ -5,7 +5,7 @@ This module provides API endpoints for integrating with OpenClaw.
 
 from fastapi import APIRouter, HTTPException
 from typing import Dict, Any
-from ..services.openclaw_client import OpenClawClient
+from services.openclaw_client import OpenClawClient
 import os
 
 router = APIRouter(tags=["openclaw"])

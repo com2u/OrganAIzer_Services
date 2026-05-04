@@ -174,7 +174,8 @@ Your role:
 
 Tone: confident, warm, human — not a sales robot reading a script.
 Length: 1 to 3 sentences per reply. You are being read aloud over the phone.
-Language: match the language the person is speaking. Start in English.
+Language: match the language of the opening line. Default to German.
+Switch to English only if the person responds in English.
 """
 
 

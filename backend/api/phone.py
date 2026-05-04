@@ -540,3 +540,31 @@ async def call_audio_ws(websocket: WebSocket):
         except Exception:
             pass
         logger.info("Operator bridge closed: uuid=%s", uuid)
+
+
+class CallMessageRequest(BaseModel):
+    message: str
+    session_id: str = "default"
+
+
+@router.post("/message")
+async def handle_call_message(request: CallMessageRequest):
+    """
+    Natural-language call trigger.
+
+    Detects call intent in *message*, resolves the target, manages a
+    per-session confirmation state, and fires originate_call() on approval.
+    Returns 409 if action == "calling" but a call is already active.
+    """
+    from voice.call_trigger import handle_message
+
+    result = handle_message(request.message, request.session_id)
+
+    if result.get("action") == "calling":
+        if phone_state.get("active_call") or phone_state.get("ringing_call"):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "CALL_IN_PROGRESS", "message": "A call is already active."},
+            )
+
+    return result

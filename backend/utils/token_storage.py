@@ -38,7 +38,6 @@ class TokenStorage:
             # Generate a key if not set WARNING: NOT FOR PRODUCTION
             logger.warning("TOKEN_ENCRYPTION_KEY not set - generating temporary key")
             key = Fernet.generate_key().decode()
-            logger.warning(f"Generated key (save this in .env): TOKEN_ENCRYPTION_KEY={key}")
         
         # Ensure key is bytes
         if isinstance(key, str):
