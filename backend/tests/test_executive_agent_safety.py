@@ -215,13 +215,24 @@ class TestProposeCalendarDoesNotMutate:
         }
         svc = _mock_chat_service(_llm_response("propose_create_calendar_event", args))
 
+        # Proper async mock: GET conflict check returns empty (no conflict); POST is a spy.
+        mock_resp = MagicMock()
+        mock_resp.is_success = True
+        mock_resp.json.return_value = {"events": []}
+        mock_http = AsyncMock()
+        mock_http.get = AsyncMock(return_value=mock_resp)
+        mock_http.post = AsyncMock()
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        mock_cls = MagicMock(return_value=mock_cm)
+
         with patch("services.executive_agent_service.get_chat_service", return_value=svc):
-            with patch("services.executive_agent_service.httpx.AsyncClient") as mock_client:
+            with patch("services.executive_agent_service.httpx.AsyncClient", mock_cls):
                 agent = ExecutiveAgent(session_id=sid)
                 _run(agent.process_message("create a meeting", user_id="test_user"))
 
-        # GET for conflict check is allowed; assert no POST (mutation) was made
-        mock_client.return_value.__aenter__.return_value.post.assert_not_called()
+        mock_http.post.assert_not_called()
 
     def test_propose_update_event_returns_confirmation_required(self):
         sid = "test_exec_update_cal_cr"
@@ -398,8 +409,20 @@ class TestNoHttpOnAnyProposeTool:
     def _assert_no_http_and_confirm(self, sid: str, tool_name: str, args: dict):
         svc = _mock_chat_service(_llm_response(tool_name, args))
 
+        # Proper async mock: GET conflict check returns empty (no conflict); POST is a spy.
+        mock_resp = MagicMock()
+        mock_resp.is_success = True
+        mock_resp.json.return_value = {"events": []}
+        mock_http = AsyncMock()
+        mock_http.get = AsyncMock(return_value=mock_resp)
+        mock_http.post = AsyncMock()
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        mock_cls = MagicMock(return_value=mock_cm)
+
         with patch("services.executive_agent_service.get_chat_service", return_value=svc):
-            with patch("services.executive_agent_service.httpx.AsyncClient") as mock_client:
+            with patch("services.executive_agent_service.httpx.AsyncClient", mock_cls):
                 agent = ExecutiveAgent(session_id=sid)
                 result = _run(agent.process_message("do it", user_id="test_user"))
 
@@ -407,7 +430,7 @@ class TestNoHttpOnAnyProposeTool:
             f"{tool_name}: expected type='confirmation_required', got {result['type']!r}"
         )
         # GET for conflict check is allowed; assert no POST (mutation) was made
-        mock_client.return_value.__aenter__.return_value.post.assert_not_called()
+        mock_http.post.assert_not_called()
 
     def test_no_http_on_propose_send_email(self):
         self._assert_no_http_and_confirm(
