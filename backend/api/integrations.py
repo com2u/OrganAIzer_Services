@@ -1734,7 +1734,7 @@ async def microsoft_mail_list_messages(
         params: dict = {
             "$top": min(max_results, 20),
             "$orderby": "receivedDateTime desc",
-            "$select": "id,subject,from,receivedDateTime,bodyPreview,isRead",
+            "$select": "id,subject,from,receivedDateTime,bodyPreview,isRead,conversationId",
         }
         if filters:
             params["$filter"] = " and ".join(filters)
@@ -1754,6 +1754,7 @@ async def microsoft_mail_list_messages(
             from_addr = m.get("from", {}).get("emailAddress", {})
             emails.append({
                 "id": m["id"],
+                "thread_id": m.get("conversationId", ""),
                 "from": f"{from_addr.get('name', '')} <{from_addr.get('address', '')}>".strip(" <>"),
                 "subject": m.get("subject", "(No Subject)"),
                 "received": m.get("receivedDateTime", ""),
@@ -1848,7 +1849,7 @@ async def microsoft_mail_get_message(
             params={
                 "$select": (
                     "id,subject,from,toRecipients,ccRecipients,"
-                    "receivedDateTime,isRead,hasAttachments,body,bodyPreview"
+                    "receivedDateTime,isRead,hasAttachments,body,bodyPreview,conversationId"
                 )
             },
         )
@@ -1856,6 +1857,7 @@ async def microsoft_mail_get_message(
         logger.info(f"✅ Outlook mail get: user={user_id}, message_id={message_id}")
         return {
             "id": msg["id"],
+            "thread_id": msg.get("conversationId", ""),
             "subject": msg.get("subject", "(No Subject)"),
             "from": f"{from_addr.get('name', '')} <{from_addr.get('address', '')}>".strip(" <>"),
             "to": [

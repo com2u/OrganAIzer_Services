@@ -420,3 +420,92 @@ class TestGmailGetMessage:
         all_logs = " ".join(r.getMessage() for r in caplog.records)
         assert body_text not in all_logs, "body_text must not appear in logs"
         assert body_html not in all_logs, "body_html must not appear in logs"
+
+
+# ============================================================================
+# D. Outlook list includes thread_id
+# ============================================================================
+
+def _ms_list_msg(msg_id: str, conversation_id: str | None = "conv-ABC") -> dict:
+    m = {
+        "id": msg_id,
+        "from": {"emailAddress": {"name": "Alice", "address": "alice@example.com"}},
+        "subject": "Test Subject",
+        "receivedDateTime": "2026-05-05T10:00:00Z",
+        "bodyPreview": "Preview text",
+        "isRead": False,
+    }
+    if conversation_id is not None:
+        m["conversationId"] = conversation_id
+    return m
+
+
+def _ms_full_msg(msg_id: str, conversation_id: str | None = "conv-ABC") -> dict:
+    m = {
+        "id": msg_id,
+        "subject": "Full Subject",
+        "from": {"emailAddress": {"name": "Alice", "address": "alice@example.com"}},
+        "toRecipients": [{"emailAddress": {"address": "bob@example.com"}}],
+        "ccRecipients": [],
+        "receivedDateTime": "2026-05-05T10:00:00Z",
+        "isRead": True,
+        "hasAttachments": False,
+        "body": {"contentType": "text", "content": "Body text"},
+        "bodyPreview": "Preview",
+    }
+    if conversation_id is not None:
+        m["conversationId"] = conversation_id
+    return m
+
+
+class TestOutlookListThreadId:
+
+    def test_list_includes_thread_id(self):
+        data = {"value": [_ms_list_msg("msg001", "conv-ABC"), _ms_list_msg("msg002", "conv-XYZ")]}
+
+        with patch("api.integrations._ms_get_token", return_value="fake-token"), \
+             patch("api.integrations._ms_request", return_value=data):
+            resp = client.get("/api/integrations/microsoft/mail/messages?user_id=test_user")
+
+        assert resp.status_code == 200
+        emails = resp.json()["emails"]
+        assert len(emails) == 2
+        assert emails[0]["thread_id"] == "conv-ABC"
+        assert emails[1]["thread_id"] == "conv-XYZ"
+
+    def test_list_thread_id_empty_when_missing(self):
+        data = {"value": [_ms_list_msg("msg001", conversation_id=None)]}
+
+        with patch("api.integrations._ms_get_token", return_value="fake-token"), \
+             patch("api.integrations._ms_request", return_value=data):
+            resp = client.get("/api/integrations/microsoft/mail/messages?user_id=test_user")
+
+        assert resp.status_code == 200
+        assert resp.json()["emails"][0]["thread_id"] == ""
+
+
+# ============================================================================
+# E. Outlook full message includes thread_id
+# ============================================================================
+
+class TestOutlookGetMessageThreadId:
+
+    def test_get_message_includes_thread_id(self):
+        msg = _ms_full_msg("msg001", "conv-DEF")
+
+        with patch("api.integrations._ms_get_token", return_value="fake-token"), \
+             patch("api.integrations._ms_request", return_value=msg):
+            resp = client.get("/api/integrations/microsoft/mail/messages/msg001?user_id=test_user")
+
+        assert resp.status_code == 200
+        assert resp.json()["thread_id"] == "conv-DEF"
+
+    def test_get_message_thread_id_empty_when_missing(self):
+        msg = _ms_full_msg("msg001", conversation_id=None)
+
+        with patch("api.integrations._ms_get_token", return_value="fake-token"), \
+             patch("api.integrations._ms_request", return_value=msg):
+            resp = client.get("/api/integrations/microsoft/mail/messages/msg001?user_id=test_user")
+
+        assert resp.status_code == 200
+        assert resp.json()["thread_id"] == ""
