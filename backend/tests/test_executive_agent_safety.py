@@ -453,3 +453,279 @@ class TestNoHttpOnAnyProposeTool:
                 "recurrence": "weekly",
             },
         )
+
+
+# =============================================================================
+# read_emails updates ConversationMemory email fields
+# =============================================================================
+
+class TestReadEmailsUpdatesMemory:
+
+    def setup_method(self):
+        _clear_sessions()
+
+    def teardown_method(self):
+        _clear_sessions()
+
+    def _email_list_response(self):
+        return {
+            "emails": [
+                {
+                    "id": "msg-001",
+                    "thread_id": "thread-XYZ",
+                    "subject": "Budget Q3",
+                    "from": "Alice Example <alice@example.com>",
+                    "received": "2026-05-05T10:00:00Z",
+                    "preview": "See attached",
+                    "unread": True,
+                }
+            ],
+            "total": 1,
+        }
+
+    def _make_http_mock(self, json_data):
+        """Build an httpx.AsyncClient mock that returns json_data on .get()."""
+        mock_resp = MagicMock()
+        mock_resp.is_success = True
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = json_data
+
+        mock_http = AsyncMock()
+        mock_http.get = AsyncMock(return_value=mock_resp)
+
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+
+        mock_cls = MagicMock(return_value=mock_cm)
+        return mock_cls
+
+    def test_read_emails_sets_thread_id(self):
+        sid = "test_mem_thread_id"
+        svc = MagicMock()
+        svc.chat_with_tools = AsyncMock(side_effect=[
+            _llm_response("read_emails", {"count": 3}),
+            {"tool_calls": None, "content": "Here are your emails."},
+        ])
+        mock_cls = self._make_http_mock(self._email_list_response())
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc), \
+             patch("services.executive_agent_service.httpx.AsyncClient", mock_cls):
+            agent = ExecutiveAgent(session_id=sid)
+            _run(agent.process_message("show my emails", user_id="test_user"))
+
+        assert agent.memory.last_email_thread_id == "thread-XYZ"
+
+    def test_read_emails_sets_message_id(self):
+        sid = "test_mem_message_id"
+        svc = MagicMock()
+        svc.chat_with_tools = AsyncMock(side_effect=[
+            _llm_response("read_emails", {"count": 3}),
+            {"tool_calls": None, "content": "Here are your emails."},
+        ])
+        mock_cls = self._make_http_mock(self._email_list_response())
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc), \
+             patch("services.executive_agent_service.httpx.AsyncClient", mock_cls):
+            agent = ExecutiveAgent(session_id=sid)
+            _run(agent.process_message("show my emails", user_id="test_user"))
+
+        assert agent.memory.last_email_message_id == "msg-001"
+
+    def test_read_emails_sets_subject(self):
+        sid = "test_mem_subject"
+        svc = MagicMock()
+        svc.chat_with_tools = AsyncMock(side_effect=[
+            _llm_response("read_emails", {"count": 3}),
+            {"tool_calls": None, "content": "Here are your emails."},
+        ])
+        mock_cls = self._make_http_mock(self._email_list_response())
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc), \
+             patch("services.executive_agent_service.httpx.AsyncClient", mock_cls):
+            agent = ExecutiveAgent(session_id=sid)
+            _run(agent.process_message("show my emails", user_id="test_user"))
+
+        assert agent.memory.last_email_subject == "Budget Q3"
+
+    def test_read_emails_sets_sender_and_address(self):
+        sid = "test_mem_sender"
+        svc = MagicMock()
+        svc.chat_with_tools = AsyncMock(side_effect=[
+            _llm_response("read_emails", {"count": 3}),
+            {"tool_calls": None, "content": "Here are your emails."},
+        ])
+        mock_cls = self._make_http_mock(self._email_list_response())
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc), \
+             patch("services.executive_agent_service.httpx.AsyncClient", mock_cls):
+            agent = ExecutiveAgent(session_id=sid)
+            _run(agent.process_message("show my emails", user_id="test_user"))
+
+        assert agent.memory.last_email_sender == "Alice Example <alice@example.com>"
+        assert agent.memory.last_email_sender_address == "alice@example.com"
+
+    def test_read_emails_no_angle_brackets_uses_full_from(self):
+        sid = "test_mem_sender_plain"
+        data = {
+            "emails": [{
+                "id": "msg-002",
+                "thread_id": "thread-AAA",
+                "subject": "Hello",
+                "from": "bob@example.com",
+                "received": "",
+                "preview": "",
+                "unread": False,
+            }],
+            "total": 1,
+        }
+        svc = MagicMock()
+        svc.chat_with_tools = AsyncMock(side_effect=[
+            _llm_response("read_emails", {"count": 1}),
+            {"tool_calls": None, "content": "Got it."},
+        ])
+        mock_cls = self._make_http_mock(data)
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc), \
+             patch("services.executive_agent_service.httpx.AsyncClient", mock_cls):
+            agent = ExecutiveAgent(session_id=sid)
+            _run(agent.process_message("show my emails", user_id="test_user"))
+
+        assert agent.memory.last_email_sender_address == "bob@example.com"
+
+
+# =============================================================================
+# Empty/missing thread_id blocks reply before any HTTP call
+# =============================================================================
+
+class TestReplyEmailEmptyThreadIdGuard:
+
+    def setup_method(self):
+        _clear_sessions()
+
+    def teardown_method(self):
+        _clear_sessions()
+
+    def _agent_with_pending_reply(self, sid, thread_id_value, include_key=True):
+        svc = MagicMock()
+        svc.chat_with_tools = AsyncMock()
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc):
+            agent = ExecutiveAgent(session_id=sid)
+        args = {"original_subject": "Test", "body": "Hello", "provider": "gmail"}
+        if include_key:
+            args["thread_id"] = thread_id_value
+        agent.memory.set_pending_action("propose_reply_email", args)
+        return agent
+
+    def test_empty_thread_id_returns_error(self):
+        sid = "test_guard_empty_tid_err"
+        agent = self._agent_with_pending_reply(sid, "")
+
+        with patch("services.executive_agent_service.httpx.AsyncClient") as mock_http:
+            result = _run(agent.process_message("yes", user_id="test_user"))
+
+        assert result["type"] == "error"
+        assert result["success"] is False
+        mock_http.assert_not_called()
+
+    def test_empty_thread_id_clears_pending_action(self):
+        sid = "test_guard_empty_tid_clear"
+        agent = self._agent_with_pending_reply(sid, "")
+
+        with patch("services.executive_agent_service.httpx.AsyncClient"):
+            _run(agent.process_message("yes", user_id="test_user"))
+
+        assert agent.memory.get_pending_action() is None
+
+    def test_missing_thread_id_key_returns_error(self):
+        sid = "test_guard_missing_tid_err"
+        agent = self._agent_with_pending_reply(sid, None, include_key=False)
+
+        with patch("services.executive_agent_service.httpx.AsyncClient") as mock_http:
+            result = _run(agent.process_message("yes", user_id="test_user"))
+
+        assert result["type"] == "error"
+        mock_http.assert_not_called()
+
+    def test_missing_thread_id_clears_pending_action(self):
+        sid = "test_guard_missing_tid_clear"
+        agent = self._agent_with_pending_reply(sid, None, include_key=False)
+
+        with patch("services.executive_agent_service.httpx.AsyncClient"):
+            _run(agent.process_message("yes", user_id="test_user"))
+
+        assert agent.memory.get_pending_action() is None
+
+    def test_valid_thread_id_does_not_trigger_guard(self):
+        """Confirm that a real thread_id still reaches httpx (the guard is not over-blocking)."""
+        sid = "test_guard_valid_tid"
+        svc = MagicMock()
+        svc.chat_with_tools = AsyncMock()
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc):
+            agent = ExecutiveAgent(session_id=sid)
+        agent.memory.set_pending_action("propose_reply_email", {
+            "thread_id": "thread-REAL",
+            "original_subject": "Budget",
+            "body": "Confirmed.",
+            "provider": "gmail",
+        })
+
+        mock_resp = MagicMock()
+        mock_resp.is_success = True
+        mock_resp.json.return_value = {}
+        mock_http = AsyncMock()
+        mock_http.post = AsyncMock(return_value=mock_resp)
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        mock_cls = MagicMock(return_value=mock_cm)
+
+        with patch("services.executive_agent_service.httpx.AsyncClient", mock_cls):
+            _run(agent.process_message("yes", user_id="test_user"))
+
+        mock_cls.assert_called_once()
+
+
+# =============================================================================
+# System prompt includes last email context when memory is set
+# =============================================================================
+
+class TestSystemPromptEmailContext:
+
+    def setup_method(self):
+        _clear_sessions()
+
+    def teardown_method(self):
+        _clear_sessions()
+
+    def _make_agent(self, sid):
+        svc = MagicMock()
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc):
+            return ExecutiveAgent(session_id=sid)
+
+    def test_email_context_in_prompt_when_memory_set(self):
+        agent = self._make_agent("test_sp_email_set")
+        agent.memory.last_email_subject = "Budget Q3"
+        agent.memory.last_email_thread_id = "thread-XYZ"
+        agent.memory.last_email_sender = "Alice <alice@example.com>"
+
+        prompt = agent._build_system_prompt()
+
+        assert "thread-XYZ" in prompt
+        assert "Budget Q3" in prompt
+
+    def test_email_context_absent_when_memory_empty(self):
+        agent = self._make_agent("test_sp_email_empty")
+        # All email fields default to None — no writes
+
+        prompt = agent._build_system_prompt()
+
+        assert "Last email thread" not in prompt
+
+    def test_system_prompt_contains_reply_instruction(self):
+        agent = self._make_agent("test_sp_reply_instr")
+
+        prompt = agent._build_system_prompt()
+
+        assert "propose_reply_email" in prompt
+        assert "thread_id" in prompt

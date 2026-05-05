@@ -344,6 +344,9 @@ class ExecutiveAgent:
             "use it directly without calling list_calendar_events again. "
             "Otherwise call list_calendar_events first to find it. "
             "The event_id is the 'id' field returned by list_calendar_events.\n"
+            "- Before using propose_reply_email, check the session context above for the thread_id. "
+            "If thread_id is unknown, call read_emails first to find it. "
+            "If the user has explicitly dictated the full reply body, you may propose directly.\n"
             "- Supply start/end times in ISO 8601 without timezone (e.g. 2026-03-23T10:00:00). "
             "The server applies the correct timezone.\n\n"
             "Response style:\n"
@@ -551,6 +554,17 @@ class ExecutiveAgent:
                     emails = response.json()
                     self.memory.last_provider = provider
                     self.memory.preferred_provider = provider
+                    email_list = emails.get("emails", []) if isinstance(emails, dict) else emails
+                    if email_list:
+                        first = email_list[0]
+                        self.memory.last_email_thread_id = first.get("thread_id", "")
+                        self.memory.last_email_message_id = first.get("id", "")
+                        self.memory.last_email_subject = first.get("subject", "")
+                        from_raw = first.get("from", "")
+                        self.memory.last_email_sender = from_raw
+                        import re as _re
+                        _addr = _re.search(r"<([^>]+)>", from_raw)
+                        self.memory.last_email_sender_address = _addr.group(1) if _addr else from_raw
                     return {"emails": emails, "provider": provider}
                 return {"error": f"HTTP {response.status_code}", "emails": [], "provider": provider}
             except Exception as e:
@@ -1067,6 +1081,18 @@ class ExecutiveAgent:
             return {"message": "No pending reply to send.", "success": False, "type": "error", "intent": "LLM_DRIVEN"}
 
         thread_id = args.get("thread_id", "")
+        if not thread_id:
+            self.memory.clear_pending_action()
+            self.memory.clear_active_task()
+            return {
+                "message": (
+                    "I need the thread ID to reply to this email. "
+                    "Please read or select the email first, then I can send your reply."
+                ),
+                "success": False,
+                "type": "error",
+                "intent": "LLM_DRIVEN",
+            }
         body = args.get("body", "")
         subject = args.get("original_subject", "")
 
