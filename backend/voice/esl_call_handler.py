@@ -128,11 +128,12 @@ def prewarm_fillers() -> None:
 # FS record app args: <max_seconds> <silence_threshold_ms> <silence_timeout_ms>
 # silence_threshold_ms: energy level below which audio counts as silence (200 = default)
 # silence_timeout_ms: consecutive silence needed to stop recording (1500ms)
-_RECORD_MAX_SECS        = 12
+_RECORD_MAX_SECS        = 20
 _RECORD_SILENCE_THRESH  = config.AI_RECORD_SILENCE_THRESHOLD_MS
-_RECORD_SILENCE_TIMEOUT = 25    # silence_hits × 20 ms/frame = 500 ms of silence
-                                # 500 ms feels natural — fast enough to not lag,
-                                # long enough not to cut off mid-sentence.
+_RECORD_SILENCE_TIMEOUT = 60    # silence_hits × 20 ms/frame = 1200 ms of silence
+                                # 1.2 s gives callers time to start speaking after
+                                # the AI finishes — tighter values cut off responses
+                                # on slow-reacting or mobile VoIP connections.
 
 _PLAYBACK_TIMEOUT       = 60.0  # s — max wait for TTS playback to complete
 _RECORD_TIMEOUT         = _RECORD_MAX_SECS + 5.0   # s — execute() timeout
@@ -251,9 +252,9 @@ def _conversation_loop(
     # Track conversation language so TTS and STT stay in sync after a switch.
     # Starts at initial_lang (passed from call context); updates each turn.
     conv_lang = initial_lang
-    # Prevent infinite filler loops when the caller goes silent or audio is lost.
+    # Prevent infinite loops when the caller is silent or audio is lost.
     _empty_turns = 0
-    _MAX_EMPTY_TURNS = 4  # ~4 × 800 ms silence = ~3 s before giving up
+    _MAX_EMPTY_TURNS = 8  # 8 silent turns before ending the call
 
     while not handler.is_hung_up:
         # ── check max call duration ───────────────────────────────────────────
@@ -357,6 +358,16 @@ def _conversation_loop(
         if not _proc["text"]:
             # Silent / empty recording — record again, but bail after too many
             _empty_turns += 1
+            if _empty_turns == 2:
+                # Prompt the caller mid-silence before they give up waiting
+                check_in = (
+                    "Are you still there?"
+                    if conv_lang == "en"
+                    else "Sind Sie noch da?"
+                )
+                _speak_and_play(handler, check_in, lang=conv_lang)
+                if handler.is_hung_up:
+                    break
             if _empty_turns >= _MAX_EMPTY_TURNS:
                 logger.info("Too many consecutive silent turns (%d), ending call.", _empty_turns)
                 farewell = (
@@ -588,6 +599,11 @@ def handle_esl_call(handler, phone_state: dict) -> None:
 
             if handler.is_hung_up:
                 return
+
+            # Seed history so the LLM knows what it already said.
+            # Without this the LLM receives an empty history on turn 1 and
+            # re-introduces itself from the system prompt role definition.
+            history.append({"role": "assistant", "content": outbound_ctx["opening_line"]})
 
             turn_ref = [turn_count]
             _conversation_loop(

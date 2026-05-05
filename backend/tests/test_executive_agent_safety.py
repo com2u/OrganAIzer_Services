@@ -220,7 +220,8 @@ class TestProposeCalendarDoesNotMutate:
                 agent = ExecutiveAgent(session_id=sid)
                 _run(agent.process_message("create a meeting", user_id="test_user"))
 
-        mock_client.assert_not_called()
+        # GET for conflict check is allowed; assert no POST (mutation) was made
+        mock_client.return_value.__aenter__.return_value.post.assert_not_called()
 
     def test_propose_update_event_returns_confirmation_required(self):
         sid = "test_exec_update_cal_cr"
@@ -405,7 +406,8 @@ class TestNoHttpOnAnyProposeTool:
         assert result["type"] == "confirmation_required", (
             f"{tool_name}: expected type='confirmation_required', got {result['type']!r}"
         )
-        mock_client.assert_not_called()
+        # GET for conflict check is allowed; assert no POST (mutation) was made
+        mock_client.return_value.__aenter__.return_value.post.assert_not_called()
 
     def test_no_http_on_propose_send_email(self):
         self._assert_no_http_and_confirm(
@@ -1240,4 +1242,173 @@ class TestEmailToCalendarSafety:
 
         assert result["type"] == "calendar_created"
         assert result["data"]["event_id"] == "cal-event-XYZ"
+        mock_http.post.assert_called_once()
+
+
+# =============================================================================
+# Calendar conflict check
+# =============================================================================
+
+class TestCalendarConflictCheck:
+
+    def setup_method(self):
+        _clear_sessions()
+
+    def teardown_method(self):
+        _clear_sessions()
+
+    def _make_agent(self, sid):
+        svc = MagicMock()
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc):
+            agent = ExecutiveAgent(session_id=sid)
+        return agent, svc
+
+    def _propose_args(self):
+        return {
+            "title": "Conflict Test Sync",
+            "start": "2026-05-09T14:00:00",
+            "end": "2026-05-09T15:00:00",
+            "provider": "google",
+        }
+
+    def _http_mock_with_get(self, get_json, get_status=200):
+        """httpx mock where .get() returns get_json; .post() is a spy."""
+        mock_resp = MagicMock()
+        mock_resp.is_success = 200 <= get_status < 300
+        mock_resp.status_code = get_status
+        mock_resp.json.return_value = get_json
+
+        mock_http = AsyncMock()
+        mock_http.get = AsyncMock(return_value=mock_resp)
+        mock_http.post = AsyncMock()
+
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+
+        return MagicMock(return_value=mock_cm), mock_http
+
+    def test_conflict_warning_appended_when_event_exists(self):
+        """When the calendar list returns a timed event, warning is in confirmation message."""
+        agent, svc = self._make_agent("test_cc_warning")
+        svc.chat_with_tools = AsyncMock(side_effect=[
+            _llm_response("propose_create_calendar_event", self._propose_args()),
+        ])
+        mock_cls, _ = self._http_mock_with_get({
+            "events": [{"summary": "Standup", "start": "2026-05-09T14:00:00+02:00"}],
+            "total": 1,
+        })
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc), \
+             patch("services.executive_agent_service.httpx.AsyncClient", mock_cls):
+            agent = ExecutiveAgent(session_id="test_cc_warning")
+            result = _run(agent.process_message("create event", user_id="u1"))
+
+        assert result["type"] == "confirmation_required"
+        assert "Standup" in result["message"]
+        assert "Note:" in result["message"]
+
+    def test_no_warning_when_no_events(self):
+        """Empty events list produces a plain confirmation with no 'Note:' appended."""
+        agent, svc = self._make_agent("test_cc_no_warn")
+        svc.chat_with_tools = AsyncMock(side_effect=[
+            _llm_response("propose_create_calendar_event", self._propose_args()),
+        ])
+        mock_cls, _ = self._http_mock_with_get({"events": [], "total": 0})
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc), \
+             patch("services.executive_agent_service.httpx.AsyncClient", mock_cls):
+            agent = ExecutiveAgent(session_id="test_cc_no_warn")
+            result = _run(agent.process_message("create event", user_id="u1"))
+
+        assert result["type"] == "confirmation_required"
+        assert "Note:" not in result["message"]
+
+    def test_conflict_check_failure_does_not_block_confirmation(self):
+        """An exception in the conflict check must not prevent the confirmation response."""
+        agent, svc = self._make_agent("test_cc_fail")
+        svc.chat_with_tools = AsyncMock(side_effect=[
+            _llm_response("propose_create_calendar_event", self._propose_args()),
+        ])
+
+        def _raise(*args, **kwargs):
+            raise RuntimeError("calendar API is down")
+
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(side_effect=_raise)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        mock_cls = MagicMock(return_value=mock_cm)
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc), \
+             patch("services.executive_agent_service.httpx.AsyncClient", mock_cls):
+            agent = ExecutiveAgent(session_id="test_cc_fail")
+            result = _run(agent.process_message("create event", user_id="u1"))
+
+        assert result["type"] == "confirmation_required"
+        assert result["success"] is True
+
+    def test_conflict_check_not_called_for_update_proposal(self):
+        """propose_update_calendar_event must not trigger the conflict check GET."""
+        svc = MagicMock()
+        svc.chat_with_tools = AsyncMock(side_effect=[
+            _llm_response("propose_update_calendar_event", {
+                "event_id": "ev-001",
+                "event_title": "Old Meeting",
+                "new_start": "2026-05-09T15:00:00",
+            }),
+        ])
+        mock_cls, mock_http = self._http_mock_with_get({"events": []})
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc), \
+             patch("services.executive_agent_service.httpx.AsyncClient", mock_cls):
+            agent = ExecutiveAgent(session_id="test_cc_no_update")
+            result = _run(agent.process_message("move my meeting", user_id="u1"))
+
+        assert result["type"] == "confirmation_required"
+        mock_http.get.assert_not_called()
+
+    def test_all_day_events_not_counted_as_conflict(self):
+        """Events with a bare-date start (no 'T') must not trigger the warning."""
+        svc = MagicMock()
+        svc.chat_with_tools = AsyncMock(side_effect=[
+            _llm_response("propose_create_calendar_event", self._propose_args()),
+        ])
+        mock_cls, _ = self._http_mock_with_get({
+            "events": [{"summary": "Public Holiday", "start": "2026-05-09"}],
+            "total": 1,
+        })
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc), \
+             patch("services.executive_agent_service.httpx.AsyncClient", mock_cls):
+            agent = ExecutiveAgent(session_id="test_cc_allday")
+            result = _run(agent.process_message("create event", user_id="u1"))
+
+        assert result["type"] == "confirmation_required"
+        assert "Note:" not in result["message"]
+
+    def test_confirmed_create_after_conflict_warning_calls_calendar_api(self):
+        """Pending action created despite conflict warning must still fire on confirm."""
+        svc = MagicMock()
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc):
+            agent = ExecutiveAgent(session_id="test_cc_exec")
+
+        agent.memory.set_pending_action("propose_create_calendar_event", self._propose_args())
+
+        mock_resp = MagicMock()
+        mock_resp.is_success = True
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"id": "cal-conflict-XYZ"}
+
+        mock_http = AsyncMock()
+        mock_http.post = AsyncMock(return_value=mock_resp)
+
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("services.executive_agent_service.httpx.AsyncClient", MagicMock(return_value=mock_cm)):
+            result = _run(agent.process_message("yes", user_id="u1"))
+
+        assert result["type"] == "calendar_created"
+        assert result["data"]["event_id"] == "cal-conflict-XYZ"
         mock_http.post.assert_called_once()

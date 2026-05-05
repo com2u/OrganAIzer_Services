@@ -461,6 +461,16 @@ class ExecutiveAgent:
                     self.memory.set_pending_action(name, args)
                     confirm_msg = format_confirmation_message(name, args)
 
+                    if name == "propose_create_calendar_event":
+                        conflict_warning = await self._check_calendar_conflicts(
+                            args.get("start", ""),
+                            args.get("end", ""),
+                            args.get("provider", "google"),
+                            user_id,
+                        )
+                        if conflict_warning:
+                            confirm_msg = confirm_msg + " " + conflict_warning
+
                     logger.info("[LOOP] Propose tool triggered, returning confirmation")
                     propose_triggered = True
 
@@ -496,6 +506,52 @@ class ExecutiveAgent:
             "type": "error",
             "intent": "LLM_DRIVEN",
         }
+
+    # ── Calendar conflict check ───────────────────────────────────────────────
+
+    async def _check_calendar_conflicts(
+        self,
+        start: str,
+        end: str,
+        provider: str,
+        user_id: str,
+    ) -> str:
+        """
+        Return a human-readable warning if any timed events overlap [start, end].
+        Returns "" on no conflict, on auth failure, or on any exception — never
+        blocks the confirmation gate.
+        """
+        if not start or not end:
+            return ""
+        try:
+            norm = _normalize_provider(provider)
+            base_url = os.getenv("BACKEND_URL", "http://localhost:8000")
+            endpoint = f"{base_url}/api/integrations/{norm}/calendar/events"
+            params = {
+                "user_id": user_id,
+                "time_min": _ensure_rfc3339(start, self.timezone),
+                "time_max": _ensure_rfc3339(end, self.timezone),
+            }
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(endpoint, params=params)
+            if not resp.is_success:
+                return ""
+            data = resp.json()
+            events = data.get("events", []) if isinstance(data, dict) else data
+            # Exclude bare-date all-day events (their start has no "T")
+            timed = [e for e in events if "T" in str(e.get("start", ""))]
+            if not timed:
+                return ""
+            logger.info("[CONFLICT] %d overlapping event(s) found", len(timed))
+            names = [e.get("summary", "an event") for e in timed[:3]]
+            if len(names) == 1:
+                return f'Note: you already have "{names[0]}" during this time.'
+            return (
+                f"Note: you already have {len(timed)} event(s) during this time: "
+                + ", ".join(f'"{n}"' for n in names) + "."
+            )
+        except Exception:
+            return ""
 
     # ── Read tool execution ───────────────────────────────────────────────────
 
