@@ -302,10 +302,15 @@ def handle_message(text: str, session_id: str) -> dict:
                     f"Ich rufe an, um mitzuteilen: {purpose}"
                 )
 
+            outbound_note = (
+                "\n\n[Context: You placed this outbound call. Your opening line has "
+                "already been delivered and is your first message in the conversation "
+                "history. Do not re-introduce yourself. Continue naturally from there.]"
+            )
             success, result = originate_call(
                 number=number,
                 opening_line=opening_line,
-                system_prompt=OUTBOUND_SYSTEM_PROMPT,
+                system_prompt=OUTBOUND_SYSTEM_PROMPT + outbound_note,
                 lang="de",
             )
             if not success:
