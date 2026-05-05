@@ -1077,6 +1077,99 @@ async def google_gmail_get_message(
         )
 
 
+@router.get("/google/gmail/threads/{thread_id}")
+async def google_gmail_get_thread(
+    thread_id: str,
+    user_id: str = Query("default_user", description="User ID"),
+):
+    """
+    Fetch all messages in a Gmail thread in thread order.
+
+    Reuses _gmail_extract_body for body decoding.
+    Requires prior Google OAuth via /google/auth/start (gmail.readonly scope).
+    """
+    try:
+        token_storage = get_token_storage()
+        token_data = token_storage.load_tokens(user_id, "google")
+        if not token_data:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "code": "NOT_AUTHENTICATED",
+                    "message": "Google account not connected. Please authenticate via /api/integrations/google/auth/start.",
+                    "action": "CONNECT_GOOGLE",
+                },
+            )
+
+        credentials = Credentials(
+            token=token_data.get("access_token"),
+            refresh_token=token_data.get("refresh_token"),
+            token_uri=token_data.get("token_uri"),
+            client_id=token_data.get("client_id"),
+            client_secret=token_data.get("client_secret"),
+            scopes=token_data.get("scopes"),
+        )
+
+        service = build("gmail", "v1", credentials=credentials)
+        thread = service.users().threads().get(
+            userId="me", id=thread_id
+        ).execute()
+
+        messages = []
+        for msg in thread.get("messages", []):
+            payload = msg.get("payload", {})
+            headers_map = {h["name"]: h["value"] for h in payload.get("headers", [])}
+            body_text, _, body_type = _gmail_extract_body(payload)
+            messages.append({
+                "id": msg["id"],
+                "subject": headers_map.get("Subject", "(No Subject)"),
+                "from": headers_map.get("From", ""),
+                "date": headers_map.get("Date", ""),
+                "snippet": msg.get("snippet", ""),
+                "body_text": body_text,
+                "body_type": body_type,
+            })
+
+        logger.info(
+            "Gmail thread fetched: user=%s, thread_id=%s, message_count=%d",
+            user_id, thread_id, len(messages),
+        )
+        return {"thread_id": thread_id, "messages": messages}
+
+    except HttpError as e:
+        logger.error(
+            "Gmail get thread error: status=%s",
+            getattr(getattr(e, "resp", None), "status", "unknown"),
+        )
+        status = e.resp.status if hasattr(e, "resp") else 500
+        if status in (401, 403):
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "code": "AUTHENTICATION_REQUIRED",
+                    "message": "Gmail access expired or missing scope. Please reconnect your Google account.",
+                    "action": "RECONNECT_GOOGLE",
+                },
+            )
+        if status == 404:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "THREAD_NOT_FOUND", "message": f"Gmail thread {thread_id} not found."},
+            )
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "GMAIL_API_ERROR", "message": str(e)},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Gmail get thread error: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "INTERNAL_ERROR", "message": str(e)},
+        )
+
+
 @router.post("/google/gmail/send", response_model=MailSendResponse)
 async def google_gmail_send(
     request: MailSendRequest,
@@ -1880,6 +1973,74 @@ async def microsoft_mail_get_message(
     except Exception as e:
         logger.error(f"Outlook mail get error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail={"code": "GRAPH_ERROR", "message": str(e)})
+
+
+@router.get("/microsoft/mail/threads/{thread_id}")
+async def microsoft_mail_get_thread(
+    thread_id: str,
+    user_id: str = Query("default_user", description="User ID"),
+):
+    """
+    Fetch all messages in an Outlook conversation thread.
+
+    Filters /me/messages by conversationId, ordered oldest-first.
+    Returns 404 when no messages match the given conversationId.
+    Requires prior Microsoft OAuth (Mail.Read scope).
+    """
+    try:
+        access_token = _ms_get_token(user_id)
+        data = _ms_request(
+            "GET",
+            "/me/messages",
+            access_token,
+            user_id=user_id,
+            params={
+                "$filter": f"conversationId eq '{thread_id}'",
+                "$select": "id,subject,from,receivedDateTime,body,bodyPreview",
+                "$orderby": "receivedDateTime asc",
+            },
+        )
+
+        items = data.get("value", [])
+        if not items:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "code": "THREAD_NOT_FOUND",
+                    "message": f"No messages found for thread {thread_id}.",
+                },
+            )
+
+        messages = []
+        for m in items:
+            from_addr = m.get("from", {}).get("emailAddress", {})
+            body = m.get("body", {})
+            content_type = body.get("contentType", "text").lower()
+            body_type = "html" if content_type == "html" else "text"
+            messages.append({
+                "id": m["id"],
+                "subject": m.get("subject", "(No Subject)"),
+                "from": f"{from_addr.get('name', '')} <{from_addr.get('address', '')}>".strip(" <>"),
+                "date": m.get("receivedDateTime", ""),
+                "snippet": m.get("bodyPreview", ""),
+                "body_text": body.get("content", "") if body_type == "text" else "",
+                "body_type": body_type,
+            })
+
+        logger.info(
+            "Outlook thread fetched: user=%s, thread_id=%s, message_count=%d",
+            user_id, thread_id, len(messages),
+        )
+        return {"thread_id": thread_id, "messages": messages}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Outlook thread error: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "GRAPH_ERROR", "message": str(e)},
+        )
 
 
 # ============================================================================

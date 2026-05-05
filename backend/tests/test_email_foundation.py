@@ -509,3 +509,197 @@ class TestOutlookGetMessageThreadId:
 
         assert resp.status_code == 200
         assert resp.json()["thread_id"] == ""
+
+
+# ============================================================================
+# F. Gmail thread endpoint
+# ============================================================================
+
+def _gmail_thread_msg(
+    msg_id: str,
+    text: str = "Body text",
+    subject: str = "Thread Subject",
+    from_addr: str = "sender@example.com",
+    date: str = "Mon, 05 May 2026 10:00:00 +0200",
+) -> dict:
+    return {
+        "id": msg_id,
+        "snippet": f"snippet-{msg_id}",
+        "payload": {
+            "mimeType": "text/plain",
+            "headers": [
+                {"name": "Subject", "value": subject},
+                {"name": "From", "value": from_addr},
+                {"name": "Date", "value": date},
+            ],
+            "body": {"data": _b64url(text)},
+        },
+    }
+
+
+def _gmail_thread_service(thread_data=None, raises=None) -> MagicMock:
+    service = MagicMock()
+    threads = service.users.return_value.threads.return_value
+    if thread_data is not None:
+        threads.get.return_value.execute.return_value = thread_data
+    if raises is not None:
+        threads.get.return_value.execute.side_effect = raises
+    return service
+
+
+class TestGmailThread:
+
+    def _call(self, service, thread_id="thread-001"):
+        with patch("api.integrations.get_token_storage") as mock_storage, \
+             patch("api.integrations.build", return_value=service), \
+             patch("api.integrations.Credentials"):
+            mock_storage.return_value.load_tokens.return_value = _valid_tokens()
+            return client.get(
+                f"/api/integrations/google/gmail/threads/{thread_id}?user_id=test_user"
+            )
+
+    def test_returns_multiple_messages(self):
+        thread_data = {
+            "id": "thread-001",
+            "messages": [
+                _gmail_thread_msg("msg-A", text="First message"),
+                _gmail_thread_msg("msg-B", text="Second message"),
+            ],
+        }
+        resp = self._call(_gmail_thread_service(thread_data=thread_data))
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["thread_id"] == "thread-001"
+        assert len(data["messages"]) == 2
+        assert data["messages"][0]["id"] == "msg-A"
+        assert data["messages"][1]["id"] == "msg-B"
+
+    def test_preserves_message_order(self):
+        thread_data = {
+            "id": "thread-001",
+            "messages": [
+                _gmail_thread_msg("msg-1", date="Mon, 05 May 2026 08:00:00 +0200"),
+                _gmail_thread_msg("msg-2", date="Mon, 05 May 2026 09:00:00 +0200"),
+                _gmail_thread_msg("msg-3", date="Mon, 05 May 2026 10:00:00 +0200"),
+            ],
+        }
+        resp = self._call(_gmail_thread_service(thread_data=thread_data))
+
+        assert resp.status_code == 200
+        ids = [m["id"] for m in resp.json()["messages"]]
+        assert ids == ["msg-1", "msg-2", "msg-3"]
+
+    def test_includes_body_text(self):
+        thread_data = {
+            "id": "thread-001",
+            "messages": [_gmail_thread_msg("msg-A", text="Hello from body")],
+        }
+        resp = self._call(_gmail_thread_service(thread_data=thread_data))
+
+        assert resp.status_code == 200
+        msg = resp.json()["messages"][0]
+        assert msg["body_text"] == "Hello from body"
+        assert msg["body_type"] == "text"
+
+    def test_empty_thread_returns_empty_list(self):
+        thread_data = {"id": "thread-empty", "messages": []}
+        resp = self._call(_gmail_thread_service(thread_data=thread_data), thread_id="thread-empty")
+
+        assert resp.status_code == 200
+        assert resp.json()["messages"] == []
+
+    def test_unauthenticated_returns_401(self):
+        with patch("api.integrations.get_token_storage") as mock_storage:
+            mock_storage.return_value.load_tokens.return_value = None
+            resp = client.get("/api/integrations/google/gmail/threads/thread-001?user_id=test_user")
+
+        assert resp.status_code == 401
+        assert resp.json()["detail"]["code"] == "NOT_AUTHENTICATED"
+
+    def test_gmail_api_404_returns_404(self):
+        resp = self._call(_gmail_thread_service(raises=_make_http_error(404)))
+
+        assert resp.status_code == 404
+        assert resp.json()["detail"]["code"] == "THREAD_NOT_FOUND"
+
+    def test_gmail_api_401_returns_401(self):
+        resp = self._call(_gmail_thread_service(raises=_make_http_error(401)))
+
+        assert resp.status_code == 401
+        assert resp.json()["detail"]["code"] == "AUTHENTICATION_REQUIRED"
+
+
+# ============================================================================
+# G. Outlook thread endpoint
+# ============================================================================
+
+def _ms_thread_msg(
+    msg_id: str,
+    text: str = "Body text",
+    received: str = "2026-05-05T10:00:00Z",
+) -> dict:
+    return {
+        "id": msg_id,
+        "subject": "Outlook Thread",
+        "from": {"emailAddress": {"name": "Alice", "address": "alice@example.com"}},
+        "receivedDateTime": received,
+        "bodyPreview": f"preview-{msg_id}",
+        "body": {"contentType": "text", "content": text},
+    }
+
+
+class TestOutlookThread:
+
+    def _call(self, ms_request_return, thread_id="conv-THREAD"):
+        with patch("api.integrations._ms_get_token", return_value="fake-token"), \
+             patch("api.integrations._ms_request", return_value=ms_request_return) as mock_req:
+            resp = client.get(
+                f"/api/integrations/microsoft/mail/threads/{thread_id}?user_id=test_user"
+            )
+        return resp, mock_req
+
+    def test_returns_multiple_messages(self):
+        data = {"value": [_ms_thread_msg("msg-1"), _ms_thread_msg("msg-2")]}
+        resp, _ = self._call(data)
+
+        assert resp.status_code == 200
+        result = resp.json()
+        assert result["thread_id"] == "conv-THREAD"
+        assert len(result["messages"]) == 2
+        assert result["messages"][0]["id"] == "msg-1"
+        assert result["messages"][1]["id"] == "msg-2"
+
+    def test_thread_id_filter_applied(self):
+        data = {"value": [_ms_thread_msg("msg-1")]}
+        resp, mock_req = self._call(data, thread_id="conv-XYZ123")
+
+        assert resp.status_code == 200
+        filter_param = mock_req.call_args.kwargs["params"]["$filter"]
+        assert "conv-XYZ123" in filter_param
+
+    def test_includes_body_text(self):
+        data = {"value": [_ms_thread_msg("msg-1", text="Outlook body content")]}
+        resp, _ = self._call(data)
+
+        assert resp.status_code == 200
+        msg = resp.json()["messages"][0]
+        assert msg["body_text"] == "Outlook body content"
+        assert msg["body_type"] == "text"
+
+    def test_empty_results_returns_404(self):
+        resp, _ = self._call({"value": []})
+
+        assert resp.status_code == 404
+        assert resp.json()["detail"]["code"] == "THREAD_NOT_FOUND"
+
+    def test_unauthenticated_returns_401(self):
+        with patch("api.integrations._ms_get_token") as mock_token:
+            from fastapi import HTTPException as FastHTTPException
+            mock_token.side_effect = FastHTTPException(
+                status_code=401,
+                detail={"code": "NOT_AUTHENTICATED", "message": "No token"},
+            )
+            resp = client.get("/api/integrations/microsoft/mail/threads/conv-X?user_id=test_user")
+
+        assert resp.status_code == 401
