@@ -1064,3 +1064,180 @@ class TestReadEmailThread:
         tool_content = json.loads(tool_msgs[0]["content"])
         for msg in tool_content.get("messages", []):
             assert "body_html" not in msg
+
+
+# =============================================================================
+# Email → Calendar Extraction
+# =============================================================================
+
+class TestEmailToCalendarSystemPrompt:
+
+    def setup_method(self):
+        _clear_sessions()
+
+    def teardown_method(self):
+        _clear_sessions()
+
+    def test_system_prompt_contains_email_to_calendar_instruction(self):
+        svc = MagicMock()
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc):
+            agent = ExecutiveAgent(session_id="test_e2c_prompt")
+
+        prompt = agent._build_system_prompt()
+
+        assert "read_email_detail or read_email_thread" in prompt
+        assert "calendar provider" in prompt
+        assert "propose_create_calendar_event" in prompt
+
+
+class TestEmailToCalendarSafety:
+
+    def setup_method(self):
+        _clear_sessions()
+
+    def teardown_method(self):
+        _clear_sessions()
+
+    def _make_get_mock(self, json_data):
+        """httpx mock whose .get() returns json_data; .post is a separate spy."""
+        mock_resp = MagicMock()
+        mock_resp.is_success = True
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = json_data
+
+        mock_http = AsyncMock()
+        mock_http.get = AsyncMock(return_value=mock_resp)
+        mock_http.post = AsyncMock()
+
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+
+        return MagicMock(return_value=mock_cm), mock_http
+
+    def _email_detail_payload(self):
+        return {
+            "id": "msg-appt-001",
+            "thread_id": "thread-APPT",
+            "subject": "Team Sync",
+            "from": "Boss <boss@corp.com>",
+            "body_text": "Let's meet Friday May 9 at 14:00 in the Berlin office.",
+        }
+
+    def _calendar_propose_args(self):
+        return {
+            "title": "Team Sync",
+            "start": "2026-05-09T14:00:00",
+            "end": "2026-05-09T15:00:00",
+            "provider": "google",
+        }
+
+    def test_read_detail_then_propose_returns_confirmation_required(self):
+        """Full chain: read_email_detail → propose_create_calendar_event → confirmation_required."""
+        svc = MagicMock()
+        svc.chat_with_tools = AsyncMock(side_effect=[
+            _llm_response("read_email_detail", {"message_id": "msg-appt-001", "provider": "gmail"}),
+            _llm_response("propose_create_calendar_event", self._calendar_propose_args()),
+        ])
+        mock_cls, _ = self._make_get_mock(self._email_detail_payload())
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc), \
+             patch("services.executive_agent_service.httpx.AsyncClient", mock_cls):
+            agent = ExecutiveAgent(session_id="test_e2c_confirm")
+            result = _run(agent.process_message(
+                "add the appointment from this email to my calendar",
+                user_id="u1",
+            ))
+
+        assert result["type"] == "confirmation_required"
+        assert result["action_needed"] == "confirmation"
+        assert agent.memory.get_pending_action() is not None
+        assert agent.memory.get_pending_action()["type"] == "propose_create_calendar_event"
+
+    def test_no_calendar_post_before_confirmation(self):
+        """The calendar API must not be called during read → propose phase."""
+        svc = MagicMock()
+        svc.chat_with_tools = AsyncMock(side_effect=[
+            _llm_response("read_email_detail", {"message_id": "msg-appt-001", "provider": "gmail"}),
+            _llm_response("propose_create_calendar_event", self._calendar_propose_args()),
+        ])
+        mock_cls, mock_http = self._make_get_mock(self._email_detail_payload())
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc), \
+             patch("services.executive_agent_service.httpx.AsyncClient", mock_cls):
+            agent = ExecutiveAgent(session_id="test_e2c_no_post")
+            _run(agent.process_message(
+                "schedule the meeting from this email",
+                user_id="u1",
+            ))
+
+        mock_http.post.assert_not_called()
+
+    def test_unclear_date_returns_chat_no_pending(self):
+        """When the LLM can't extract a date it returns text — no proposal, no pending action."""
+        svc = MagicMock()
+        svc.chat_with_tools = AsyncMock(side_effect=[
+            _llm_response("read_email_detail", {"message_id": "msg-appt-002", "provider": "gmail"}),
+            {"tool_calls": None, "content": "I couldn't find a specific date. When would you like to schedule this?"},
+        ])
+        mock_cls, _ = self._make_get_mock({
+            "id": "msg-appt-002",
+            "thread_id": "thread-VAGUE",
+            "subject": "Let's meet",
+            "from": "Colleague <col@corp.com>",
+            "body_text": "Hey, let's find some time soon!",
+        })
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc), \
+             patch("services.executive_agent_service.httpx.AsyncClient", mock_cls):
+            agent = ExecutiveAgent(session_id="test_e2c_no_date")
+            result = _run(agent.process_message(
+                "add this meeting to my calendar",
+                user_id="u1",
+            ))
+
+        assert result["type"] == "chat"
+        assert agent.memory.get_pending_action() is None
+
+    def test_cancel_calendar_proposal_clears_pending(self):
+        """Cancelling a pending calendar-from-email proposal clears the pending action."""
+        svc = MagicMock()
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc):
+            agent = ExecutiveAgent(session_id="test_e2c_cancel")
+
+        agent.memory.set_pending_action("propose_create_calendar_event", self._calendar_propose_args())
+
+        with patch("services.executive_agent_service.httpx.AsyncClient") as mock_http:
+            result = _run(agent.process_message("cancel", user_id="u1"))
+
+        assert result["type"] == "cancelled"
+        assert agent.memory.get_pending_action() is None
+        mock_http.assert_not_called()
+
+    def test_confirm_calendar_proposal_calls_calendar_api(self):
+        """Confirming a pending proposal must POST to the calendar endpoint."""
+        svc = MagicMock()
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc):
+            agent = ExecutiveAgent(session_id="test_e2c_exec")
+
+        agent.memory.set_pending_action("propose_create_calendar_event", self._calendar_propose_args())
+
+        mock_resp = MagicMock()
+        mock_resp.is_success = True
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"id": "cal-event-XYZ"}
+
+        mock_http = AsyncMock()
+        mock_http.post = AsyncMock(return_value=mock_resp)
+
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        mock_cls = MagicMock(return_value=mock_cm)
+
+        with patch("services.executive_agent_service.httpx.AsyncClient", mock_cls):
+            result = _run(agent.process_message("yes", user_id="u1"))
+
+        assert result["type"] == "calendar_created"
+        assert result["data"]["event_id"] == "cal-event-XYZ"
+        mock_http.post.assert_called_once()
