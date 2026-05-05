@@ -813,6 +813,51 @@ async def google_calendar_delete_event(
         )
 
 
+def _gmail_decode_part_body(data: str) -> str:
+    """Decode a base64url-encoded Gmail message part body string."""
+    if not data:
+        return ""
+    padding = (4 - len(data) % 4) % 4
+    try:
+        return base64.urlsafe_b64decode(data + "=" * padding).decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def _gmail_extract_body(payload: dict) -> tuple:
+    """Recursively extract plain-text and HTML body from a Gmail message payload.
+
+    Returns (body_text, body_html, body_type).
+    body_type is 'text', 'html', 'multipart', or '' for unrecognised MIME types.
+    """
+    mime_type = payload.get("mimeType", "")
+
+    if mime_type == "text/plain":
+        return _gmail_decode_part_body(payload.get("body", {}).get("data", "")), "", "text"
+
+    if mime_type == "text/html":
+        return "", _gmail_decode_part_body(payload.get("body", {}).get("data", "")), "html"
+
+    if mime_type.startswith("multipart/"):
+        text_body = ""
+        html_body = ""
+        for part in payload.get("parts", []):
+            p_text, p_html, _ = _gmail_extract_body(part)
+            if p_text and not text_body:
+                text_body = p_text
+            if p_html and not html_body:
+                html_body = p_html
+        if text_body and html_body:
+            return text_body, html_body, "multipart"
+        if html_body:
+            return "", html_body, "html"
+        if text_body:
+            return text_body, "", "text"
+        return "", "", "multipart"
+
+    return "", "", ""
+
+
 @router.get("/google/gmail/messages")
 async def google_gmail_list_messages(
     user_id: str = Query("default_user", description="User ID"),
@@ -886,6 +931,7 @@ async def google_gmail_list_messages(
 
             emails.append({
                 "id": msg["id"],
+                "thread_id": msg.get("threadId", ""),
                 "from": headers.get("From", "Unknown"),
                 "subject": headers.get("Subject", "(No Subject)"),
                 "received": headers.get("Date", ""),
@@ -911,6 +957,124 @@ async def google_gmail_list_messages(
     except Exception as e:
         logger.error(f"Gmail list error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail={"code": "INTERNAL_ERROR", "message": str(e)})
+
+
+@router.get("/google/gmail/messages/{message_id}")
+async def google_gmail_get_message(
+    message_id: str,
+    user_id: str = Query("default_user", description="User ID"),
+):
+    """
+    Fetch a single Gmail message by ID with full decoded body and attachment metadata.
+
+    Returns id, thread_id, subject, from, to, cc, date, snippet,
+    body_text, body_html, body_type, and a list of attachment metadata dicts.
+    Requires prior Google OAuth via /google/auth/start (gmail.readonly scope).
+    """
+    try:
+        token_storage = get_token_storage()
+        token_data = token_storage.load_tokens(user_id, "google")
+        if not token_data:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "code": "NOT_AUTHENTICATED",
+                    "message": "Google account not connected. Please authenticate via /api/integrations/google/auth/start.",
+                    "action": "CONNECT_GOOGLE",
+                },
+            )
+
+        credentials = Credentials(
+            token=token_data.get("access_token"),
+            refresh_token=token_data.get("refresh_token"),
+            token_uri=token_data.get("token_uri"),
+            client_id=token_data.get("client_id"),
+            client_secret=token_data.get("client_secret"),
+            scopes=token_data.get("scopes"),
+        )
+
+        service = build("gmail", "v1", credentials=credentials)
+        msg = service.users().messages().get(
+            userId="me", id=message_id, format="full"
+        ).execute()
+
+        payload = msg.get("payload", {})
+        headers_map = {h["name"]: h["value"] for h in payload.get("headers", [])}
+
+        body_text, body_html, body_type = _gmail_extract_body(payload)
+
+        attachments: list = []
+
+        def _walk_parts(part: dict) -> None:
+            filename = part.get("filename", "")
+            if filename:
+                body_part = part.get("body", {})
+                attachments.append({
+                    "filename": filename,
+                    "mime_type": part.get("mimeType", ""),
+                    "size": body_part.get("size", 0),
+                    "attachment_id": body_part.get("attachmentId", ""),
+                })
+            for sub in part.get("parts", []):
+                _walk_parts(sub)
+
+        _walk_parts(payload)
+
+        logger.info(
+            "Gmail message fetched: user=%s, message_id=%s, has_html=%s, attachment_count=%d",
+            user_id, message_id, bool(body_html), len(attachments),
+        )
+
+        return {
+            "id": msg["id"],
+            "thread_id": msg.get("threadId", ""),
+            "subject": headers_map.get("Subject", "(No Subject)"),
+            "from": headers_map.get("From", ""),
+            "to": headers_map.get("To", ""),
+            "cc": headers_map.get("Cc", ""),
+            "date": headers_map.get("Date", ""),
+            "snippet": msg.get("snippet", ""),
+            "body_text": body_text,
+            "body_html": body_html,
+            "body_type": body_type,
+            "attachments": attachments,
+        }
+
+    except HttpError as e:
+        logger.error(
+            "Gmail get message error: status=%s",
+            getattr(getattr(e, "resp", None), "status", "unknown"),
+        )
+        status = e.resp.status if hasattr(e, "resp") else 500
+        if status in (401, 403):
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "code": "AUTHENTICATION_REQUIRED",
+                    "message": "Gmail access expired or missing scope. Please reconnect your Google account.",
+                    "action": "RECONNECT_GOOGLE",
+                },
+            )
+        if status == 404:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "code": "MESSAGE_NOT_FOUND",
+                    "message": f"Gmail message {message_id} not found.",
+                },
+            )
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "GMAIL_API_ERROR", "message": str(e)},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Gmail get message error: %s", e, exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "INTERNAL_ERROR", "message": str(e)},
+        )
 
 
 @router.post("/google/gmail/send", response_model=MailSendResponse)
