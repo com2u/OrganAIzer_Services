@@ -614,6 +614,88 @@ class ExecutiveAgent:
                 }
             return {"contacts": contacts, "provider": provider}
 
+        if name == "read_email_detail":
+            message_id = args.get("message_id", "")
+            provider_raw = args.get("provider") or mail_provider or "gmail"
+            provider = _normalize_provider(provider_raw)
+            if provider == "google":
+                endpoint = f"{base_url}/api/integrations/google/gmail/messages/{message_id}"
+            else:
+                endpoint = f"{base_url}/api/integrations/microsoft/mail/messages/{message_id}"
+            logger.info("[READ] read_email_detail provider=%s message_id=%s", provider, message_id)
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.get(endpoint, params={"user_id": user_id})
+                if response.is_success:
+                    data = response.json()
+                    data.pop("body_html", None)
+                    if data.get("body_text"):
+                        data["body_text"] = data["body_text"][:3000]
+                    if data.get("thread_id"):
+                        self.memory.last_email_thread_id = data["thread_id"]
+                    if data.get("id"):
+                        self.memory.last_email_message_id = data["id"]
+                    if data.get("subject"):
+                        self.memory.last_email_subject = data["subject"]
+                    from_raw = data.get("from", "")
+                    if from_raw:
+                        self.memory.last_email_sender = from_raw
+                        import re as _re
+                        _addr = _re.search(r"<([^>]+)>", from_raw)
+                        self.memory.last_email_sender_address = _addr.group(1) if _addr else from_raw
+                    logger.info(
+                        "[READ] read_email_detail ok provider=%s message_id=%s has_body=%s",
+                        provider, message_id, bool(data.get("body_text")),
+                    )
+                    return data
+                return {"error": f"HTTP {response.status_code}", "provider": provider}
+            except Exception as e:
+                logger.error("[READ] read_email_detail error: %s", e)
+                return {"error": str(e), "provider": provider}
+
+        if name == "read_email_thread":
+            thread_id = args.get("thread_id", "")
+            provider_raw = args.get("provider") or mail_provider or "gmail"
+            provider = _normalize_provider(provider_raw)
+            if provider == "google":
+                endpoint = f"{base_url}/api/integrations/google/gmail/threads/{thread_id}"
+            else:
+                endpoint = f"{base_url}/api/integrations/microsoft/mail/threads/{thread_id}"
+            logger.info("[READ] read_email_thread provider=%s thread_id=%s", provider, thread_id)
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.get(endpoint, params={"user_id": user_id})
+                if response.is_success:
+                    data = response.json()
+                    messages = data.get("messages", [])[:8]
+                    for msg in messages:
+                        msg.pop("body_html", None)
+                        if msg.get("body_text"):
+                            msg["body_text"] = msg["body_text"][:2000]
+                    data["messages"] = messages
+                    if messages:
+                        first_msg = messages[0]
+                        last_msg = messages[-1]
+                        self.memory.last_email_thread_id = data.get("thread_id") or first_msg.get("thread_id", "")
+                        self.memory.last_email_message_id = last_msg.get("id", "")
+                        if first_msg.get("subject"):
+                            self.memory.last_email_subject = first_msg["subject"]
+                        from_raw = first_msg.get("from", "")
+                        if from_raw:
+                            self.memory.last_email_sender = from_raw
+                            import re as _re
+                            _addr = _re.search(r"<([^>]+)>", from_raw)
+                            self.memory.last_email_sender_address = _addr.group(1) if _addr else from_raw
+                    logger.info(
+                        "[READ] read_email_thread ok provider=%s thread_id=%s message_count=%d",
+                        provider, thread_id, len(messages),
+                    )
+                    return data
+                return {"error": f"HTTP {response.status_code}", "provider": provider}
+            except Exception as e:
+                logger.error("[READ] read_email_thread error: %s", e)
+                return {"error": str(e), "provider": provider}
+
         return {"error": f"Unknown read tool: {name}"}
 
     # ── Pending action execution ──────────────────────────────────────────────

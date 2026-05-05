@@ -193,6 +193,62 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "read_email_detail",
+            "description": (
+                "Read the full content of a single email by message ID. "
+                "Use this when you need the email body to extract appointment details, "
+                "understand full context, or draft a reply. "
+                "Call read_emails first to get the message_id."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message_id": {
+                        "type": "string",
+                        "description": "The message ID of the email to read (from read_emails result)",
+                    },
+                    "provider": {
+                        "type": "string",
+                        "enum": ["gmail", "outlook"],
+                        "description": "Email provider",
+                    },
+                },
+                "required": ["message_id"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_email_thread",
+            "description": (
+                "Read all messages in an email thread by thread ID. "
+                "Use this to get full conversation context before replying or "
+                "extracting meeting details from a thread. "
+                "Call read_emails first to get the thread_id."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "thread_id": {
+                        "type": "string",
+                        "description": "The thread ID (from read_emails result)",
+                    },
+                    "provider": {
+                        "type": "string",
+                        "enum": ["gmail", "outlook"],
+                        "description": "Email provider",
+                    },
+                },
+                "required": ["thread_id"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "propose_send_email",
             "description": (
                 "Propose sending an email. "

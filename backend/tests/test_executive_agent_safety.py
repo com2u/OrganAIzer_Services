@@ -729,3 +729,338 @@ class TestSystemPromptEmailContext:
 
         assert "propose_reply_email" in prompt
         assert "thread_id" in prompt
+
+
+# =============================================================================
+# read_email_detail and read_email_thread tool definitions
+# =============================================================================
+
+class TestEmailContextToolDefinitions:
+    """Pure data tests — no agent or HTTP needed."""
+
+    def test_read_email_detail_in_tools(self):
+        names = [t["function"]["name"] for t in TOOLS]
+        assert "read_email_detail" in names
+
+    def test_read_email_thread_in_tools(self):
+        names = [t["function"]["name"] for t in TOOLS]
+        assert "read_email_thread" in names
+
+    def test_read_email_detail_not_confirmation_required(self):
+        assert "read_email_detail" not in CONFIRMATION_REQUIRED_TOOLS
+
+    def test_read_email_thread_not_confirmation_required(self):
+        assert "read_email_thread" not in CONFIRMATION_REQUIRED_TOOLS
+
+
+# =============================================================================
+# read_email_detail — HTTP routing, memory updates, safety
+# =============================================================================
+
+class TestReadEmailDetail:
+
+    def setup_method(self):
+        _clear_sessions()
+
+    def teardown_method(self):
+        _clear_sessions()
+
+    def _make_http_mock(self, json_data, status_code=200):
+        mock_resp = MagicMock()
+        mock_resp.is_success = 200 <= status_code < 300
+        mock_resp.status_code = status_code
+        mock_resp.json.return_value = json_data
+
+        mock_http = AsyncMock()
+        mock_http.get = AsyncMock(return_value=mock_resp)
+
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+
+        return MagicMock(return_value=mock_cm), mock_http
+
+    def _detail_payload(self, body_text="Meeting on Friday at 14:00.", body_html="<p>...</p>"):
+        return {
+            "id": "msg-detail-001",
+            "thread_id": "thread-DET",
+            "subject": "Upcoming Meeting",
+            "from": "Boss <boss@corp.com>",
+            "body_text": body_text,
+            "body_html": body_html,
+        }
+
+    def test_gmail_endpoint_called(self):
+        msg_id = "msg-gmail-123"
+        svc = MagicMock()
+        svc.chat_with_tools = AsyncMock(side_effect=[
+            _llm_response("read_email_detail", {"message_id": msg_id, "provider": "gmail"}),
+            {"tool_calls": None, "content": "Done."},
+        ])
+        mock_cls, mock_http = self._make_http_mock(self._detail_payload())
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc), \
+             patch("services.executive_agent_service.httpx.AsyncClient", mock_cls):
+            agent = ExecutiveAgent(session_id="test_det_gmail")
+            _run(agent.process_message("read the email", user_id="u1"))
+
+        call_url = mock_http.get.call_args[0][0]
+        assert "google/gmail/messages/" in call_url
+        assert msg_id in call_url
+
+    def test_outlook_endpoint_called(self):
+        msg_id = "msg-outlook-456"
+        svc = MagicMock()
+        svc.chat_with_tools = AsyncMock(side_effect=[
+            _llm_response("read_email_detail", {"message_id": msg_id, "provider": "outlook"}),
+            {"tool_calls": None, "content": "Done."},
+        ])
+        mock_cls, mock_http = self._make_http_mock(self._detail_payload())
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc), \
+             patch("services.executive_agent_service.httpx.AsyncClient", mock_cls):
+            agent = ExecutiveAgent(session_id="test_det_outlook")
+            _run(agent.process_message("read the email", user_id="u1"))
+
+        call_url = mock_http.get.call_args[0][0]
+        assert "microsoft/mail/messages/" in call_url
+        assert msg_id in call_url
+
+    def test_updates_memory_fields(self):
+        svc = MagicMock()
+        svc.chat_with_tools = AsyncMock(side_effect=[
+            _llm_response("read_email_detail", {"message_id": "msg-detail-001", "provider": "gmail"}),
+            {"tool_calls": None, "content": "Here is the email."},
+        ])
+        mock_cls, _ = self._make_http_mock(self._detail_payload())
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc), \
+             patch("services.executive_agent_service.httpx.AsyncClient", mock_cls):
+            agent = ExecutiveAgent(session_id="test_det_memory")
+            _run(agent.process_message("read the email", user_id="u1"))
+
+        assert agent.memory.last_email_thread_id == "thread-DET"
+        assert agent.memory.last_email_message_id == "msg-detail-001"
+        assert agent.memory.last_email_subject == "Upcoming Meeting"
+        assert agent.memory.last_email_sender == "Boss <boss@corp.com>"
+        assert agent.memory.last_email_sender_address == "boss@corp.com"
+
+    def test_body_html_stripped(self):
+        """body_html must not appear in the tool result sent back to the LLM."""
+        svc = MagicMock()
+        svc.chat_with_tools = AsyncMock(side_effect=[
+            _llm_response("read_email_detail", {"message_id": "msg-x", "provider": "gmail"}),
+            {"tool_calls": None, "content": "Done."},
+        ])
+        mock_cls, _ = self._make_http_mock(self._detail_payload(body_html="<html>SECRET_HTML</html>"))
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc), \
+             patch("services.executive_agent_service.httpx.AsyncClient", mock_cls):
+            agent = ExecutiveAgent(session_id="test_det_no_html")
+            _run(agent.process_message("read the email", user_id="u1"))
+
+        second_call_messages = svc.chat_with_tools.call_args_list[1][0][0]
+        tool_msgs = [m for m in second_call_messages if m.get("role") == "tool"]
+        assert tool_msgs, "No tool result message found in second LLM call"
+        tool_content = json.loads(tool_msgs[0]["content"])
+        assert "body_html" not in tool_content
+        assert "SECRET_HTML" not in str(tool_content)
+
+    def test_body_text_truncated_to_3000(self):
+        """body_text returned to the LLM must be capped at 3000 characters."""
+        svc = MagicMock()
+        svc.chat_with_tools = AsyncMock(side_effect=[
+            _llm_response("read_email_detail", {"message_id": "msg-y", "provider": "gmail"}),
+            {"tool_calls": None, "content": "Done."},
+        ])
+        mock_cls, _ = self._make_http_mock(self._detail_payload(body_text="A" * 5000, body_html=""))
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc), \
+             patch("services.executive_agent_service.httpx.AsyncClient", mock_cls):
+            agent = ExecutiveAgent(session_id="test_det_truncate")
+            _run(agent.process_message("read the email", user_id="u1"))
+
+        second_call_messages = svc.chat_with_tools.call_args_list[1][0][0]
+        tool_msgs = [m for m in second_call_messages if m.get("role") == "tool"]
+        tool_content = json.loads(tool_msgs[0]["content"])
+        assert len(tool_content.get("body_text", "")) <= 3000
+
+    def test_body_not_in_log_calls(self):
+        """logger.info must not emit the raw body text."""
+        secret_body = "CONFIDENTIAL_BODY_XYZ_12345"
+        svc = MagicMock()
+        svc.chat_with_tools = AsyncMock(side_effect=[
+            _llm_response("read_email_detail", {"message_id": "msg-z", "provider": "gmail"}),
+            {"tool_calls": None, "content": "Done."},
+        ])
+        mock_cls, _ = self._make_http_mock(self._detail_payload(body_text=secret_body, body_html=""))
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc), \
+             patch("services.executive_agent_service.httpx.AsyncClient", mock_cls), \
+             patch("services.executive_agent_service.logger") as mock_logger:
+            agent = ExecutiveAgent(session_id="test_det_no_log_body")
+            _run(agent.process_message("read the email", user_id="u1"))
+
+        all_log_text = " ".join(
+            str(arg)
+            for call in mock_logger.info.call_args_list
+            for arg in call[0]
+        )
+        assert secret_body not in all_log_text
+
+
+# =============================================================================
+# read_email_thread — HTTP routing, memory updates, safety
+# =============================================================================
+
+class TestReadEmailThread:
+
+    def setup_method(self):
+        _clear_sessions()
+
+    def teardown_method(self):
+        _clear_sessions()
+
+    def _make_http_mock(self, json_data, status_code=200):
+        mock_resp = MagicMock()
+        mock_resp.is_success = 200 <= status_code < 300
+        mock_resp.status_code = status_code
+        mock_resp.json.return_value = json_data
+
+        mock_http = AsyncMock()
+        mock_http.get = AsyncMock(return_value=mock_resp)
+
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+
+        return MagicMock(return_value=mock_cm), mock_http
+
+    def _thread_payload(self, n_messages=3, body_text_len=50):
+        return {
+            "thread_id": "thread-THR",
+            "messages": [
+                {
+                    "id": f"msg-{i}",
+                    "thread_id": "thread-THR",
+                    "subject": "Project" if i == 0 else "Re: Project",
+                    "from": f"Person{i} <p{i}@corp.com>",
+                    "body_text": "X" * body_text_len,
+                    "body_html": f"<p>Message {i}</p>",
+                }
+                for i in range(n_messages)
+            ],
+        }
+
+    def test_gmail_thread_endpoint_called(self):
+        thread_id = "thread-gmail-999"
+        svc = MagicMock()
+        svc.chat_with_tools = AsyncMock(side_effect=[
+            _llm_response("read_email_thread", {"thread_id": thread_id, "provider": "gmail"}),
+            {"tool_calls": None, "content": "Done."},
+        ])
+        mock_cls, mock_http = self._make_http_mock(self._thread_payload())
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc), \
+             patch("services.executive_agent_service.httpx.AsyncClient", mock_cls):
+            agent = ExecutiveAgent(session_id="test_thr_gmail")
+            _run(agent.process_message("read the thread", user_id="u1"))
+
+        call_url = mock_http.get.call_args[0][0]
+        assert "google/gmail/threads/" in call_url
+        assert thread_id in call_url
+
+    def test_outlook_thread_endpoint_called(self):
+        thread_id = "thread-outlook-777"
+        svc = MagicMock()
+        svc.chat_with_tools = AsyncMock(side_effect=[
+            _llm_response("read_email_thread", {"thread_id": thread_id, "provider": "outlook"}),
+            {"tool_calls": None, "content": "Done."},
+        ])
+        mock_cls, mock_http = self._make_http_mock(self._thread_payload())
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc), \
+             patch("services.executive_agent_service.httpx.AsyncClient", mock_cls):
+            agent = ExecutiveAgent(session_id="test_thr_outlook")
+            _run(agent.process_message("read the thread", user_id="u1"))
+
+        call_url = mock_http.get.call_args[0][0]
+        assert "microsoft/mail/threads/" in call_url
+        assert thread_id in call_url
+
+    def test_updates_memory_from_thread(self):
+        """Memory fields come from first message (sender/subject) and thread_id from response."""
+        svc = MagicMock()
+        svc.chat_with_tools = AsyncMock(side_effect=[
+            _llm_response("read_email_thread", {"thread_id": "thread-THR", "provider": "gmail"}),
+            {"tool_calls": None, "content": "Here is the thread."},
+        ])
+        mock_cls, _ = self._make_http_mock(self._thread_payload(3))
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc), \
+             patch("services.executive_agent_service.httpx.AsyncClient", mock_cls):
+            agent = ExecutiveAgent(session_id="test_thr_memory")
+            _run(agent.process_message("read the thread", user_id="u1"))
+
+        assert agent.memory.last_email_thread_id == "thread-THR"
+        assert agent.memory.last_email_subject == "Project"
+        assert agent.memory.last_email_sender_address == "p0@corp.com"
+
+    def test_truncates_to_8_messages(self):
+        """A thread with 15 messages must be cut to 8 before returning to the LLM."""
+        svc = MagicMock()
+        svc.chat_with_tools = AsyncMock(side_effect=[
+            _llm_response("read_email_thread", {"thread_id": "thread-THR", "provider": "gmail"}),
+            {"tool_calls": None, "content": "Done."},
+        ])
+        mock_cls, _ = self._make_http_mock(self._thread_payload(n_messages=15))
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc), \
+             patch("services.executive_agent_service.httpx.AsyncClient", mock_cls):
+            agent = ExecutiveAgent(session_id="test_thr_truncate_msgs")
+            _run(agent.process_message("read the thread", user_id="u1"))
+
+        second_call_messages = svc.chat_with_tools.call_args_list[1][0][0]
+        tool_msgs = [m for m in second_call_messages if m.get("role") == "tool"]
+        tool_content = json.loads(tool_msgs[0]["content"])
+        assert len(tool_content.get("messages", [])) <= 8
+
+    def test_truncates_message_body_text(self):
+        """Each message's body_text must be capped at 2000 characters."""
+        svc = MagicMock()
+        svc.chat_with_tools = AsyncMock(side_effect=[
+            _llm_response("read_email_thread", {"thread_id": "thread-THR", "provider": "gmail"}),
+            {"tool_calls": None, "content": "Done."},
+        ])
+        mock_cls, _ = self._make_http_mock(self._thread_payload(n_messages=2, body_text_len=4000))
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc), \
+             patch("services.executive_agent_service.httpx.AsyncClient", mock_cls):
+            agent = ExecutiveAgent(session_id="test_thr_truncate_body")
+            _run(agent.process_message("read the thread", user_id="u1"))
+
+        second_call_messages = svc.chat_with_tools.call_args_list[1][0][0]
+        tool_msgs = [m for m in second_call_messages if m.get("role") == "tool"]
+        tool_content = json.loads(tool_msgs[0]["content"])
+        for msg in tool_content.get("messages", []):
+            assert len(msg.get("body_text", "")) <= 2000
+
+    def test_body_html_stripped_from_thread_messages(self):
+        """body_html must not appear in any thread message returned to the LLM."""
+        svc = MagicMock()
+        svc.chat_with_tools = AsyncMock(side_effect=[
+            _llm_response("read_email_thread", {"thread_id": "thread-THR", "provider": "gmail"}),
+            {"tool_calls": None, "content": "Done."},
+        ])
+        mock_cls, _ = self._make_http_mock(self._thread_payload(2))
+
+        with patch("services.executive_agent_service.get_chat_service", return_value=svc), \
+             patch("services.executive_agent_service.httpx.AsyncClient", mock_cls):
+            agent = ExecutiveAgent(session_id="test_thr_no_html")
+            _run(agent.process_message("read the thread", user_id="u1"))
+
+        second_call_messages = svc.chat_with_tools.call_args_list[1][0][0]
+        tool_msgs = [m for m in second_call_messages if m.get("role") == "tool"]
+        tool_content = json.loads(tool_msgs[0]["content"])
+        for msg in tool_content.get("messages", []):
+            assert "body_html" not in msg
