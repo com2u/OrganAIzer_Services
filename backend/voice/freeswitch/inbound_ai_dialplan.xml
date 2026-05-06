@@ -31,7 +31,7 @@
         Port 8085   = FREESWITCH_ESL_OUTBOUND_PORT.
         async full  = full event stream, non-blocking dialplan thread.
       -->
-      <action application="socket" data="172.21.224.1:8085 async full"/>
+      <action application="socket" data="127.0.0.1:8085 async full"/>
     </condition>
   </extension>
 </include>
