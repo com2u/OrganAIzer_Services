@@ -87,6 +87,24 @@ class ConversationMemory:
     last_action_type: Optional[str] = None
     last_provider: Optional[str] = None
 
+    # Conversation / person context (Batch 2B — in-session only, no persistence)
+    last_contact_name: Optional[str] = None
+    last_contact_email: Optional[str] = None
+    last_conversation_summary: Optional[str] = None
+    last_thread_ids: List[str] = field(default_factory=list)
+
+    MAX_THREAD_IDS = 20
+
+    def remember_thread_id(self, thread_id: Optional[str]) -> None:
+        """Record a thread_id in MRU order, capped at MAX_THREAD_IDS."""
+        if not thread_id:
+            return
+        if thread_id in self.last_thread_ids:
+            self.last_thread_ids.remove(thread_id)
+        self.last_thread_ids.insert(0, thread_id)
+        if len(self.last_thread_ids) > self.MAX_THREAD_IDS:
+            self.last_thread_ids = self.last_thread_ids[: self.MAX_THREAD_IDS]
+
     def add_message(self, role: str, content: str):
         """Add message to conversation history."""
         self.conversation_history.append({
@@ -318,6 +336,18 @@ class ExecutiveAgent:
                 f"from {self.memory.last_email_sender or 'unknown'} "
                 f"(thread_id={self.memory.last_email_thread_id or 'unknown'})"
             )
+        if self.memory.last_contact_name:
+            contact_line = f"Last person discussed: {self.memory.last_contact_name}"
+            if self.memory.last_contact_email:
+                contact_line += f" ({self.memory.last_contact_email})"
+            context_lines.append(contact_line)
+        if self.memory.last_thread_ids:
+            shown = ", ".join(self.memory.last_thread_ids[:5])
+            context_lines.append(f"Recent thread_ids: {shown}")
+        if self.memory.last_conversation_summary:
+            context_lines.append(
+                f"Last conversation summary: {self.memory.last_conversation_summary[:240]}"
+            )
 
         context_section = ""
         if context_lines:
@@ -353,13 +383,38 @@ class ExecutiveAgent:
             "Do not assume the inbox alone covers these — outbound messages live in 'sent'. "
             "Each email's 'direction' field is 'inbound' or 'outbound'.\n"
             "- For conversation history with a specific person (relationship context, "
-            "'did Patrick reply', 'what did I last send Bernd'): call read_emails with "
-            "scope='both' and pass the person's name or email as from_sender — the system "
-            "will mirror it to 'recipient' on the sent side so you get inbound and outbound "
-            "with one call. Use from_sender for the inbound side, recipient for the outbound "
-            "side, or both. If you have only a name and lookups feel imprecise, call "
-            "lookup_contact first to resolve the email address. For deeper context on a "
-            "specific thread surfaced by the timeline, follow up with read_email_thread.\n"
+            "'did Patrick reply', 'what did I last send Bernd', 'status with legal'): "
+            "call read_emails with scope='both' and pass the person's name or email as "
+            "from_sender — the system mirrors it to 'recipient' on the sent side so you "
+            "get inbound and outbound with one call. Use from_sender for the inbound side, "
+            "recipient for the outbound side, or both. If you have only a name and lookups "
+            "feel imprecise (or if multiple people share a first name), call lookup_contact "
+            "first to resolve the email address, then use that email with read_emails. "
+            "For deeper context on a specific thread surfaced by the timeline, follow up "
+            "with read_email_thread(thread_id).\n"
+            "- Person/conversation reasoning steps:\n"
+            "  1. Resolve ambiguous names via lookup_contact when needed.\n"
+            "  2. Pull the inbound + outbound timeline with read_emails(scope='both').\n"
+            "  3. Inspect each message's 'direction' and 'received' to order events.\n"
+            "  4. For substantive questions ('what was agreed', 'what's pending'), call "
+            "read_email_thread on the most relevant thread_id for full body context.\n"
+            "  5. Derive and surface, in plain prose: last contact date, who wrote last, "
+            "whether a reply appears pending, the key discussion themes, commitments or "
+            "promises either side made, and one suggested next action.\n"
+            "- Reply-status reasoning rules:\n"
+            "  * If the newest message has direction='outbound', a reply from the other "
+            "party is likely pending — say so unless the body clearly closed the loop.\n"
+            "  * If the newest message has direction='inbound', no reply is owed by them; "
+            "the ball is in the user's court if they previously promised an action.\n"
+            "  * Always check the actual thread body before declaring 'no reply' — a single "
+            "message thread can already contain a complete answer.\n"
+            "- Meeting prep behavior ('prepare me for my meeting with Patrick', "
+            "'context for my call with Bernd'): pull conversation history with "
+            "read_emails(scope='both') for the person, optionally drill into the most "
+            "recent thread with read_email_thread, then produce a brief: (a) relationship "
+            "context in one sentence, (b) open items / unanswered questions, (c) anything "
+            "the user promised that is still outstanding, (d) two or three suggested "
+            "talking points. Do not propose calendar actions unless the user asks.\n"
             "- When the user wants to add or schedule an appointment from an email or thread: "
             "call read_email_detail or read_email_thread first to get the full body, "
             "then extract title, date, time, location, and attendees from the content. "
@@ -710,6 +765,17 @@ class ExecutiveAgent:
                     import re as _re
                     _addr = _re.search(r"<([^>]+)>", from_raw)
                     self.memory.last_email_sender_address = _addr.group(1) if _addr else from_raw
+                # Conversation memory: when the caller scoped the query to a
+                # specific person, record them as the current contact and
+                # remember the threads we just touched so later read_email_thread
+                # calls can reuse them without another list pass.
+                conversation_person = from_sender_arg or recipient_arg
+                if conversation_person:
+                    self.memory.last_contact_name = conversation_person
+                    if "@" in conversation_person:
+                        self.memory.last_contact_email = conversation_person
+                for item in email_list:
+                    self.memory.remember_thread_id(item.get("thread_id"))
                 return {
                     "emails": {
                         "emails": email_list,
@@ -764,6 +830,11 @@ class ExecutiveAgent:
                     "provider": provider,
                     "message": f"No emails found from '{name_query}'. They may not be in your recent mail.",
                 }
+            # Remember the first resolved contact so subsequent person-scoped
+            # tool calls in the same session can prefer the canonical email.
+            top = contacts[0]
+            self.memory.last_contact_name = top.get("name") or name_query
+            self.memory.last_contact_email = top.get("email")
             return {"contacts": contacts, "provider": provider}
 
         if name == "read_email_detail":
@@ -838,6 +909,11 @@ class ExecutiveAgent:
                             import re as _re
                             _addr = _re.search(r"<([^>]+)>", from_raw)
                             self.memory.last_email_sender_address = _addr.group(1) if _addr else from_raw
+                    # Record this thread in the MRU list so it stays accessible
+                    # if the user pivots to another topic and back.
+                    self.memory.remember_thread_id(
+                        data.get("thread_id") or thread_id
+                    )
                     logger.info(
                         "[READ] read_email_thread ok provider=%s thread_id=%s message_count=%d",
                         provider, thread_id, len(messages),
