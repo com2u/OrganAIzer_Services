@@ -408,6 +408,15 @@ class ExecutiveAgent:
             "the ball is in the user's court if they previously promised an action.\n"
             "  * Always check the actual thread body before declaring 'no reply' — a single "
             "message thread can already contain a complete answer.\n"
+            "- Follow-up detection ('who am I waiting on', 'who should I follow up "
+            "with', 'did Patrick reply', 'show sent emails nobody answered', "
+            "'open follow-ups from last week'): call find_unanswered_followups. "
+            "Pass person to scope to one recipient, days to widen or narrow the "
+            "window (default 14, max 90). The tool is read-only — it never sends "
+            "or drafts anything. After surfacing follow-ups, summarize them and "
+            "ask whether the user wants to draft a reply or a nudge. Only use "
+            "propose_send_email or propose_reply_email after the user explicitly "
+            "asks to draft/send, and let the standard confirmation flow run.\n"
             "- Meeting prep behavior ('prepare me for my meeting with Patrick', "
             "'context for my call with Bernd'): pull conversation history with "
             "read_emails(scope='both') for the person, optionally drill into the most "
@@ -836,6 +845,166 @@ class ExecutiveAgent:
             self.memory.last_contact_name = top.get("name") or name_query
             self.memory.last_contact_email = top.get("email")
             return {"contacts": contacts, "provider": provider}
+
+        if name == "find_unanswered_followups":
+            # Clamp inputs. Use explicit None check so 0 stays 0 (and clamps
+            # to the floor) instead of being swallowed by `or 14`.
+            person = (args.get("person") or "").strip() or None
+            days_arg = args.get("days")
+            if days_arg is None:
+                days = 14
+            else:
+                try:
+                    days = int(days_arg)
+                except (TypeError, ValueError):
+                    days = 14
+            days = max(1, min(90, days))
+            limit_arg = args.get("limit")
+            if limit_arg is None:
+                limit = 20
+            else:
+                try:
+                    limit = int(limit_arg)
+                except (TypeError, ValueError):
+                    limit = 20
+            limit = max(1, min(50, limit))
+
+            provider_raw = args.get("provider") or mail_provider or "gmail"
+            provider = _normalize_provider(provider_raw)
+            if provider == "google":
+                endpoint = f"{base_url}/api/integrations/google/gmail/messages"
+            else:
+                endpoint = f"{base_url}/api/integrations/microsoft/mail/messages"
+
+            now_dt = datetime.now(self.timezone)
+            date_after = (now_dt - timedelta(days=days)).strftime("%Y-%m-%d")
+
+            base_p: Dict[str, Any] = {
+                "user_id": user_id,
+                "max_results": 50,
+                "date_after": date_after,
+            }
+            sent_p: Dict[str, Any] = dict(base_p, folder="sent")
+            inbox_p: Dict[str, Any] = dict(base_p, folder="inbox")
+            if person:
+                sent_p["recipient"] = person
+                inbox_p["sender"] = person
+
+            async def _fetch(params: Dict[str, Any]) -> List[Dict[str, Any]]:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    resp = await client.get(endpoint, params=params)
+                if not resp.is_success:
+                    logger.warning(
+                        "[READ] find_unanswered_followups HTTP %s folder=%s",
+                        resp.status_code, params.get("folder"),
+                    )
+                    return []
+                payload = resp.json()
+                items = payload.get("emails", []) if isinstance(payload, dict) else payload
+                # List endpoints never include body fields — strip defensively
+                # so they never escape this tool either.
+                for it in items:
+                    it.pop("body_text", None)
+                    it.pop("body_html", None)
+                return items
+
+            logger.info(
+                "[READ] find_unanswered_followups provider=%s person=%s days=%d limit=%d",
+                provider, bool(person), days, limit,
+            )
+            try:
+                sent_items = await _fetch(sent_p)
+                inbox_items = await _fetch(inbox_p)
+            except Exception as e:
+                logger.error("[READ] find_unanswered_followups fetch error: %s", e)
+                return {"error": str(e), "followups": [], "count": 0, "provider": provider}
+
+            # Build {thread_id: newest_inbound_datetime}
+            latest_inbound: Dict[str, datetime] = {}
+            for m in inbox_items:
+                tid = m.get("thread_id") or ""
+                if not tid:
+                    continue
+                dt = _parse_email_date(m.get("received", ""))
+                if dt is None:
+                    continue
+                prev = latest_inbound.get(tid)
+                if prev is None or _safe_dt_lt(prev, dt):
+                    latest_inbound[tid] = dt
+
+            # Process sent newest first, one follow-up per thread.
+            sent_sorted = sorted(
+                sent_items,
+                key=lambda m: m.get("received") or "",
+                reverse=True,
+            )
+
+            import re as _re
+
+            followups: List[Dict[str, Any]] = []
+            seen_threads: set = set()
+            for m in sent_sorted:
+                tid = m.get("thread_id") or ""
+                if tid and tid in seen_threads:
+                    continue
+                if tid:
+                    seen_threads.add(tid)
+
+                sent_dt = _parse_email_date(m.get("received", ""))
+                latest_in = latest_inbound.get(tid)
+                awaiting = (
+                    latest_in is None
+                    or (sent_dt is not None and _safe_dt_lt(latest_in, sent_dt))
+                )
+                if not awaiting:
+                    continue
+
+                # Extract recipient as person/email
+                to_field = m.get("to", "") or ""
+                email_addr = ""
+                display_name = ""
+                match = _re.search(r"<([^>]+)>", to_field)
+                if match:
+                    email_addr = match.group(1)
+                    display_name = to_field.split("<")[0].strip().strip('"')
+                elif "@" in to_field:
+                    email_addr = to_field.split(",")[0].strip()
+                    display_name = email_addr
+                else:
+                    display_name = to_field
+                    email_addr = to_field
+
+                days_waiting: Optional[int] = None
+                if sent_dt is not None:
+                    try:
+                        if sent_dt.tzinfo is None:
+                            sent_aware = self.timezone.localize(sent_dt)
+                        else:
+                            sent_aware = sent_dt
+                        delta = (now_dt - sent_aware).days
+                        days_waiting = max(0, delta)
+                    except Exception:
+                        days_waiting = None
+
+                followups.append({
+                    "person": display_name or email_addr or to_field or "unknown",
+                    "email": email_addr or to_field or "",
+                    "subject": m.get("subject", "(No Subject)"),
+                    "sent_date": m.get("received", ""),
+                    "thread_id": tid,
+                    "message_id": m.get("id", ""),
+                    "preview": (m.get("preview", "") or "")[:200],
+                    "days_waiting": days_waiting,
+                    "reason": "No later inbound reply found in this thread",
+                })
+                if len(followups) >= limit:
+                    break
+
+            return {
+                "followups": followups,
+                "count": len(followups),
+                "provider": provider,
+            }
 
         if name == "read_email_detail":
             message_id = args.get("message_id", "")
@@ -1453,6 +1622,34 @@ class ExecutiveAgent:
 # ==============================================================================
 # MODULE-LEVEL HELPER FUNCTIONS
 # ==============================================================================
+
+def _parse_email_date(s: Optional[str]) -> Optional[datetime]:
+    """Best-effort parse of an email Date/receivedDateTime string.
+
+    Handles ISO 8601 with trailing 'Z' (Outlook style) and RFC 2822 (Gmail style).
+    Returns None when both attempts fail — callers should treat that as
+    'unknown date' rather than zero.
+    """
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+        return parsedate_to_datetime(s)
+    except Exception:
+        return None
+
+
+def _safe_dt_lt(a: datetime, b: datetime) -> bool:
+    """Compare two datetimes safely even when one is naive and one is aware."""
+    if (a.tzinfo is None) != (b.tzinfo is None):
+        a = a.replace(tzinfo=None)
+        b = b.replace(tzinfo=None)
+    return a < b
+
 
 def _normalize_provider(raw_provider: str) -> str:
     """Normalise a provider string to 'google' or 'microsoft'."""

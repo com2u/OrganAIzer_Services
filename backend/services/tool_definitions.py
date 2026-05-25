@@ -334,6 +334,53 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "find_unanswered_followups",
+            "description": (
+                "Find sent emails that have no later inbound reply in the same thread — "
+                "i.e. messages the user is awaiting a response on. Use for questions like "
+                "'who am I waiting on', 'who should I follow up with', 'did Patrick reply', "
+                "'what follow-ups are open'. Read-only: never sends or drafts anything. "
+                "Returns a sorted (newest sent first) list of followups with person, email, "
+                "subject, sent_date, thread_id, message_id, preview, days_waiting and a "
+                "reason string."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "person": {
+                        "type": "string",
+                        "description": (
+                            "Optional. Limit follow-up detection to a single recipient "
+                            "(name or email). Applied as recipient on sent queries and as "
+                            "sender on inbox queries."
+                        ),
+                    },
+                    "days": {
+                        "type": "integer",
+                        "description": (
+                            "Look back this many days. Default 14, clamped to [1, 90]."
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": (
+                            "Maximum number of followups to return. Default 20, clamped to [1, 50]."
+                        ),
+                    },
+                    "provider": {
+                        "type": "string",
+                        "enum": ["gmail", "outlook"],
+                        "description": "Email provider",
+                    },
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "lookup_contact",
             "description": (
                 "Look up a contact's email address by name. "
