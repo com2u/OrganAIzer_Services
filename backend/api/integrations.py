@@ -867,11 +867,13 @@ async def google_gmail_list_messages(
     subject: Optional[str] = Query(None, description="Filter emails whose subject contains this text"),
     date_after: Optional[str] = Query(None, description="Filter emails after this date (YYYY-MM-DD)"),
     date_before: Optional[str] = Query(None, description="Filter emails before this date (YYYY-MM-DD)"),
+    folder: Optional[str] = Query(None, description="Folder filter: 'inbox' or 'sent'. Omit for no folder filter."),
 ):
     """
     List Gmail messages via Gmail API (users.messages.list → users.messages.get).
 
-    Returns a structured list: from, subject, received time, short preview.
+    Returns a structured list: from, to, subject, received time, short preview,
+    direction (inbound|outbound), thread_id.
     Requires prior Google OAuth via /google/auth/start (gmail.readonly or gmail.modify scope).
     """
     try:
@@ -898,6 +900,13 @@ async def google_gmail_list_messages(
 
         # Build Gmail query string
         query_parts = []
+        # Folder scope: inbox vs sent. Uses Gmail's "in:" search operator which
+        # maps to the INBOX / SENT system labels.
+        folder_norm = (folder or "").strip().lower()
+        if folder_norm == "inbox":
+            query_parts.append("in:inbox")
+        elif folder_norm == "sent":
+            query_parts.append("in:sent")
         if unread_only:
             query_parts.append("is:unread")
         if sender:
@@ -922,24 +931,32 @@ async def google_gmail_list_messages(
             msg = service.users().messages().get(
                 userId="me", id=meta["id"],
                 format="metadata",
-                metadataHeaders=["From", "Subject", "Date"]
+                metadataHeaders=["From", "To", "Subject", "Date"]
             ).execute()
 
             headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
             snippet = msg.get("snippet", "")[:200]
             label_ids = msg.get("labelIds", [])
+            # Direction is derived per message from Gmail's SENT system label —
+            # works correctly even when the caller mixes inbox + sent results.
+            direction = "outbound" if "SENT" in label_ids else "inbound"
 
             emails.append({
                 "id": msg["id"],
                 "thread_id": msg.get("threadId", ""),
                 "from": headers.get("From", "Unknown"),
+                "to": headers.get("To", ""),
                 "subject": headers.get("Subject", "(No Subject)"),
                 "received": headers.get("Date", ""),
                 "preview": snippet,
                 "unread": "UNREAD" in label_ids,
+                "direction": direction,
             })
 
-        logger.info(f"✅ Gmail list: user={user_id}, count={len(emails)}")
+        logger.info(
+            "✅ Gmail list: user=%s, folder=%s, count=%d",
+            user_id, folder_norm or "(none)", len(emails),
+        )
         return {"emails": emails, "total": len(emails)}
 
     except HttpError as e:
@@ -1805,11 +1822,17 @@ async def microsoft_mail_list_messages(
     subject: Optional[str] = Query(None, description="Filter emails whose subject contains this text"),
     date_after: Optional[str] = Query(None, description="Filter emails after this date (YYYY-MM-DD)"),
     date_before: Optional[str] = Query(None, description="Filter emails before this date (YYYY-MM-DD)"),
+    folder: Optional[str] = Query(None, description="Folder filter: 'inbox' or 'sent'. Omit for full mailbox."),
 ):
     """
-    List Outlook messages via Microsoft Graph /me/messages.
+    List Outlook messages via Microsoft Graph.
 
-    Returns structured list: from, subject, received time, preview.
+    folder=inbox  → /me/mailFolders/Inbox/messages       (direction=inbound)
+    folder=sent   → /me/mailFolders/SentItems/messages   (direction=outbound)
+    no folder     → /me/messages                         (whole mailbox)
+
+    Returns structured list: from, to, subject, received time, preview,
+    direction (inbound|outbound), thread_id.
     Requires prior Microsoft OAuth via /microsoft/auth/start (Mail.Read scope).
     """
     try:
@@ -1827,7 +1850,10 @@ async def microsoft_mail_list_messages(
         params: dict = {
             "$top": min(max_results, 20),
             "$orderby": "receivedDateTime desc",
-            "$select": "id,subject,from,receivedDateTime,bodyPreview,isRead,conversationId",
+            "$select": (
+                "id,subject,from,toRecipients,receivedDateTime,"
+                "bodyPreview,isRead,conversationId"
+            ),
         }
         if filters:
             params["$filter"] = " and ".join(filters)
@@ -1840,22 +1866,44 @@ async def microsoft_mail_list_messages(
             if filters:
                 params["$filter"] = " and ".join(filters)
 
-        data = _ms_request("GET", "/me/messages", access_token, user_id=user_id, params=params)
+        # Route to a specific mail folder when scope is given.
+        folder_norm = (folder or "").strip().lower()
+        if folder_norm == "sent":
+            endpoint_path = "/me/mailFolders/SentItems/messages"
+            direction = "outbound"
+        elif folder_norm == "inbox":
+            endpoint_path = "/me/mailFolders/Inbox/messages"
+            direction = "inbound"
+        else:
+            endpoint_path = "/me/messages"
+            direction = "inbound"  # best-effort default for the legacy full-mailbox path
+
+        data = _ms_request("GET", endpoint_path, access_token, user_id=user_id, params=params)
 
         emails = []
         for m in data.get("value", []):
             from_addr = m.get("from", {}).get("emailAddress", {})
+            to_addrs = [
+                r.get("emailAddress", {}).get("address", "")
+                for r in m.get("toRecipients", [])
+            ]
+            to_str = ", ".join(a for a in to_addrs if a)
             emails.append({
                 "id": m["id"],
                 "thread_id": m.get("conversationId", ""),
                 "from": f"{from_addr.get('name', '')} <{from_addr.get('address', '')}>".strip(" <>"),
+                "to": to_str,
                 "subject": m.get("subject", "(No Subject)"),
                 "received": m.get("receivedDateTime", ""),
                 "preview": m.get("bodyPreview", "")[:200],
                 "unread": not m.get("isRead", True),
+                "direction": direction,
             })
 
-        logger.info(f"✅ Outlook mail list: user={user_id}, count={len(emails)}")
+        logger.info(
+            "✅ Outlook mail list: user=%s, folder=%s, count=%d",
+            user_id, folder_norm or "(none)", len(emails),
+        )
         return {"emails": emails, "total": len(emails)}
 
     except HTTPException:

@@ -153,8 +153,12 @@ TOOLS = [
         "function": {
             "name": "read_emails",
             "description": (
-                "Read recent emails from the inbox. "
-                "Supports filtering by sender, subject keywords, date, and read/unread status."
+                "Read recent emails. By default reads the inbox (scope='inbox'). "
+                "Use scope='sent' to read messages the user has sent, or scope='both' "
+                "for a merged timeline of inbound + outbound — essential for follow-up, "
+                "last-contact, and conversation-history questions. "
+                "Supports filtering by sender, subject keywords, date, and read/unread status. "
+                "Each returned email has a 'direction' field of 'inbound' or 'outbound'."
             ),
             "parameters": {
                 "type": "object",
@@ -178,6 +182,16 @@ TOOLS = [
                     "unread_only": {
                         "type": "boolean",
                         "description": "When true, return only unread emails (optional, default false)",
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["inbox", "sent", "both"],
+                        "description": (
+                            "Which mailbox to read. 'inbox' (default) for received messages, "
+                            "'sent' for messages the user has sent, 'both' for a merged "
+                            "inbound+outbound timeline. Use 'both' or 'sent' when answering "
+                            "'did I write to X?', 'did they reply?', or 'when did we last talk?'."
+                        ),
                     },
                     "provider": {
                         "type": "string",

@@ -347,6 +347,11 @@ class ExecutiveAgent:
             "- Before using propose_reply_email, check the session context above for the thread_id. "
             "If thread_id is unknown, call read_emails first to find it. "
             "If the user has explicitly dictated the full reply body, you may propose directly.\n"
+            "- read_emails has a 'scope' parameter: 'inbox' (default), 'sent', or 'both'. "
+            "Use scope='sent' or scope='both' for questions about follow-ups, last contact, "
+            "conversation history, what the user previously wrote, or whether someone has replied. "
+            "Do not assume the inbox alone covers these — outbound messages live in 'sent'. "
+            "Each email's 'direction' field is 'inbound' or 'outbound'.\n"
             "- When the user wants to add or schedule an appointment from an email or thread: "
             "call read_email_detail or read_email_thread first to get the full body, "
             "then extract title, date, time, location, and attendees from the content. "
@@ -595,43 +600,94 @@ class ExecutiveAgent:
             provider_raw = args.get("provider") or mail_provider or "gmail"
             provider = _normalize_provider(provider_raw)
             count = args.get("count", 5)
+            scope_raw = (args.get("scope") or "inbox").strip().lower()
+            if scope_raw not in ("inbox", "sent", "both"):
+                scope_raw = "inbox"
             if provider == "google":
                 endpoint = f"{base_url}/api/integrations/google/gmail/messages"
             else:
                 endpoint = f"{base_url}/api/integrations/microsoft/mail/messages"
-            params = {"user_id": user_id, "max_results": count}
+            base_params: Dict[str, Any] = {"user_id": user_id, "max_results": count}
             if args.get("from_sender"):
-                params["sender"] = args["from_sender"]
+                base_params["sender"] = args["from_sender"]
             if args.get("subject_contains"):
-                params["subject"] = args["subject_contains"]
+                base_params["subject"] = args["subject_contains"]
             if args.get("since_date"):
-                params["date_after"] = args["since_date"]
+                base_params["date_after"] = args["since_date"]
             if args.get("unread_only"):
-                params["unread_only"] = "true"
-            logger.info("[READ] read_emails provider=%s count=%s", provider, count)
-            try:
+                base_params["unread_only"] = "true"
+
+            async def _fetch_folder(folder: str) -> List[Dict[str, Any]]:
+                params = dict(base_params)
+                params["folder"] = folder
                 async with httpx.AsyncClient(timeout=30.0) as client:
                     response = await client.get(endpoint, params=params)
-                if response.is_success:
-                    emails = response.json()
-                    self.memory.last_provider = provider
-                    self.memory.preferred_provider = provider
-                    email_list = emails.get("emails", []) if isinstance(emails, dict) else emails
-                    if email_list:
-                        first = email_list[0]
-                        self.memory.last_email_thread_id = first.get("thread_id", "")
-                        self.memory.last_email_message_id = first.get("id", "")
-                        self.memory.last_email_subject = first.get("subject", "")
-                        from_raw = first.get("from", "")
-                        self.memory.last_email_sender = from_raw
-                        import re as _re
-                        _addr = _re.search(r"<([^>]+)>", from_raw)
-                        self.memory.last_email_sender_address = _addr.group(1) if _addr else from_raw
-                    return {"emails": emails, "provider": provider}
-                return {"error": f"HTTP {response.status_code}", "emails": [], "provider": provider}
+                if not response.is_success:
+                    logger.warning(
+                        "[READ] read_emails folder=%s HTTP %s",
+                        folder, response.status_code,
+                    )
+                    return []
+                payload = response.json()
+                items = payload.get("emails", []) if isinstance(payload, dict) else payload
+                default_dir = "outbound" if folder == "sent" else "inbound"
+                # List endpoints never include body fields, but strip defensively
+                # so the LLM never receives body_text/body_html from a list result.
+                for item in items:
+                    item.setdefault("direction", default_dir)
+                    item.pop("body_text", None)
+                    item.pop("body_html", None)
+                return items
+
+            logger.info(
+                "[READ] read_emails provider=%s scope=%s count=%s",
+                provider, scope_raw, count,
+            )
+            try:
+                if scope_raw == "both":
+                    inbox_items = await _fetch_folder("inbox")
+                    sent_items = await _fetch_folder("sent")
+                    merged = inbox_items + sent_items
+                    # Dedupe by id (same message can in rare cases appear in
+                    # both result sets) and sort newest-first by received date.
+                    seen: set = set()
+                    deduped: List[Dict[str, Any]] = []
+                    for item in merged:
+                        eid = item.get("id")
+                        if eid and eid in seen:
+                            continue
+                        if eid:
+                            seen.add(eid)
+                        deduped.append(item)
+                    deduped.sort(key=lambda e: e.get("received", "") or "", reverse=True)
+                    email_list = deduped
+                else:
+                    email_list = await _fetch_folder(scope_raw)
+
+                self.memory.last_provider = provider
+                self.memory.preferred_provider = provider
+                if email_list:
+                    first = email_list[0]
+                    self.memory.last_email_thread_id = first.get("thread_id", "")
+                    self.memory.last_email_message_id = first.get("id", "")
+                    self.memory.last_email_subject = first.get("subject", "")
+                    from_raw = first.get("from", "")
+                    self.memory.last_email_sender = from_raw
+                    import re as _re
+                    _addr = _re.search(r"<([^>]+)>", from_raw)
+                    self.memory.last_email_sender_address = _addr.group(1) if _addr else from_raw
+                return {
+                    "emails": {
+                        "emails": email_list,
+                        "total": len(email_list),
+                        "scope": scope_raw,
+                    },
+                    "provider": provider,
+                    "scope": scope_raw,
+                }
             except Exception as e:
                 logger.error("[READ] read_emails error: %s", e)
-                return {"error": str(e), "emails": [], "provider": provider}
+                return {"error": str(e), "emails": [], "provider": provider, "scope": scope_raw}
 
         if name == "lookup_contact":
             name_query = args.get("name", "")
