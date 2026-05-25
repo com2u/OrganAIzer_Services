@@ -863,7 +863,8 @@ async def google_gmail_list_messages(
     user_id: str = Query("default_user", description="User ID"),
     max_results: int = Query(5, description="Max emails to return"),
     unread_only: bool = Query(False, description="Filter to unread only"),
-    sender: Optional[str] = Query(None, description="Filter by sender name or email"),
+    sender: Optional[str] = Query(None, description="Filter by sender name or email (Gmail 'from:')"),
+    recipient: Optional[str] = Query(None, description="Filter by recipient name or email (Gmail 'to:'). Use for sent-mail conversation lookups."),
     subject: Optional[str] = Query(None, description="Filter emails whose subject contains this text"),
     date_after: Optional[str] = Query(None, description="Filter emails after this date (YYYY-MM-DD)"),
     date_before: Optional[str] = Query(None, description="Filter emails before this date (YYYY-MM-DD)"),
@@ -911,6 +912,8 @@ async def google_gmail_list_messages(
             query_parts.append("is:unread")
         if sender:
             query_parts.append(f"from:{sender}")
+        if recipient:
+            query_parts.append(f"to:{recipient}")
         if subject:
             query_parts.append(f"subject:{subject}")
         if date_after:
@@ -1819,6 +1822,7 @@ async def microsoft_mail_list_messages(
     max_results: int = Query(5, description="Max emails to return"),
     unread_only: bool = Query(False, description="Filter to unread only"),
     sender: Optional[str] = Query(None, description="Filter by sender name or email"),
+    recipient: Optional[str] = Query(None, description="Filter by recipient name or email. Use for sent-mail conversation lookups."),
     subject: Optional[str] = Query(None, description="Filter emails whose subject contains this text"),
     date_after: Optional[str] = Query(None, description="Filter emails after this date (YYYY-MM-DD)"),
     date_before: Optional[str] = Query(None, description="Filter emails before this date (YYYY-MM-DD)"),
@@ -1860,6 +1864,21 @@ async def microsoft_mail_list_messages(
         if sender:
             # Use $search for sender (Graph doesn't support 'from/emailAddress/address' contains in $filter easily)
             params["$search"] = f'"{sender}"'
+        if recipient:
+            # Precise path when the caller supplies an email address; fuzzy
+            # fallback when only a name is known. $filter composes with $orderby,
+            # $search does not — so prefer $filter whenever possible.
+            if "@" in recipient:
+                rec_filter = (
+                    f"toRecipients/any(r:r/emailAddress/address eq '{recipient}')"
+                )
+                filters.append(rec_filter)
+                params["$filter"] = " and ".join(filters)
+            else:
+                existing = params.get("$search", "")
+                params["$search"] = (
+                    existing + f' "{recipient}"' if existing else f'"{recipient}"'
+                )
         if subject:
             # contains() on subject is supported in OData for Graph
             filters.append(f"contains(subject, '{subject}')")

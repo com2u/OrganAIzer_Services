@@ -352,6 +352,14 @@ class ExecutiveAgent:
             "conversation history, what the user previously wrote, or whether someone has replied. "
             "Do not assume the inbox alone covers these — outbound messages live in 'sent'. "
             "Each email's 'direction' field is 'inbound' or 'outbound'.\n"
+            "- For conversation history with a specific person (relationship context, "
+            "'did Patrick reply', 'what did I last send Bernd'): call read_emails with "
+            "scope='both' and pass the person's name or email as from_sender — the system "
+            "will mirror it to 'recipient' on the sent side so you get inbound and outbound "
+            "with one call. Use from_sender for the inbound side, recipient for the outbound "
+            "side, or both. If you have only a name and lookups feel imprecise, call "
+            "lookup_contact first to resolve the email address. For deeper context on a "
+            "specific thread surfaced by the timeline, follow up with read_email_thread.\n"
             "- When the user wants to add or schedule an appointment from an email or thread: "
             "call read_email_detail or read_email_thread first to get the full body, "
             "then extract title, date, time, location, and attendees from the content. "
@@ -608,8 +616,6 @@ class ExecutiveAgent:
             else:
                 endpoint = f"{base_url}/api/integrations/microsoft/mail/messages"
             base_params: Dict[str, Any] = {"user_id": user_id, "max_results": count}
-            if args.get("from_sender"):
-                base_params["sender"] = args["from_sender"]
             if args.get("subject_contains"):
                 base_params["subject"] = args["subject_contains"]
             if args.get("since_date"):
@@ -617,9 +623,36 @@ class ExecutiveAgent:
             if args.get("unread_only"):
                 base_params["unread_only"] = "true"
 
+            # Person-aware filters. For scope='both' with only one side given,
+            # mirror it: the LLM saying "Patrick" almost always means "the other
+            # party", so inbound is filtered by from:Patrick and outbound by
+            # to:Patrick, which is the symmetric thing to do.
+            from_sender_arg = args.get("from_sender")
+            recipient_arg = args.get("recipient")
+            if scope_raw == "both" and (from_sender_arg or recipient_arg):
+                inbox_sender = from_sender_arg or recipient_arg
+                inbox_recipient = None
+                sent_sender = None
+                sent_recipient = recipient_arg or from_sender_arg
+            else:
+                inbox_sender = from_sender_arg
+                inbox_recipient = recipient_arg
+                sent_sender = from_sender_arg
+                sent_recipient = recipient_arg
+
             async def _fetch_folder(folder: str) -> List[Dict[str, Any]]:
                 params = dict(base_params)
                 params["folder"] = folder
+                if folder == "inbox":
+                    if inbox_sender:
+                        params["sender"] = inbox_sender
+                    if inbox_recipient:
+                        params["recipient"] = inbox_recipient
+                else:  # sent
+                    if sent_sender:
+                        params["sender"] = sent_sender
+                    if sent_recipient:
+                        params["recipient"] = sent_recipient
                 async with httpx.AsyncClient(timeout=30.0) as client:
                     response = await client.get(endpoint, params=params)
                 if not response.is_success:
@@ -640,8 +673,9 @@ class ExecutiveAgent:
                 return items
 
             logger.info(
-                "[READ] read_emails provider=%s scope=%s count=%s",
+                "[READ] read_emails provider=%s scope=%s count=%s has_sender=%s has_recipient=%s",
                 provider, scope_raw, count,
+                bool(from_sender_arg), bool(recipient_arg),
             )
             try:
                 if scope_raw == "both":

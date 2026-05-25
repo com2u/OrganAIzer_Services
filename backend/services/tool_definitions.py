@@ -169,7 +169,15 @@ TOOLS = [
                     },
                     "from_sender": {
                         "type": "string",
-                        "description": "Filter by sender name or email address (optional)",
+                        "description": "Filter by sender name or email address (optional). Matches the 'From' field.",
+                    },
+                    "recipient": {
+                        "type": "string",
+                        "description": (
+                            "Filter by recipient name or email. Use for sent-mail "
+                            "conversation lookups: combined with scope='sent' or scope='both', "
+                            "this finds messages the user sent to a specific person."
+                        ),
                     },
                     "subject_contains": {
                         "type": "string",
