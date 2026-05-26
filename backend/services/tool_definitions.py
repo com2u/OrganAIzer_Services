@@ -334,6 +334,52 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "get_daily_briefing",
+            "description": (
+                "Build a read-only morning-style briefing: today's calendar events, "
+                "the most recent inbox messages, open follow-ups (sent mail not yet "
+                "answered), and any pending draft. Use for queries like "
+                "'what do I need to know today', 'morning briefing', 'prepare my day', "
+                "'what's urgent', 'anything important from email'. Returns a structured "
+                "aggregate with subsystem sections plus a summary block. Each subsystem "
+                "degrades gracefully on error — partial results are still returned."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "days_ahead": {
+                        "type": "integer",
+                        "description": (
+                            "How many days of calendar to include starting today. "
+                            "Default 1, clamped to [1, 7]."
+                        ),
+                    },
+                    "include_calendar": {
+                        "type": "boolean",
+                        "description": "Include the calendar section. Default true.",
+                    },
+                    "include_email": {
+                        "type": "boolean",
+                        "description": "Include the recent inbox section. Default true.",
+                    },
+                    "include_followups": {
+                        "type": "boolean",
+                        "description": "Include the open follow-ups section. Default true.",
+                    },
+                    "provider": {
+                        "type": "string",
+                        "enum": ["gmail", "outlook"],
+                        "description": "Email provider override (calendar uses configured provider).",
+                    },
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "find_unanswered_followups",
             "description": (
                 "Find sent emails that have no later inbound reply in the same thread — "

@@ -462,6 +462,16 @@ class ExecutiveAgent:
             "the ball is in the user's court if they previously promised an action.\n"
             "  * Always check the actual thread body before declaring 'no reply' — a single "
             "message thread can already contain a complete answer.\n"
+            "- Daily briefing ('what do I need to know today', 'morning briefing', "
+            "'prepare my day', 'what's urgent', 'daily summary', 'brief me'): call "
+            "get_daily_briefing FIRST, then synthesize the result as a real executive "
+            "assistant would. Speak concise, prioritized, action-oriented prose — no "
+            "tables, no bullet markdown. Cover in this order: (1) today's schedule with "
+            "time, title, attendees if useful; (2) urgent inbox items; (3) people "
+            "awaiting your reply (from followups); (4) pending drafts; (5) one or two "
+            "recommended next actions. The tool is read-only — never send, draft, or "
+            "create calendar events as part of the briefing. If the user asks to act on "
+            "an item, go through the standard propose_/confirmation flow.\n"
             "- Follow-up detection ('who am I waiting on', 'who should I follow up "
             "with', 'did Patrick reply', 'show sent emails nobody answered', "
             "'open follow-ups from last week'): call find_unanswered_followups. "
@@ -905,6 +915,276 @@ class ExecutiveAgent:
             self.memory.last_contact_name = top.get("name") or name_query
             self.memory.last_contact_email = top.get("email")
             return {"contacts": contacts, "provider": provider}
+
+        if name == "get_daily_briefing":
+            # ── clamp inputs ───────────────────────────────────────────────
+            days_ahead_arg = args.get("days_ahead")
+            if days_ahead_arg is None:
+                days_ahead = 1
+            else:
+                try:
+                    days_ahead = int(days_ahead_arg)
+                except (TypeError, ValueError):
+                    days_ahead = 1
+            days_ahead = max(1, min(7, days_ahead))
+
+            include_calendar = bool(args.get("include_calendar", True))
+            include_email = bool(args.get("include_email", True))
+            include_followups = bool(args.get("include_followups", True))
+
+            # Provider resolution: email override → mail_provider → gmail default;
+            # calendar follows the API-supplied calendar provider when present.
+            mail_provider_raw = args.get("provider") or mail_provider or "gmail"
+            mail_provider_norm = _normalize_provider(mail_provider_raw)
+            cal_provider_norm = _normalize_provider(
+                calendar_provider or args.get("provider") or "google"
+            )
+
+            now_dt = datetime.now(self.timezone)
+            end_dt = now_dt + timedelta(days=days_ahead)
+
+            EMAIL_LIMIT = 15
+            FOLLOWUP_LIMIT = 5
+            FOLLOWUP_DAYS = 14
+
+            mail_endpoint = (
+                f"{base_url}/api/integrations/google/gmail/messages"
+                if mail_provider_norm == "google"
+                else f"{base_url}/api/integrations/microsoft/mail/messages"
+            )
+            cal_endpoint = (
+                f"{base_url}/api/integrations/{cal_provider_norm}/calendar/events"
+            )
+
+            result: Dict[str, Any] = {
+                "calendar": {"events": [], "meeting_count": 0},
+                "recent_email": [],
+                "followups": [],
+                "pending_draft": None,
+                "summary": {
+                    "meeting_count": 0,
+                    "unread_like_count": 0,
+                    "followup_count": 0,
+                },
+                "provider": mail_provider_norm,
+                "days_ahead": days_ahead,
+            }
+
+            logger.info(
+                "[BRIEFING] mail=%s cal=%s days_ahead=%d cal=%s mail=%s fu=%s",
+                mail_provider_norm, cal_provider_norm, days_ahead,
+                include_calendar, include_email, include_followups,
+            )
+
+            # ── calendar ───────────────────────────────────────────────────
+            if include_calendar:
+                try:
+                    cal_params = {
+                        "user_id": user_id,
+                        "time_min": _ensure_rfc3339(
+                            now_dt.strftime("%Y-%m-%dT00:00:00"), self.timezone
+                        ),
+                        "time_max": _ensure_rfc3339(
+                            end_dt.strftime("%Y-%m-%dT23:59:59"), self.timezone
+                        ),
+                    }
+                    async with httpx.AsyncClient(timeout=15.0) as client:
+                        resp = await client.get(cal_endpoint, params=cal_params)
+                    if resp.is_success:
+                        data = resp.json()
+                        events = (
+                            data.get("events", [])
+                            if isinstance(data, dict)
+                            else data
+                        )
+                        trimmed_events = []
+                        for e in events[:20]:
+                            trimmed_events.append({
+                                "id": e.get("id"),
+                                "title": e.get("summary", "Untitled"),
+                                "start": e.get("start", ""),
+                                "end": e.get("end", ""),
+                                "location": e.get("location", ""),
+                                "attendees": e.get("attendees") or [],
+                            })
+                        result["calendar"]["events"] = trimmed_events
+                        result["calendar"]["meeting_count"] = len(trimmed_events)
+                        result["summary"]["meeting_count"] = len(trimmed_events)
+                    else:
+                        result["calendar"]["error"] = f"HTTP {resp.status_code}"
+                except Exception as e:
+                    logger.warning("[BRIEFING] calendar failed: %s", e)
+                    result["calendar"]["error"] = str(e)
+
+            # ── recent email ───────────────────────────────────────────────
+            if include_email:
+                try:
+                    since = (now_dt - timedelta(days=2)).strftime("%Y-%m-%d")
+                    mail_params = {
+                        "user_id": user_id,
+                        "max_results": EMAIL_LIMIT,
+                        "folder": "inbox",
+                        "date_after": since,
+                    }
+                    async with httpx.AsyncClient(timeout=15.0) as client:
+                        resp = await client.get(mail_endpoint, params=mail_params)
+                    if resp.is_success:
+                        data = resp.json()
+                        emails = (
+                            data.get("emails", [])
+                            if isinstance(data, dict)
+                            else data
+                        )
+                        trimmed: List[Dict[str, Any]] = []
+                        unread_count = 0
+                        for m in emails[:EMAIL_LIMIT]:
+                            # Defensive: strip any body fields a backend
+                            # might inadvertently include.
+                            m.pop("body_text", None)
+                            m.pop("body_html", None)
+                            trimmed.append({
+                                "id": m.get("id"),
+                                "thread_id": m.get("thread_id", ""),
+                                "from": m.get("from", ""),
+                                "subject": m.get("subject", "(No Subject)"),
+                                "received": m.get("received", ""),
+                                "preview": (m.get("preview", "") or "")[:200],
+                                "unread": bool(m.get("unread", False)),
+                                "direction": m.get("direction", "inbound"),
+                            })
+                            if m.get("unread"):
+                                unread_count += 1
+                        result["recent_email"] = trimmed
+                        result["summary"]["unread_like_count"] = unread_count
+                    else:
+                        result["recent_email_error"] = f"HTTP {resp.status_code}"
+                except Exception as e:
+                    logger.warning("[BRIEFING] email failed: %s", e)
+                    result["recent_email_error"] = str(e)
+
+            # ── follow-ups ─────────────────────────────────────────────────
+            if include_followups:
+                try:
+                    fu_since = (now_dt - timedelta(days=FOLLOWUP_DAYS)).strftime(
+                        "%Y-%m-%d"
+                    )
+
+                    async def _fu_fetch(folder: str) -> List[Dict[str, Any]]:
+                        params = {
+                            "user_id": user_id,
+                            "max_results": 50,
+                            "folder": folder,
+                            "date_after": fu_since,
+                        }
+                        async with httpx.AsyncClient(timeout=15.0) as client:
+                            r = await client.get(mail_endpoint, params=params)
+                        if not r.is_success:
+                            return []
+                        payload = r.json()
+                        items = (
+                            payload.get("emails", [])
+                            if isinstance(payload, dict)
+                            else payload
+                        )
+                        for it in items:
+                            it.pop("body_text", None)
+                            it.pop("body_html", None)
+                        return items
+
+                    sent_items = await _fu_fetch("sent")
+                    inbox_items = await _fu_fetch("inbox")
+
+                    latest_inbound: Dict[str, datetime] = {}
+                    for m in inbox_items:
+                        tid = m.get("thread_id") or ""
+                        if not tid:
+                            continue
+                        dt = _parse_email_date(m.get("received", ""))
+                        if dt is None:
+                            continue
+                        prev = latest_inbound.get(tid)
+                        if prev is None or _safe_dt_lt(prev, dt):
+                            latest_inbound[tid] = dt
+
+                    sent_sorted = sorted(
+                        sent_items,
+                        key=lambda m: m.get("received") or "",
+                        reverse=True,
+                    )
+                    import re as _re
+                    seen_threads: set = set()
+                    followups: List[Dict[str, Any]] = []
+                    for m in sent_sorted:
+                        tid = m.get("thread_id") or ""
+                        if tid and tid in seen_threads:
+                            continue
+                        if tid:
+                            seen_threads.add(tid)
+                        sent_dt = _parse_email_date(m.get("received", ""))
+                        latest_in = latest_inbound.get(tid)
+                        awaiting = (
+                            latest_in is None
+                            or (
+                                sent_dt is not None
+                                and _safe_dt_lt(latest_in, sent_dt)
+                            )
+                        )
+                        if not awaiting:
+                            continue
+                        to_field = m.get("to", "") or ""
+                        email_addr = ""
+                        display_name = ""
+                        match = _re.search(r"<([^>]+)>", to_field)
+                        if match:
+                            email_addr = match.group(1)
+                            display_name = (
+                                to_field.split("<")[0].strip().strip('"')
+                            )
+                        elif "@" in to_field:
+                            email_addr = to_field.split(",")[0].strip()
+                            display_name = email_addr
+                        else:
+                            display_name = to_field
+                            email_addr = to_field
+                        followups.append({
+                            "person": display_name or email_addr or "unknown",
+                            "email": email_addr,
+                            "subject": m.get("subject", "(No Subject)"),
+                            "sent_date": m.get("received", ""),
+                            "thread_id": tid,
+                            "message_id": m.get("id", ""),
+                            "preview": (m.get("preview", "") or "")[:200],
+                        })
+                        if len(followups) >= FOLLOWUP_LIMIT:
+                            break
+
+                    result["followups"] = followups
+                    result["summary"]["followup_count"] = len(followups)
+                except Exception as e:
+                    logger.warning("[BRIEFING] followups failed: %s", e)
+                    result["followups_error"] = str(e)
+
+            # ── pending draft (in-memory, no I/O) ──────────────────────────
+            if self.memory.draft:
+                d_args = self.memory.draft.get("args", {})
+                d_kind = self.memory.draft.get("kind", "send")
+                if d_kind == "reply":
+                    to_disp = "(thread reply)"
+                    subj = d_args.get("original_subject", "")
+                else:
+                    t = d_args.get("to", [])
+                    to_disp = (
+                        ", ".join(t) if isinstance(t, list) else str(t)
+                    )
+                    subj = d_args.get("subject", "")
+                result["pending_draft"] = {
+                    "kind": d_kind,
+                    "to": to_disp,
+                    "subject": subj,
+                    "body_chars": len(d_args.get("body", "") or ""),
+                }
+
+            return result
 
         if name == "find_unanswered_followups":
             # Clamp inputs. Use explicit None check so 0 stays 0 (and clamps
