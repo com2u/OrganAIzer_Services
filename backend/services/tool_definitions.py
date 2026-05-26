@@ -554,13 +554,39 @@ def format_confirmation_message(tool_name: str, args: Dict[str, Any]) -> str:
     if tool_name == "propose_send_email":
         to_list = args.get("to", [])
         to_str = ", ".join(to_list) if isinstance(to_list, list) else str(to_list)
-        subject = args.get("subject", "")
-        provider_label = "Outlook" if _normalize_provider(args.get("provider", "gmail")) == "microsoft" else "Gmail"
-        return f'Send "{subject}" to {to_str} via {provider_label}. Shall I go ahead?'
+        subject = args.get("subject", "(no subject)")
+        body = args.get("body", "") or ""
+        body_preview = body if len(body) <= 600 else body[:600].rstrip() + "…"
+        provider_label = (
+            "Outlook"
+            if _normalize_provider(args.get("provider", "gmail")) == "microsoft"
+            else "Gmail"
+        )
+        return (
+            f"Draft to {to_str} via {provider_label}\n"
+            f"Subject: {subject}\n"
+            f"---\n"
+            f"{body_preview}\n"
+            f"---\n"
+            f'Reply "yes" to send, "cancel" to discard, or tell me what to change.'
+        )
 
     if tool_name == "propose_reply_email":
         subject = args.get("original_subject", "the email")
-        return f'Reply to "{subject}". Shall I go ahead?'
+        body = args.get("body", "") or ""
+        body_preview = body if len(body) <= 600 else body[:600].rstrip() + "…"
+        provider_label = (
+            "Outlook"
+            if _normalize_provider(args.get("provider", "gmail")) == "microsoft"
+            else "Gmail"
+        )
+        return (
+            f'Reply to "{subject}" via {provider_label}\n'
+            f"---\n"
+            f"{body_preview}\n"
+            f"---\n"
+            f'Reply "yes" to send, "cancel" to discard, or tell me what to change.'
+        )
 
     if tool_name == "propose_create_recurring_event":
         title = args.get("title", "event")

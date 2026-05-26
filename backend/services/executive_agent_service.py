@@ -93,7 +93,29 @@ class ConversationMemory:
     last_conversation_summary: Optional[str] = None
     last_thread_ids: List[str] = field(default_factory=list)
 
+    # Draft review (Batch 4 — in-session only, no persistence).
+    # Shape: {"kind": "send"|"reply", "args": {... full body ...}, "updated_at": iso}.
+    # Lifecycle: set when propose_send/reply_email enters the pending state;
+    # cleared on successful send OR on explicit cancel. SURVIVES non-confirm /
+    # non-cancel edit turns so the LLM can iterate without losing the body.
+    draft: Optional[Dict[str, Any]] = None
+
     MAX_THREAD_IDS = 20
+
+    def set_draft(self, kind: str, args: Dict[str, Any]) -> None:
+        """Store the full draft (including body) for in-session edits."""
+        self.draft = {
+            "kind": kind,
+            "args": dict(args),
+            "updated_at": datetime.now().isoformat(),
+        }
+        logger.info("[MEMORY] Draft set: kind=%s body_chars=%d",
+                    kind, len(args.get("body", "") or ""))
+
+    def clear_draft(self) -> None:
+        if self.draft:
+            logger.info("[MEMORY] Draft cleared (kind=%s)", self.draft.get("kind"))
+        self.draft = None
 
     def remember_thread_id(self, thread_id: Optional[str]) -> None:
         """Record a thread_id in MRU order, capped at MAX_THREAD_IDS."""
@@ -348,6 +370,26 @@ class ExecutiveAgent:
             context_lines.append(
                 f"Last conversation summary: {self.memory.last_conversation_summary[:240]}"
             )
+        if self.memory.draft:
+            d_args = self.memory.draft.get("args", {})
+            d_kind = self.memory.draft.get("kind", "send")
+            if d_kind == "reply":
+                d_subject = d_args.get("original_subject", "")
+                d_to_display = "(thread reply)"
+            else:
+                d_subject = d_args.get("subject", "")
+                d_to_raw = d_args.get("to", [])
+                if isinstance(d_to_raw, list):
+                    d_to_display = ", ".join(str(x) for x in d_to_raw)
+                else:
+                    d_to_display = str(d_to_raw)
+            d_body_chars = len(d_args.get("body", "") or "")
+            # Metadata only — do NOT embed the body string. The full body lives
+            # in memory.draft["args"]["body"] and is used when the user confirms.
+            context_lines.append(
+                f"Pending draft ({d_kind}): subject='{d_subject}', "
+                f"to={d_to_display}, body_chars={d_body_chars}"
+            )
 
         context_section = ""
         if context_lines:
@@ -377,6 +419,18 @@ class ExecutiveAgent:
             "- Before using propose_reply_email, check the session context above for the thread_id. "
             "If thread_id is unknown, call read_emails first to find it. "
             "If the user has explicitly dictated the full reply body, you may propose directly.\n"
+            "- Draft review loop: when a 'Pending draft' line appears in session context "
+            "above, the user already has an email draft awaiting send. Treat the user's "
+            "next message as one of: (a) explicit confirmation — the system handles 'yes' "
+            "and equivalents and will send; (b) explicit cancellation — the system handles "
+            "'cancel'/'no' and discards the draft; (c) an edit request like 'make it "
+            "shorter', 'drop the apology', 'add the deadline'. For edits, call "
+            "propose_send_email (or propose_reply_email for a thread reply) again with the "
+            "FULL updated body — the system replaces the pending draft and re-shows the "
+            "user a fresh confirmation containing the new body. Never silently send: the "
+            "user must always respond 'yes' to a fresh confirmation message before anything "
+            "is actually sent. If the user asks an unrelated question while a draft is "
+            "pending, answer normally — the draft stays in memory and the user can resume.\n"
             "- read_emails has a 'scope' parameter: 'inbox' (default), 'sent', or 'both'. "
             "Use scope='sent' or scope='both' for questions about follow-ups, last contact, "
             "conversation history, what the user previously wrote, or whether someone has replied. "
@@ -536,6 +590,12 @@ class ExecutiveAgent:
                     _resolve_provider_in_args(args, name, calendar_provider, mail_provider, self.memory)
 
                     self.memory.set_pending_action(name, args)
+                    # Draft review (Batch 4): mirror email proposals into the
+                    # draft slot so they survive non-confirm edit turns.
+                    if name == "propose_send_email":
+                        self.memory.set_draft("send", args)
+                    elif name == "propose_reply_email":
+                        self.memory.set_draft("reply", args)
                     confirm_msg = format_confirmation_message(name, args)
 
                     if name == "propose_create_calendar_event":
@@ -1136,9 +1196,10 @@ class ExecutiveAgent:
         return {"message": "Done.", "success": True, "type": "confirmation", "intent": "LLM_DRIVEN"}
 
     async def _cancel_pending_action(self) -> Dict[str, Any]:
-        """Cancel the stored pending action."""
+        """Cancel the stored pending action and discard any in-flight draft."""
         self.memory.clear_pending_action()
         self.memory.clear_active_task()
+        self.memory.clear_draft()
         msg = "Got it, cancelled."
         self.memory.add_message("assistant", msg)
         return {"message": msg, "success": True, "type": "cancelled", "intent": "LLM_DRIVEN"}
@@ -1515,6 +1576,7 @@ class ExecutiveAgent:
                 result_data = response.json()
                 self.memory.clear_pending_action()
                 self.memory.clear_active_task()
+                self.memory.clear_draft()
                 self.memory.add_to_history({**args, "type": "send_email", "message_id": result_data.get("message_id")})
                 to_name = to_list[0].split("@")[0].capitalize() if to_list else "them"
                 return {
@@ -1598,6 +1660,7 @@ class ExecutiveAgent:
             if response.is_success:
                 self.memory.clear_pending_action()
                 self.memory.clear_active_task()
+                self.memory.clear_draft()
                 return {
                     "message": "Reply sent.",
                     "success": True,
