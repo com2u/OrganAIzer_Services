@@ -97,6 +97,14 @@ AI_COMPANY_LOCATION: str    = os.environ.get("AI_COMPANY_LOCATION", "")
 # Free-text notes: pricing policy, legacy systems, special instructions
 AI_COMPANY_EXTRA: str       = os.environ.get("AI_COMPANY_EXTRA", "")
 
+# ── Client Knowledge File (Layer 3 — long-form markdown per client) ──────────
+# Path to a Markdown file containing the AI's authoritative client knowledge
+# (identity, services, products, triage, escalation rules, etc.). Loaded once
+# at import time by voice/llm_bridge.py and injected into both the inbound and
+# outbound system prompts. Leave empty to use the default location:
+#   backend/voice/knowledge/teleprofi_fulda.md
+AI_KNOWLEDGE_FILE: str      = os.environ.get("AI_KNOWLEDGE_FILE", "")
+
 # ── Validation (called at startup) ───────────────────────────────────────────
 REQUIRED = {
     # SIP credentials are now managed in FreeSWITCH gateway XML, not Python.

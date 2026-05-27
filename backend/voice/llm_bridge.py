@@ -11,6 +11,7 @@ Designed for phone calls:
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Optional
 
 import httpx
@@ -20,6 +21,86 @@ from voice import config
 logger = logging.getLogger(__name__)
 
 _OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+# ── Layer 3 — Client knowledge file ───────────────────────────────────────────
+# Long-form markdown (e.g. Teleprofi Fulda) loaded once at import time and
+# injected into both the inbound and outbound system prompts. Configure the
+# path via AI_KNOWLEDGE_FILE; default is backend/voice/knowledge/teleprofi_fulda.md.
+# Capped at _MAX_KNOWLEDGE_CHARS to keep token usage bounded. Missing file is
+# tolerated — the module always imports cleanly.
+
+_MAX_KNOWLEDGE_CHARS = 16000
+_DEFAULT_KNOWLEDGE_PATH = (
+    Path(__file__).resolve().parent / "knowledge" / "teleprofi_fulda.md"
+)
+
+
+def _resolve_knowledge_path(path: Optional[Path] = None) -> Path:
+    if path is not None:
+        return Path(path)
+    configured = (config.AI_KNOWLEDGE_FILE or "").strip()
+    if configured:
+        return Path(configured)
+    return _DEFAULT_KNOWLEDGE_PATH
+
+
+def _load_knowledge_file(path: Optional[Path] = None) -> str:
+    """Read the client knowledge markdown into a string.
+
+    Returns "" on any failure (missing file, read error, unsupported encoding).
+    Never raises — import must succeed even with no knowledge configured.
+    """
+    target = _resolve_knowledge_path(path)
+    try:
+        if not target.is_file():
+            logger.info(
+                "Knowledge file not found at %s — using empty knowledge.", target
+            )
+            return ""
+        text = target.read_text(encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Could not read knowledge file %s: %s", target, exc)
+        return ""
+    if len(text) > _MAX_KNOWLEDGE_CHARS:
+        logger.info(
+            "Knowledge file %s truncated from %d → %d chars",
+            target, len(text), _MAX_KNOWLEDGE_CHARS,
+        )
+        text = text[:_MAX_KNOWLEDGE_CHARS]
+    return text
+
+
+_KNOWLEDGE_BLOCK_TEMPLATE = """\
+## COMPANY KNOWLEDGE — Teleprofi Fulda
+
+Use the Teleprofi Fulda knowledge below as the authoritative source for company \
+identity, service region, opening hours, services, products, common issues, \
+intake fields, and escalation rules. Treat it as the truth for this client.
+
+Rules when using this knowledge:
+- Address every caller with the formal German "Sie". Never switch to "du".
+- If the answer is not in this knowledge, say so honestly. Do not invent \
+prices, appointment dates, model numbers, firmware versions, availability, \
+warranty terms, or features.
+- Do not ask for passwords, PINs, access credentials, or payment data.
+- When the situation requires a human — the caller asks for one, total outage, \
+medical office unreachable, emergency, credentials needed, quote or pricing \
+negotiation, complex technical issue you cannot triage, or low confidence — \
+reply with exactly: ESCALATE: <reason> — <key detail>
+
+--- BEGIN KNOWLEDGE ---
+{KNOWLEDGE}
+--- END KNOWLEDGE ---
+"""
+
+
+def _build_knowledge_block(content: str) -> str:
+    body = content.strip() if content else "(no knowledge file loaded)"
+    return _KNOWLEDGE_BLOCK_TEMPLATE.format(KNOWLEDGE=body)
+
+
+_KNOWLEDGE_CONTENT = _load_knowledge_file()
+_KNOWLEDGE_BLOCK = _build_knowledge_block(_KNOWLEDGE_CONTENT)
 
 # ── Layer 1 — Core behaviour (generic, never changes per client) ──────────────
 # {COMPANY_PROFILE} is filled at runtime from config.AI_COMPANY_* env vars.
@@ -142,13 +223,16 @@ def _build_company_profile() -> str:
 
 
 # Built once at import time; restart backend to pick up .env changes.
-_SYSTEM_PROMPT = _SYSTEM_PROMPT_TEMPLATE.format(
-    COMPANY_PROFILE=_build_company_profile()
+_SYSTEM_PROMPT = (
+    _SYSTEM_PROMPT_TEMPLATE.format(COMPANY_PROFILE=_build_company_profile())
+    + "\n\n"
+    + _KNOWLEDGE_BLOCK
 )
 
-# Dedicated outbound prompt focused on sales/demo conversation flow
-# This avoids conflicts with the generic system prompt while keeping conversation natural
-OUTBOUND_SYSTEM_PROMPT = """You are an AI representative calling on behalf of OrganAIzer.
+# Dedicated outbound prompt focused on sales/demo conversation flow.
+# This avoids conflicts with the generic system prompt while keeping conversation natural.
+# The Teleprofi Fulda knowledge block is appended below at import time.
+_OUTBOUND_SYSTEM_PROMPT_BASE = """You are an AI representative calling on behalf of OrganAIzer.
 
 OrganAIzer offers AI and automation solutions for businesses:
 - custom AI agents
@@ -178,6 +262,8 @@ Length: 1 to 3 sentences per reply. You are being read aloud over the phone.
 Language: match the language of the opening line. Default to German.
 Switch to English only if the person responds in English.
 """
+
+OUTBOUND_SYSTEM_PROMPT = _OUTBOUND_SYSTEM_PROMPT_BASE + "\n\n" + _KNOWLEDGE_BLOCK
 
 
 def _build_headers() -> dict:
