@@ -293,13 +293,14 @@ def handle_message(text: str, session_id: str) -> dict:
             masked = mask_number(number)
             label = display_name or masked
             opening_line = (
-                "Guten Tag, ich bin der KI-Assistent von OrganAIzer. Ich rufe an, "
-                "um kurz vorzustellen, wie wir Ihnen helfen können. Haben Sie einen Moment?"
+                "Guten Tag, hier ist der digitale Assistent von Teleprofi Fulda. "
+                "Ich melde mich kurz im Auftrag von Teleprofi Fulda. "
+                "Passt es Ihnen gerade?"
             )
             if purpose:
                 opening_line = (
-                    "Guten Tag, ich bin der KI-Assistent von OrganAIzer. "
-                    f"Ich rufe an, um mitzuteilen: {purpose}"
+                    "Guten Tag, hier ist der digitale Assistent von Teleprofi Fulda. "
+                    f"Ich rufe an wegen: {purpose}"
                 )
 
             outbound_note = (

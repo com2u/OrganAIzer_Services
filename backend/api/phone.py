@@ -226,17 +226,16 @@ async def dial(request: DialRequest):
         )
 
     lang = request.lang or _vc.AI_LANGUAGE
-    # Use the outbound-specific system prompt for outbound calls
-    # to avoid inheriting the inbound TeleProfi context
+    # Outbound calls use the Teleprofi Fulda outbound persona prompt.
     from voice.llm_bridge import OUTBOUND_SYSTEM_PROMPT
     system_prompt = request.system_prompt or OUTBOUND_SYSTEM_PROMPT
 
     opening_line = request.opening_line or (
-        "Hello! This is the AI assistant from OrganAIzer calling. "
-        "We help businesses automate communication and operations with custom AI agents."
+        "Hello, this is the digital assistant from Teleprofi Fulda. "
+        "I'm calling regarding your enquiry."
         if lang == "en"
-        else "Guten Tag! Hier ist der KI-Assistent von OrganAIzer. "
-             "Wir helfen Unternehmen, Kommunikation und Abläufe mit individuellen KI-Agenten zu automatisieren."
+        else "Guten Tag, hier ist der digitale Assistent von Teleprofi Fulda. "
+             "Ich melde mich kurz bezüglich Ihrer Anfrage."
     )
 
     # Append a short context note so the LLM knows this is an outbound call it placed.
