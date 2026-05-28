@@ -59,6 +59,29 @@ FREESWITCH_ESL_PASSWORD: str = os.environ.get("FREESWITCH_ESL_PASSWORD", "ClueCo
 # Silence threshold for recording (raised to 500+ for noisy VoIP lines)
 AI_RECORD_SILENCE_THRESHOLD_MS: int = int(os.environ.get("AI_RECORD_SILENCE_THRESHOLD_MS", "500"))
 
+# ── Per-turn recording behaviour ─────────────────────────────────────────────
+# Upper bound on a single user-utterance recording (seconds). Lowered from the
+# old hard-coded 20 so short utterances no longer wait for the full window
+# before the AI starts processing. Silence detection still ends most turns
+# earlier than this cap.
+AI_RECORD_MAX_SECONDS: int = int(os.environ.get("AI_RECORD_MAX_SECONDS", "8"))
+
+# Trailing-silence duration that ends the recording (seconds). Converted to
+# FreeSWITCH "silence hits" (consecutive 20 ms frames) internally. Larger
+# values give callers more think-time before the AI starts processing.
+# Bumped from 1.2 → 1.8 so real callers who pause mid-sentence (especially
+# annoyed/hesitant ones) are not cut off prematurely.
+AI_RECORD_SILENCE_SECONDS: float = float(
+    os.environ.get("AI_RECORD_SILENCE_SECONDS", "1.8")
+)
+
+# Extra slack added to the ESL execute() timeout on top of AI_RECORD_MAX_SECONDS,
+# so FreeSWITCH has time to flush the WAV and return after the recording cap is
+# reached. Increase only if you see "record timed out" warnings on slow links.
+AI_RECORD_INITIAL_TIMEOUT_SECONDS: int = int(
+    os.environ.get("AI_RECORD_INITIAL_TIMEOUT_SECONDS", "5")
+)
+
 # ── FreeSWITCH ESL Outbound Socket ────────────────────────────────────────────
 # Port on which our Python app listens for FreeSWITCH outbound connections.
 # Configure the FS dialplan with: <action application="socket" data="HOST:8085 async full"/>

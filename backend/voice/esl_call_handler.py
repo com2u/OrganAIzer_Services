@@ -24,6 +24,7 @@ import asyncio
 import logging
 import os
 import queue as _queue
+import re
 import threading
 import urllib.request
 import json as _json
@@ -125,18 +126,122 @@ def prewarm_fillers() -> None:
 
 
 # ── recording parameters ──────────────────────────────────────────────────────
-# FS record app args: <max_seconds> <silence_threshold_ms> <silence_timeout_ms>
-# silence_threshold_ms: energy level below which audio counts as silence (200 = default)
-# silence_timeout_ms: consecutive silence needed to stop recording (1500ms)
-_RECORD_MAX_SECS        = 20
+# FS record app args: <max_seconds> <silence_threshold_ms> <silence_hits>
+#   silence_threshold_ms: energy level below which audio counts as silence
+#   silence_hits: consecutive 20-ms frames of silence required to stop recording
+#
+# All three knobs come from voice.config (AI_RECORD_*). Defaults were tightened
+# from the legacy 20 s / 60-hits values so short utterances end faster after
+# the caller stops speaking, without enabling barge-in.
+_RECORD_MAX_SECS        = config.AI_RECORD_MAX_SECONDS
 _RECORD_SILENCE_THRESH  = config.AI_RECORD_SILENCE_THRESHOLD_MS
-_RECORD_SILENCE_TIMEOUT = 60    # silence_hits × 20 ms/frame = 1200 ms of silence
-                                # 1.2 s gives callers time to start speaking after
-                                # the AI finishes — tighter values cut off responses
-                                # on slow-reacting or mobile VoIP connections.
+_RECORD_SILENCE_TIMEOUT = max(
+    1, int(round(config.AI_RECORD_SILENCE_SECONDS * 1000 / 20))
+)
 
 _PLAYBACK_TIMEOUT       = 60.0  # s — max wait for TTS playback to complete
-_RECORD_TIMEOUT         = _RECORD_MAX_SECS + 5.0   # s — execute() timeout
+_RECORD_TIMEOUT         = (
+    _RECORD_MAX_SECS + float(config.AI_RECORD_INITIAL_TIMEOUT_SECONDS)
+)   # s — execute() timeout (max_seconds + slack for FS flush)
+
+
+# ── garbage transcription detection ───────────────────────────────────────────
+# Whisper occasionally returns single-character artefacts ("."), pure
+# punctuation, or empty strings on noisy lines. Treat these as "did not catch
+# that" so we never send them to the LLM. Real short utterances like "Ja" or
+# "Nein" are 2+ chars and pass through normally.
+_GARBAGE_TRANSCRIPTION_RE = re.compile(r"^[\s\.,;:!\?\-_'\"\(\)\[\]…·]+$")
+
+
+def _is_garbage_transcription(text: str) -> bool:
+    """True if a transcription is too short or noisy to be a real utterance."""
+    if not text:
+        return True
+    stripped = text.strip()
+    if len(stripped) < 2:
+        return True
+    if _GARBAGE_TRANSCRIPTION_RE.match(stripped):
+        return True
+    return False
+
+
+# ── unfinished-utterance detection ────────────────────────────────────────────
+# Real callers often pause while still explaining ("…und, äh, also…").
+# When the trailing word is a hesitation marker or a conjunction the speaker
+# is almost certainly mid-sentence, so we want to give them more think-time
+# instead of triggering the LLM on a half-formed thought.
+#
+# Detection is conservative: clear short answers like "Ja", "Nein", "OK",
+# "Hallo" must NOT be classified as unfinished.
+_UNFINISHED_TRAILING_TOKENS = frozenset({
+    # German hesitation / discourse markers
+    "äh", "ähm", "öh", "öhm", "hm", "hmm", "mh", "mhm",
+    # German trailing conjunctions / mid-thought words
+    "und", "oder", "weil", "also", "aber", "dass", "denn", "doch",
+    "warte", "moment",
+    # English hesitation / conjunctions
+    "uh", "uhm", "um", "er", "erm",
+    "and", "or", "because", "but", "so", "well",
+})
+
+_UNFINISHED_TRAILING_PHRASES = (
+    "ich meine",
+    "ich glaube also",
+    "let me",
+    "i mean",
+    "you know",
+    "kind of",
+)
+
+
+def _is_likely_unfinished_utterance(text: str) -> bool:
+    """
+    True when the transcription looks like a mid-sentence pause rather than a
+    complete utterance — trailing hesitation marker ("äh", "ähm"), trailing
+    conjunction ("und", "oder", "because"), or a comma-like incomplete phrase.
+
+    Used to delay the LLM call and offer a gentle "I'm still listening"
+    continuation prompt instead of jumping in too early on annoyed/hesitant
+    callers.
+    """
+    if not text:
+        return False
+    t = text.strip()
+    if not t:
+        return False
+
+    lowered = t.lower()
+    # Phrase-level trailing markers ("ich meine", "let me")
+    stripped_for_phrase = lowered.rstrip(" .!?…,;:-")
+    for phrase in _UNFINISHED_TRAILING_PHRASES:
+        if stripped_for_phrase.endswith(phrase):
+            return True
+
+    # Comma-ended / dash-ended incomplete phrase (only when there is something
+    # before the comma, so "," alone — already filtered as garbage — never
+    # reaches here).
+    last_meaningful = t[-1]
+    if last_meaningful in {",", ";", "-", "–", "—"}:
+        return True
+
+    # Strip trailing punctuation, then inspect the final token.
+    cleaned = lowered.rstrip(" .!?…,;:-–—\"'")
+    if not cleaned:
+        return False
+    tokens = cleaned.split()
+    if not tokens:
+        return False
+    last = tokens[-1]
+    if last in _UNFINISHED_TRAILING_TOKENS:
+        return True
+
+    # Single-word fragment that is purely a hesitation marker
+    # (e.g. "ähm.", "uh"). "Ja"/"Nein"/"OK"/"Hallo" are not in the set so they
+    # pass through.
+    if len(tokens) == 1 and tokens[0] in _UNFINISHED_TRAILING_TOKENS:
+        return True
+
+    return False
 
 
 def _audio_dir() -> Path:
@@ -255,6 +360,14 @@ def _conversation_loop(
     # Prevent infinite loops when the caller is silent or audio is lost.
     _empty_turns = 0
     _MAX_EMPTY_TURNS = 8  # 8 silent turns before ending the call
+    # How many consecutive unintelligible turns we've seen. Drives the
+    # soft → repeat → farewell escalation. Resets on any real reply.
+    _unclear_count = 0
+    # Consecutive mid-sentence utterances ("…äh", "…und"). Counted separately
+    # from garbage/empty so callers who are simply hesitating are not treated
+    # as misunderstood. A safety cap still applies to avoid infinite loops.
+    _unfinished_streak = 0
+    _MAX_UNFINISHED_STREAK = 3
 
     while not handler.is_hung_up:
         # ── check max call duration ───────────────────────────────────────────
@@ -287,7 +400,10 @@ def _conversation_loop(
         # Start processing immediately after recording ends. The filler phrase
         # plays on the channel while Whisper + LLM + edge-tts run in parallel,
         # eliminating most of the silence gap the caller would otherwise hear.
-        _proc: dict = {"text": "", "reply": "", "wav": "", "lang": conv_lang}
+        _proc: dict = {
+            "text": "", "reply": "", "wav": "", "lang": conv_lang,
+            "unfinished": False,
+        }
         _proc_done = threading.Event()
 
         def _process_turn(
@@ -302,6 +418,21 @@ def _conversation_loop(
                 t, stt_lang = transcribe_file(_rec, lang=conv_lang)
             _cleanup(_rec)
             if not t:
+                _proc_done.set()
+                return
+            # Skip the LLM call for garbage transcriptions — the main loop
+            # handles them with a one-time polite "could you repeat?" prompt.
+            if _is_garbage_transcription(t):
+                _proc["text"] = t
+                _proc["lang"] = stt_lang
+                _proc_done.set()
+                return
+            # Mid-sentence pause ("…äh", "…und, also,") — skip the LLM and let
+            # the main loop offer a gentle continuation prompt instead.
+            if _is_likely_unfinished_utterance(t):
+                _proc["text"] = t
+                _proc["lang"] = stt_lang
+                _proc["unfinished"] = True
                 _proc_done.set()
                 return
             _proc["text"] = t
@@ -378,7 +509,81 @@ def _conversation_loop(
                 _speak_and_play(handler, farewell, lang=conv_lang)
                 break
             continue
+
+        if _proc.get("unfinished"):
+            # Caller paused mid-sentence — no LLM call. Offer a gentle "still
+            # listening" prompt and record again. Counted separately from
+            # garbage/empty so this is not treated as a misunderstanding.
+            logger.info(
+                "Unfinished utterance detected: %r (lang=%s)",
+                _proc["text"], conv_lang,
+            )
+            _unfinished_streak += 1
+            if _unfinished_streak <= _MAX_UNFINISHED_STREAK:
+                continuation_msg = (
+                    "Yes, I'm listening — please go ahead."
+                    if conv_lang == "en"
+                    else "Ja, ich höre zu — bitte fahren Sie fort."
+                )
+                _speak_and_play(handler, continuation_msg, lang=conv_lang)
+                if handler.is_hung_up:
+                    break
+                continue
+            # Safety cap: if the caller has only produced hesitations for
+            # several turns in a row, fall through to the unclear path so the
+            # call can wind down gracefully.
+            logger.info(
+                "Unfinished streak exceeded cap (%d) — escalating to unclear path.",
+                _unfinished_streak,
+            )
+
+        if _is_garbage_transcription(_proc["text"]) or _proc.get("unfinished"):
+            # STT returned a noisy/short artefact (or we exhausted the
+            # unfinished safety cap). No LLM call was made in the background.
+            # First unclear turn gets a soft "still listening" prompt — annoyed
+            # callers are not yet asked to repeat. Subsequent unclear turns
+            # ask politely to repeat. Persistent unclear turns end the call.
+            logger.info(
+                "Garbage/unclear transcription discarded: %r (lang=%s, count=%d)",
+                _proc["text"], conv_lang, _unclear_count + 1,
+            )
+            _unclear_count += 1
+            if _unclear_count == 1:
+                soft_msg = (
+                    "I'm listening — please go ahead."
+                    if conv_lang == "en"
+                    else "Ich höre Ihnen zu — bitte fahren Sie fort."
+                )
+                _speak_and_play(handler, soft_msg, lang=conv_lang)
+            elif _unclear_count == 2:
+                repeat_msg = (
+                    "Sorry, I didn't catch that. Could you please repeat?"
+                    if conv_lang == "en"
+                    else "Entschuldigung, ich habe Sie nicht ganz verstanden. "
+                         "Könnten Sie das bitte wiederholen?"
+                )
+                _speak_and_play(handler, repeat_msg, lang=conv_lang)
+            if handler.is_hung_up:
+                break
+            _empty_turns += 1
+            if _empty_turns >= _MAX_EMPTY_TURNS:
+                logger.info(
+                    "Too many consecutive unintelligible turns (%d), ending call.",
+                    _empty_turns,
+                )
+                farewell = (
+                    "I haven't been able to understand you. I'll end the call now. Goodbye!"
+                    if conv_lang == "en"
+                    else "Ich konnte Sie leider nicht verstehen. "
+                         "Ich beende das Gespräch. Auf Wiederhören!"
+                )
+                _speak_and_play(handler, farewell, lang=conv_lang)
+                break
+            continue
+
         _empty_turns = 0  # reset on any real utterance
+        _unclear_count = 0  # reset so a later unclear burst gets the soft prompt first
+        _unfinished_streak = 0  # reset on any real, complete utterance
 
         turn_count_ref[0] += 1
         turn += 1
