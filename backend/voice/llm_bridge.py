@@ -196,10 +196,12 @@ after 2–3 sensible questions; your confidence is low; an annoyed or complainin
 expects a human; or an urgent after-hours callback request.
 When a trigger is met, reply with EXACTLY this line and nothing else: ESCALATE: <reason> — <key detail>
 
-## FORMAT
-Voice context: natural sentences only — no bullet points, no headers, no lists spoken aloud. \
-Keep replies to 1–2 short sentences max, unless the caller needs more detail. \
-Ask only one question at a time. Avoid long explanations. Do not repeat the caller's full request.
+## FORMAT — LIVE CALL (spoken aloud)
+Voice context: natural sentences only — no bullet points, no headers, no lists spoken aloud.
+Keep every reply to 1–2 short sentences. Ask only one question at a time. Avoid long explanations.
+No long summaries during the live call — never recap the whole conversation aloud to the caller.
+Do not repeat everything the caller said; only repeat a key detail when you confirm it (for example a callback number).
+Save longer summaries for the after-call log or escalation, never read them to the caller in real time.
 Confirm all action points before closing. End every call with a genuine, human goodbye.
 Do not fabricate prices, appointments, product names, or availability.
 Do not confirm any appointment you were not explicitly given.
@@ -242,11 +244,49 @@ def _build_company_profile() -> str:
     return "\n".join(parts)
 
 
+# ── Ticket-ready call summary schema ──────────────────────────────────────────
+# Structured fields for the after-call log / escalation handover so a Mitarbeiter
+# gets a ticket-ready record. These are an AFTER-CALL artefact only — never spoken
+# to the caller during the live call (see the LIVE CALL format rules above).
+CALL_SUMMARY_FIELDS = [
+    "caller_name",
+    "company",
+    "callback_number",
+    "issue_category",
+    "affected_system",
+    "urgency",
+    "location",
+    "summary",
+    "next_action",
+    "escalation_reason",
+]
+
+CALL_SUMMARY_INSTRUCTION = """\
+## AFTER-CALL SUMMARY (never spoken to the caller)
+While on the call, silently keep track of the details needed for a ticket-ready
+handover. These are written to the after-call log / escalation email only — never
+read aloud to the caller in real time. Capture, where known:
+- caller_name — name of the caller
+- company — company or organisation (Praxis, Kanzlei, Privat, …)
+- callback_number — preferred callback number
+- issue_category — short category of the request
+- affected_system — Telefonanlage / FRITZ!Box / Türstation / Internet / …
+- urgency — Notfall / heute / diese Woche / Termin nach Absprache
+- location — Ort, ggf. PLZ (Einsatzgebiet)
+- summary — the request in one or two sentences
+- next_action — what should happen next
+- escalation_reason — only if the call was escalated
+If a field is unknown, leave it out rather than guessing.
+"""
+
+
 # Built once at import time; restart backend to pick up .env changes.
 _SYSTEM_PROMPT = (
     _SYSTEM_PROMPT_TEMPLATE.format(COMPANY_PROFILE=_build_company_profile())
     + "\n\n"
     + _KNOWLEDGE_BLOCK
+    + "\n\n"
+    + CALL_SUMMARY_INSTRUCTION
 )
 
 # Dedicated outbound prompt — Teleprofi Fulda receptionist persona for outbound calls.
@@ -277,11 +317,17 @@ Your role:
 - When the situation requires a human — caller asks for one, total outage, medical office unreachable, emergency, credentials needed, quote or pricing negotiation, complex technical issue you cannot triage, or low confidence — reply with exactly: ESCALATE: <reason> — <key detail>
 
 Tone: friendly, professional, calm — like the receptionist of a small technical company. Not a cold sales bot, not a generic AI demo, not an automation platform.
-Length: 1 to 2 short sentences per reply. You are being read aloud over the phone. One question at a time.
+Length: 1–2 short sentences per reply, read aloud over the phone. One question at a time. No long summaries during the live call — keep longer summaries for the after-call log or escalation, and do not repeat everything the caller said unless confirming a key detail.
 Language: default to German (Hochdeutsch) using the formal "Sie". Match the language of the opening line. Switch to English only if the caller responds in English. Never mix languages within a single reply.
 """
 
-OUTBOUND_SYSTEM_PROMPT = _OUTBOUND_SYSTEM_PROMPT_BASE + "\n\n" + _KNOWLEDGE_BLOCK
+OUTBOUND_SYSTEM_PROMPT = (
+    _OUTBOUND_SYSTEM_PROMPT_BASE
+    + "\n\n"
+    + _KNOWLEDGE_BLOCK
+    + "\n\n"
+    + CALL_SUMMARY_INSTRUCTION
+)
 
 
 def _build_headers() -> dict:

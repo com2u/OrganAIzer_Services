@@ -28,18 +28,44 @@ import httpx
 
 from voice import config
 from voice.esl_client import ESLOutboundHandler
+# Single source of truth for the ticket-ready summary fields (defined in Batch J).
+from voice.llm_bridge import CALL_SUMMARY_FIELDS
 
 logger = logging.getLogger(__name__)
 
 _OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-_SUMMARY_SYSTEM = """\
-Du bist ein internes Hilfssystem für Teleprofi-Fulda.
-Schreibe eine kurze interne Zusammenfassung (2–4 Sätze) eines Anrufs für den Mitarbeiter, \
-der die Eskalation übernimmt.
-Fasse das Anliegen sachlich zusammen. Keine Floskeln, kein Smalltalk.
-Antworte nur mit der Zusammenfassung, ohne Einleitung oder Unterschrift.
-"""
+
+def _build_summary_system(fields: list[str]) -> str:
+    """Build the structured-summary system prompt from the shared field schema.
+
+    The generated summary is a ticket-ready handover for the Mitarbeiter taking
+    over the escalation: one field per line, in schema order, "unknown" for
+    anything not captured, no invented data, no credentials/secrets, and phone
+    numbers kept masked/redacted exactly as they appear in the transcript.
+    """
+    field_lines = "\n".join(f"{name}: ..." for name in fields)
+    return (
+        "Du bist ein internes Hilfssystem für Teleprofi-Fulda.\n"
+        "Erstelle aus dem Gesprächsverlauf eine knappe, strukturierte Zusammenfassung "
+        "für den Mitarbeiter, der die Eskalation übernimmt.\n\n"
+        "Gib GENAU diese Felder zurück, jedes auf einer eigenen Zeile, in genau dieser "
+        "Reihenfolge:\n"
+        f"{field_lines}\n\n"
+        "Regeln:\n"
+        "- Verwende \"unknown\", wenn ein Feld im Gespräch nicht erfasst wurde.\n"
+        "- Erfinde keine fehlenden Daten (do not invent missing data).\n"
+        "- Halte das Feld summary knapp (1–2 Sätze).\n"
+        "- Gib keine Passwörter, PINs, Zugangsdaten, Zahlungsdaten oder andere "
+        "Geheimnisse aus (do not include credentials or secrets).\n"
+        "- Telefonnummern bleiben maskiert/redigiert genau so, wie sie im Verlauf "
+        "erscheinen; ergänze niemals eine vollständige Rufnummer.\n"
+        "- Antworte nur mit den Feldzeilen — keine Einleitung, kein Markdown, "
+        "keine Unterschrift."
+    )
+
+
+_SUMMARY_SYSTEM = _build_summary_system(CALL_SUMMARY_FIELDS)
 
 
 def _format_transcript(transcript: list[dict]) -> str:
