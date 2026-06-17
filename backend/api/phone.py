@@ -234,8 +234,7 @@ async def dial(request: DialRequest):
         "Hello, this is the digital assistant from Teleprofi Fulda. "
         "I'm calling regarding your enquiry."
         if lang == "en"
-        else "Guten Tag, hier ist der digitale Assistent von Teleprofi Fulda. "
-             "Ich melde mich kurz bezüglich Ihrer Anfrage."
+        else _vc.AI_OUTBOUND_GREETING
     )
 
     # Append a short context note so the LLM knows this is an outbound call it placed.

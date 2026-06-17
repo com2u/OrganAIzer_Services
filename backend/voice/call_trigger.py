@@ -287,21 +287,16 @@ def handle_message(text: str, session_id: str) -> dict:
             from voice.outbound import originate_call
             from voice.llm_bridge import OUTBOUND_SYSTEM_PROMPT
 
+            from voice import config as _vc
+
             number = ctx["number"]
             display_name = ctx.get("display_name")
             purpose = ctx.get("purpose")
             masked = mask_number(number)
             label = display_name or masked
-            opening_line = (
-                "Guten Tag, hier ist der digitale Assistent von Teleprofi Fulda. "
-                "Ich melde mich kurz im Auftrag von Teleprofi Fulda. "
-                "Passt es Ihnen gerade?"
-            )
+            opening_line = _vc.AI_OUTBOUND_GREETING
             if purpose:
-                opening_line = (
-                    "Guten Tag, hier ist der digitale Assistent von Teleprofi Fulda. "
-                    f"Ich rufe an wegen: {purpose}"
-                )
+                opening_line = _vc.AI_OUTBOUND_GREETING_PURPOSE.format(purpose=purpose)
 
             outbound_note = (
                 "\n\n[Context: You placed this outbound call. Your opening line has "

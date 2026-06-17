@@ -25,8 +25,24 @@ COMTREXX_EXTENSION: str   = os.environ.get("COMTREXX_EXTENSION", "")
 COMTREXX_CALLER_ID: str   = os.environ.get("COMTREXX_CALLER_ID", "")
 
 # ── AI behaviour ─────────────────────────────────────────────────────────────
+# Canonical INBOUND greeting — spoken when the AI answers an incoming call.
 AI_GREETING: str          = os.environ.get(
-    "AI_GREETING", "Hallo, hier ist Teleprofi Fulda. Wie kann ich Ihnen helfen?"
+    "AI_GREETING",
+    "Guten Tag, Sie sprechen mit dem digitalen Assistenten von Teleprofi Fulda. "
+    "Wie kann ich Ihnen helfen?",
+)
+# Canonical OUTBOUND greetings — kept deliberately different from the inbound
+# greeting because outbound calls are initiated by Teleprofi. The purpose variant
+# embeds the call purpose verbatim via {purpose}.
+AI_OUTBOUND_GREETING: str = os.environ.get(
+    "AI_OUTBOUND_GREETING",
+    "Guten Tag, hier ist der digitale Assistent von Teleprofi Fulda. "
+    "Ich melde mich kurz bezüglich Ihrer Anfrage.",
+)
+AI_OUTBOUND_GREETING_PURPOSE: str = os.environ.get(
+    "AI_OUTBOUND_GREETING_PURPOSE",
+    "Guten Tag, hier ist der digitale Assistent von Teleprofi Fulda. "
+    "Ich rufe an wegen: {purpose}",
 )
 AI_LANGUAGE: str          = os.environ.get("AI_LANGUAGE", "de")
 AI_MAX_CALL_SECONDS: int  = int(os.environ.get("AI_MAX_CALL_SECONDS", "300"))
