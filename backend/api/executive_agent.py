@@ -79,6 +79,7 @@ class ChatResponse(BaseModel):
 
 class SessionInfoResponse(BaseModel):
     """Session information response."""
+    user_id: str
     session_id: str
     message_count: int
     context: dict
@@ -124,9 +125,10 @@ async def chat_with_agent(request: ChatRequest):
         - "Generate an image of a sunset"
     """
     try:
-        # Initialize Executive Agent with session
-        agent = ExecutiveAgent(session_id=request.session_id)
-        
+        # Initialize Executive Agent with session, keyed by (user_id, session_id)
+        # so two users can never share a session even with the same session_id.
+        agent = ExecutiveAgent(session_id=request.session_id, user_id=request.user_id)
+
         # Process message – pass providers as-is (None allowed).
         # None ⟹ agent MUST ask user "Which account — Google or Microsoft?"
         # A non-None value means the UI/session has already locked a provider.
@@ -202,38 +204,40 @@ async def chat_with_agent(request: ChatRequest):
 
 
 @router.get("/session/{session_id}", response_model=SessionInfoResponse)
-async def get_session_info(session_id: str):
+async def get_session_info(
+    session_id: str,
+    user_id: str = Query("default_user", description="Owner of the session"),
+):
     """
     Get information about a conversation session.
-    
-    Retrieves session details including:
-    - Number of messages exchanged
-    - Current conversation context
-    - Last activity timestamp
-    
+
+    Sessions are owned by a user — the same bare session_id for a different
+    user_id is a different session and will NOT be returned. Pass user_id to
+    resolve the correct owner.
+
     Args:
         session_id: Session identifier
-    
+        user_id: Owner of the session (required to resolve the right session)
+
     Returns:
         Session information
     """
     try:
-        # Get session from ExecutiveAgent
-        if session_id not in ExecutiveAgent.sessions:
+        session = ExecutiveAgent.get_session(user_id, session_id)
+        if session is None:
             raise HTTPException(
                 status_code=404,
                 detail=f"Session not found: {session_id}"
             )
-        
-        session = ExecutiveAgent.sessions[session_id]
-        
+
         return SessionInfoResponse(
+            user_id=user_id,
             session_id=session.session_id,
             message_count=len(session.conversation_history),
             context=session.context,
             last_activity=session.last_activity.isoformat()
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -242,32 +246,34 @@ async def get_session_info(session_id: str):
 
 
 @router.delete("/session/{session_id}")
-async def clear_session(session_id: str):
+async def clear_session(
+    session_id: str,
+    user_id: str = Query("default_user", description="Owner of the session"),
+):
     """
     Clear a conversation session.
-    
-    Removes all conversation history and context for the specified session.
-    Use this to start a fresh conversation.
-    
+
+    Deletes ONLY the (user_id, session_id) session — other users that happen to
+    use the same session_id are left untouched.
+
     Args:
         session_id: Session identifier
-    
+        user_id: Owner of the session to delete
+
     Returns:
         Confirmation of session deletion
     """
     try:
-        if session_id in ExecutiveAgent.sessions:
-            del ExecutiveAgent.sessions[session_id]
+        if ExecutiveAgent.delete_session(user_id, session_id):
             return {
                 "message": f"Session {session_id} cleared successfully",
                 "success": True
             }
-        else:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Session not found: {session_id}"
-            )
-        
+        raise HTTPException(
+            status_code=404,
+            detail=f"Session not found: {session_id}"
+        )
+
     except HTTPException:
         raise
     except Exception as e:
@@ -276,28 +282,26 @@ async def clear_session(session_id: str):
 
 
 @router.get("/sessions")
-async def list_sessions():
+async def list_sessions(
+    user_id: Optional[str] = Query(None, description="Filter to one user's sessions"),
+):
     """
-    List all active conversation sessions.
-    
+    List active conversation sessions with safe, body-free metadata.
+
+    Returns user_id, session_id, counts, timestamps, and existence booleans
+    (has_pending_action / has_draft) only — never message bodies, draft bodies,
+    email bodies, credentials, or tokens. Pass user_id to scope to one user.
+
     Returns:
-        List of active sessions with basic info
+        List of active sessions with safe metadata
     """
     try:
-        sessions_info = []
-        for session_id, session in ExecutiveAgent.sessions.items():
-            sessions_info.append({
-                "session_id": session_id,
-                "message_count": len(session.conversation_history),
-                "last_activity": session.last_activity.isoformat(),
-                "created_at": session.created_at.isoformat()
-            })
-        
+        sessions_info = ExecutiveAgent.list_session_metadata(user_id=user_id)
         return {
             "sessions": sessions_info,
             "count": len(sessions_info)
         }
-        
+
     except Exception as e:
         logger.error(f"List sessions error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

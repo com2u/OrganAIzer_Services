@@ -25,6 +25,8 @@ import hashlib
 import json
 import logging
 import os
+import re
+import threading
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -38,8 +40,6 @@ from services.tool_definitions import (
     CONFIRMATION_REQUIRED_TOOLS,
     TOOLS,
     format_confirmation_message,
-    is_cancel,
-    is_confirm,
 )
 
 logger = logging.getLogger(__name__)
@@ -73,6 +73,8 @@ class ConversationMemory:
     last_clarification_message: Optional[str] = None
     created_at: datetime = field(default_factory=datetime.now)
     last_activity: datetime = field(default_factory=datetime.now)
+    # Updated every time the session is bound/touched; drives TTL cleanup.
+    last_accessed_at: datetime = field(default_factory=datetime.now)
 
     MAX_HISTORY = 20
 
@@ -215,6 +217,171 @@ def _compute_calendar_request_id(
 
 
 # ==============================================================================
+# EMAIL IDEMPOTENCY STORE — prevents double-send on confirm retry
+# ==============================================================================
+# IN-MEMORY ONLY (pre-DB protection). Keyed by a deterministic hash of the email
+# content + sender identity, so a repeated "yes" for the same send/reply does not
+# re-POST to the provider (e.g. when the first send succeeded but the response was
+# lost and the user retried). Entries carry a timestamp and are pruned after
+# _EMAIL_IDEMPOTENCY_TTL_SECONDS. Lost on process restart — move to a durable
+# store when the database lands.
+_EMAIL_IDEMPOTENCY_STORE: Dict[str, Dict[str, Any]] = {}
+_EMAIL_IDEMPOTENCY_LOCK = _asyncio.Lock()
+_EMAIL_IDEMPOTENCY_TTL_SECONDS = 24 * 60 * 60  # 24h
+_EMAIL_IDEMPOTENCY_PENDING = "__pending__"
+
+
+def _compute_email_request_id(
+    user_id: str,
+    action_type: str,
+    provider: str,
+    to: str,
+    subject: str,
+    body: str,
+    reply_ref: str = "",
+) -> str:
+    """Deterministic key for an email send/reply execution.
+
+    action_type distinguishes 'send_email' from 'reply_email'. reply_ref carries
+    the thread/message id for replies so the same body to two different threads
+    is treated as two distinct actions.
+    """
+    raw = f"{user_id}|{action_type}|{provider}|{to}|{subject}|{body}|{reply_ref}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _prune_email_idempotency(now: float) -> None:
+    """Drop expired entries. Caller must hold _EMAIL_IDEMPOTENCY_LOCK."""
+    expired = [
+        k for k, v in _EMAIL_IDEMPOTENCY_STORE.items()
+        if now - v.get("ts", 0) > _EMAIL_IDEMPOTENCY_TTL_SECONDS
+    ]
+    for k in expired:
+        _EMAIL_IDEMPOTENCY_STORE.pop(k, None)
+
+
+async def _release_email_idempotency(request_id: str) -> None:
+    """Drop a still-pending marker so a genuine retry can proceed.
+
+    A recorded successful send is left in place so it keeps suppressing retries.
+    """
+    async with _EMAIL_IDEMPOTENCY_LOCK:
+        entry = _EMAIL_IDEMPOTENCY_STORE.get(request_id)
+        if entry and entry.get("status") == _EMAIL_IDEMPOTENCY_PENDING:
+            _EMAIL_IDEMPOTENCY_STORE.pop(request_id, None)
+
+
+# ==============================================================================
+# SESSION KEYING — memory is keyed by (user_id, session_id) to prevent bleed
+# ==============================================================================
+
+def _normalize_user_id(user_id: Optional[str]) -> str:
+    """Normalise a user_id to a non-empty string. Falsy → 'default_user'."""
+    uid = (user_id or "").strip()
+    return uid or "default_user"
+
+
+def _session_key(user_id: str, session_id: str) -> str:
+    """Composite key so two users can never share a session_id."""
+    return f"{_normalize_user_id(user_id)}:{session_id}"
+
+
+# ==============================================================================
+# CONFIRM / CANCEL / EDIT INTENT — explicit, whole-message classification
+# ==============================================================================
+# Replaces the loose substring heuristics for the pending-action gate. A stray
+# "right"/"correct" inside a sentence, or any approval that also requests a
+# change, must NEVER trigger a send. Edit intent always wins over approval.
+
+# A confirmation must be the WHOLE message (after normalisation) — not a
+# substring — so "yes but change the subject" can never confirm.
+_CONFIRM_PHRASES = frozenset({
+    "yes", "y", "yep", "yeah", "yup", "sure",
+    "ok", "okay", "okey", "k",
+    "confirm", "confirmed",
+    "send", "send it", "send it now", "send now",
+    "send the email", "send the reply", "send away",
+    "yes send", "yes send it", "yes send it now", "yes please", "yes please send",
+    "okay send", "okay send it", "ok send", "ok send it",
+    "please send", "please send it",
+    "go ahead", "go ahead and send it", "do it",
+    # German
+    "ja", "ja bitte", "ja senden", "ja bitte senden", "bitte senden", "senden",
+    "jetzt senden", "absenden", "ja absenden", "passt", "passt senden", "passt so",
+})
+
+# Cancellation: a clean whole-message cancel, OR a strong discard token / negated
+# "send" anywhere — so a longer "no, please cancel this draft" still cancels.
+_CANCEL_EXACT = frozenset({
+    "no", "nope", "nah", "n",
+    "cancel", "stop", "abort", "discard", "skip",
+    "dont", "don't", "do not", "forget it", "never mind", "nevermind",
+    # German
+    "nein", "abbrechen", "verwerfen", "stopp", "nicht senden",
+})
+_CANCEL_TOKENS = frozenset({
+    "cancel", "discard", "abort", "scrap", "abbrechen", "verwerfen", "stopp",
+})
+_CANCEL_NEG_SEND = ("don't send", "dont send", "do not send", "nicht senden")
+
+# Edit / revision / hold markers. Any of these means "change something" or "not
+# yet", which must NOT send and must NOT discard — the draft is kept for revision.
+_EDIT_WORDS = frozenset({
+    "but", "however", "instead", "except", "though",
+    "change", "edit", "revise", "rewrite", "reword", "modify",
+    "correct", "fix", "typo", "shorter", "longer",
+    "add", "remove", "include", "cc", "bcc", "subject", "recipient", "attach",
+    "wait", "maybe",
+    # German
+    "aber", "jedoch", "ändere", "ändern", "anpassen", "korrigiere", "korrigier",
+    "kürzer", "länger", "betreff", "hinzufügen", "füge", "entferne", "warte",
+})
+_EDIT_PHRASES = (
+    "make it", "not yet", "send yet", "noch nicht", "can you", "could you",
+    "would you", "kannst du", "könntest du", "drop the", "update the",
+    "please change", "please make", "i think",
+)
+
+
+def _normalize_intent_text(text: str) -> str:
+    """Lower-case, normalise apostrophes, drop other punctuation, collapse spaces."""
+    t = (text or "").strip().lower().replace("’", "'")
+    t = re.sub(r"[^\w\s']", " ", t)   # keep word chars (Unicode), spaces, apostrophes
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def _has_edit_intent(text: str) -> bool:
+    """True if the message asks to change/hold the draft (wins over approval)."""
+    t = _normalize_intent_text(text)
+    if not t:
+        return False
+    if set(t.split()) & _EDIT_WORDS:
+        return True
+    return any(phrase in t for phrase in _EDIT_PHRASES)
+
+
+def _is_explicit_confirm(text: str) -> bool:
+    """True only for a clean, whole-message confirmation with no edit request."""
+    t = _normalize_intent_text(text)
+    if not t or _has_edit_intent(text):
+        return False
+    return t in _CONFIRM_PHRASES
+
+
+def _is_explicit_cancel(text: str) -> bool:
+    """True for a clear cancellation, even inside a longer sentence."""
+    t = _normalize_intent_text(text)
+    if not t:
+        return False
+    if t in _CANCEL_EXACT:
+        return True
+    if set(t.split()) & _CANCEL_TOKENS:
+        return True
+    return any(phrase in t for phrase in _CANCEL_NEG_SEND)
+
+
+# ==============================================================================
 # EXECUTIVE AGENT
 # ==============================================================================
 
@@ -227,20 +394,157 @@ class ExecutiveAgent:
     the model's reasoning drives every decision.
     """
 
+    # Memory is keyed by "<user_id>:<session_id>" so two users can never share a
+    # session even if they reuse/guess the same session_id. Access is guarded by
+    # _sessions_lock. Sessions older than SESSION_TTL_SECONDS are removed by
+    # cleanup_expired_sessions(). In-memory only — moves to the DB later.
     sessions: Dict[str, ConversationMemory] = {}
+    _sessions_lock = threading.Lock()
+    SESSION_TTL_SECONDS: int = int(
+        os.getenv("EXEC_SESSION_TTL_SECONDS", str(24 * 60 * 60))  # 24h default
+    )
 
-    def __init__(self, session_id: str):
+    def __init__(self, session_id: str, user_id: Optional[str] = None):
         self.session_id = session_id
-        if session_id not in ExecutiveAgent.sessions:
-            ExecutiveAgent.sessions[session_id] = ConversationMemory(session_id=session_id)
-            logger.info("[AGENT] New session: %s", session_id)
-        else:
-            logger.info("[AGENT] Resuming session: %s", session_id)
+        # Whether the caller pinned the user at construction. When False (the
+        # API constructs with session_id only and supplies user_id later at
+        # process_message time), the construction-time placeholder is adopted
+        # into the real "<user>:<session>" key on the first process_message.
+        self._user_explicit = user_id is not None
+        self._user_id = _normalize_user_id(user_id)
 
-        self.memory = ExecutiveAgent.sessions[session_id]
+        self.memory = ExecutiveAgent._get_or_create_session(self._user_id, session_id)
         self.chat_service = get_chat_service()
         self.timezone = pytz.timezone(os.getenv("TIMEZONE", "Europe/Berlin"))
         self.tz_name = os.getenv("TIMEZONE", "Europe/Berlin")
+
+    # ── Session keying / lifecycle ────────────────────────────────────────────
+
+    @classmethod
+    def _get_or_create_session(cls, user_id: str, session_id: str) -> ConversationMemory:
+        """Return the memory for (user_id, session_id), creating it if absent."""
+        key = _session_key(user_id, session_id)
+        with cls._sessions_lock:
+            mem = cls.sessions.get(key)
+            if mem is None:
+                mem = ConversationMemory(session_id=session_id)
+                cls.sessions[key] = mem
+                logger.info("[AGENT] New session: %s", key)
+            else:
+                logger.info("[AGENT] Resuming session: %s", key)
+            mem.last_accessed_at = datetime.now()
+            return mem
+
+    def _bind_user(self, user_id: str) -> None:
+        """Bind this agent's memory to (user_id, session_id), authoritative on
+        the user_id supplied at process_message time.
+
+        Same (user_id, session_id) → reuse the same memory (continuity).
+        Different user_id → a separate memory (no cross-user bleed). When the
+        agent was constructed without an explicit user (API pattern), the
+        construction-time placeholder is adopted into the real key so any state
+        set before the first process_message is preserved exactly once.
+        """
+        norm = _normalize_user_id(user_id)
+        if norm == self._user_id:
+            self.memory.last_accessed_at = datetime.now()
+            return
+
+        target_key = _session_key(norm, self.session_id)
+        old_key = _session_key(self._user_id, self.session_id)
+        with ExecutiveAgent._sessions_lock:
+            existing = self.sessions.get(target_key)
+            if existing is not None:
+                self.memory = existing
+            elif not self._user_explicit:
+                # Adopt the placeholder created at construction into the real key.
+                adopted = self.sessions.pop(old_key, None) or self.memory
+                adopted.session_id = self.session_id
+                self.sessions[target_key] = adopted
+                self.memory = adopted
+            else:
+                mem = ConversationMemory(session_id=self.session_id)
+                self.sessions[target_key] = mem
+                self.memory = mem
+            self.memory.last_accessed_at = datetime.now()
+        # The user is now pinned; later turns with a different user_id will not
+        # adopt — they get their own separate memory.
+        self._user_id = norm
+        self._user_explicit = True
+
+    @classmethod
+    def cleanup_expired_sessions(
+        cls,
+        ttl_seconds: Optional[int] = None,
+        now: Optional[datetime] = None,
+    ) -> int:
+        """Remove sessions not accessed within ttl_seconds. Returns count removed."""
+        ttl = cls.SESSION_TTL_SECONDS if ttl_seconds is None else ttl_seconds
+        cutoff_now = now or datetime.now()
+        removed = 0
+        with cls._sessions_lock:
+            expired = [
+                k for k, m in cls.sessions.items()
+                if (cutoff_now - getattr(m, "last_accessed_at", m.created_at)).total_seconds() > ttl
+            ]
+            for k in expired:
+                cls.sessions.pop(k, None)
+                removed += 1
+        if removed:
+            logger.info("[AGENT] Cleaned up %d expired session(s)", removed)
+        return removed
+
+    # ── Admin / introspection helpers (user-aware) ────────────────────────────
+
+    @classmethod
+    def get_session(cls, user_id: str, session_id: str) -> Optional[ConversationMemory]:
+        """Return the memory for exactly (user_id, session_id), or None.
+
+        Never resolves another user's session by bare session_id.
+        """
+        with cls._sessions_lock:
+            return cls.sessions.get(_session_key(user_id, session_id))
+
+    @classmethod
+    def delete_session(cls, user_id: str, session_id: str) -> bool:
+        """Delete only the (user_id, session_id) session. Returns True if removed."""
+        key = _session_key(user_id, session_id)
+        with cls._sessions_lock:
+            if key in cls.sessions:
+                del cls.sessions[key]
+                return True
+            return False
+
+    @classmethod
+    def list_session_metadata(cls, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Safe, body-free metadata for active sessions.
+
+        Returns user_id, session_id, counts, timestamps, and existence booleans
+        only — never message/draft/email bodies, credentials, or tokens. Pass
+        user_id to list a single user's sessions.
+        """
+        want = _normalize_user_id(user_id) if user_id is not None else None
+        out: List[Dict[str, Any]] = []
+        with cls._sessions_lock:
+            for key, mem in cls.sessions.items():
+                sid = mem.session_id
+                # user_id is everything before the trailing ":<session_id>" so
+                # a user_id containing ':' is recovered correctly.
+                suffix = f":{sid}"
+                uid = key[: -len(suffix)] if key.endswith(suffix) else key
+                if want is not None and uid != want:
+                    continue
+                out.append({
+                    "user_id": uid,
+                    "session_id": sid,
+                    "message_count": len(mem.conversation_history),
+                    "last_accessed_at": mem.last_accessed_at.isoformat(),
+                    "last_activity": mem.last_activity.isoformat(),
+                    "created_at": mem.created_at.isoformat(),
+                    "has_pending_action": mem.pending_action is not None,
+                    "has_draft": mem.draft is not None,
+                })
+        return out
 
     # ── Main entry point ──────────────────────────────────────────────────────
 
@@ -269,6 +573,10 @@ class ExecutiveAgent:
         logger.info("[AGENT] message received user=%s cal=%s mail=%s chars=%d",
                     user_id, calendar_provider, mail_provider, len(user_message or ""))
 
+        # Bind memory to the authoritative (user_id, session_id) before any use,
+        # so two users sharing a session_id never touch the same memory.
+        self._bind_user(user_id)
+
         self.memory.current_user_id = user_id
         self.memory.add_message("user", user_message)
 
@@ -278,20 +586,26 @@ class ExecutiveAgent:
 
         try:
             # ── Confirmation / cancellation gate ──────────────────────────────
+            # Edit intent wins over approval: an approval that also asks for a
+            # change must never send. Only a clean whole-message confirm executes.
             if self.memory.pending_action:
-                if is_confirm(user_message):
+                if _has_edit_intent(user_message):
+                    # Revision/hold request — keep pending_action AND draft and let
+                    # the LLM re-propose with the change. Never send on an edit.
+                    logger.info("[AGENT] Edit intent while pending → keep draft, route to LLM")
+                elif _is_explicit_cancel(user_message):
+                    return await self._cancel_pending_action()
+                elif _is_explicit_confirm(user_message):
                     result = await self._execute_pending_action(user_id, _cal, _mail)
                     self.memory.add_message("assistant", result["message"])
                     return result
-
-                if is_cancel(user_message):
-                    return await self._cancel_pending_action()
-
-                # Anything else (e.g. "no, use outlook") → cancel pending and
-                # continue to LLM so it can re-propose with the correction.
-                logger.info("[AGENT] Non-confirm/cancel while pending → clearing pending and re-routing")
-                self.memory.clear_pending_action()
-                self.memory.clear_active_task()
+                else:
+                    # Ambiguous / unrelated reply (e.g. "no, use outlook") — do not
+                    # execute. Clear the proposal but keep the draft so the user can
+                    # resume; the LLM answers / re-proposes.
+                    logger.info("[AGENT] Ambiguous reply while pending → clear pending, keep draft, route to LLM")
+                    self.memory.clear_pending_action()
+                    self.memory.clear_active_task()
 
             # ── LLM tool-calling loop ──────────────────────────────────────────
             messages = self._build_llm_messages(user_message, _cal, _mail)
@@ -1827,6 +2141,30 @@ class ExecutiveAgent:
         provider_raw = args.get("provider", "gmail")
         provider = _normalize_provider(provider_raw)
 
+        # ── idempotency guard ─────────────────────────────────────────────────
+        request_id = _compute_email_request_id(
+            user_id, "send_email", provider, to_str, subject, body
+        )
+        now = datetime.now().timestamp()
+        async with _EMAIL_IDEMPOTENCY_LOCK:
+            _prune_email_idempotency(now)
+            existing = _EMAIL_IDEMPOTENCY_STORE.get(request_id)
+            if existing and existing.get("status") != _EMAIL_IDEMPOTENCY_PENDING:
+                self.memory.clear_pending_action()
+                self.memory.clear_active_task()
+                self.memory.clear_draft()
+                logger.info("[EXEC] Email send suppressed by idempotency guard")
+                return {
+                    "message": "This email appears to have already been sent. I will not send it again.",
+                    "success": True,
+                    "type": "email_sent",
+                    "intent": "LLM_DRIVEN",
+                    "data": {"idempotent": True, "message_id": existing.get("message_id")},
+                }
+            _EMAIL_IDEMPOTENCY_STORE[request_id] = {
+                "status": _EMAIL_IDEMPOTENCY_PENDING, "ts": now,
+            }
+
         payload: Dict[str, Any] = {
             "to": to_str if len(to_list) == 1 else to_list,
             "subject": subject,
@@ -1854,6 +2192,12 @@ class ExecutiveAgent:
 
             if response.is_success:
                 result_data = response.json()
+                async with _EMAIL_IDEMPOTENCY_LOCK:
+                    _EMAIL_IDEMPOTENCY_STORE[request_id] = {
+                        "status": "sent",
+                        "ts": datetime.now().timestamp(),
+                        "message_id": result_data.get("message_id"),
+                    }
                 self.memory.clear_pending_action()
                 self.memory.clear_active_task()
                 self.memory.clear_draft()
@@ -1867,6 +2211,9 @@ class ExecutiveAgent:
                     "data": result_data,
                 }
             else:
+                # Provider rejected the request — release the pending marker so a
+                # genuine retry can proceed.
+                await _release_email_idempotency(request_id)
                 error_detail = _extract_error_detail(response)
                 return {
                     "message": f"Failed to send the email (HTTP {response.status_code}): {error_detail}. Say yes to retry.",
@@ -1877,6 +2224,7 @@ class ExecutiveAgent:
                 }
 
         except httpx.TimeoutException:
+            await _release_email_idempotency(request_id)
             return {
                 "message": "The email service timed out. Your email is saved — say yes to retry.",
                 "success": False,
@@ -1885,6 +2233,7 @@ class ExecutiveAgent:
                 "data": {"pending_action_preserved": True},
             }
         except Exception as e:
+            await _release_email_idempotency(request_id)
             logger.error("[EXEC] Email send error: %s", e, exc_info=True)
             return {
                 "message": f"Unexpected error: {e}. Your email is saved — say yes to retry.",
@@ -1920,6 +2269,30 @@ class ExecutiveAgent:
         provider_raw = args.get("provider", "gmail")
         provider = _normalize_provider(provider_raw)
 
+        # ── idempotency guard ─────────────────────────────────────────────────
+        request_id = _compute_email_request_id(
+            user_id, "reply_email", provider, "", subject, body, reply_ref=thread_id
+        )
+        now = datetime.now().timestamp()
+        async with _EMAIL_IDEMPOTENCY_LOCK:
+            _prune_email_idempotency(now)
+            existing = _EMAIL_IDEMPOTENCY_STORE.get(request_id)
+            if existing and existing.get("status") != _EMAIL_IDEMPOTENCY_PENDING:
+                self.memory.clear_pending_action()
+                self.memory.clear_active_task()
+                self.memory.clear_draft()
+                logger.info("[EXEC] Email reply suppressed by idempotency guard")
+                return {
+                    "message": "This email appears to have already been sent. I will not send it again.",
+                    "success": True,
+                    "type": "email_sent",
+                    "intent": "LLM_DRIVEN",
+                    "data": {"idempotent": True, "message_id": existing.get("message_id")},
+                }
+            _EMAIL_IDEMPOTENCY_STORE[request_id] = {
+                "status": _EMAIL_IDEMPOTENCY_PENDING, "ts": now,
+            }
+
         payload: Dict[str, Any] = {"body": body, "subject": f"Re: {subject}"}
         if provider == "google":
             payload["thread_id"] = thread_id
@@ -1938,6 +2311,13 @@ class ExecutiveAgent:
                 response = await client.post(endpoint, json=payload, params={"user_id": user_id})
 
             if response.is_success:
+                reply_data = response.json()
+                async with _EMAIL_IDEMPOTENCY_LOCK:
+                    _EMAIL_IDEMPOTENCY_STORE[request_id] = {
+                        "status": "sent",
+                        "ts": datetime.now().timestamp(),
+                        "message_id": reply_data.get("message_id"),
+                    }
                 self.memory.clear_pending_action()
                 self.memory.clear_active_task()
                 self.memory.clear_draft()
@@ -1946,9 +2326,10 @@ class ExecutiveAgent:
                     "success": True,
                     "type": "email_sent",
                     "intent": "LLM_DRIVEN",
-                    "data": response.json(),
+                    "data": reply_data,
                 }
             else:
+                await _release_email_idempotency(request_id)
                 error_detail = _extract_error_detail(response)
                 return {
                     "message": f"Failed to send the reply (HTTP {response.status_code}): {error_detail}.",
@@ -1958,6 +2339,7 @@ class ExecutiveAgent:
                 }
 
         except Exception as e:
+            await _release_email_idempotency(request_id)
             logger.error("[EXEC] Email reply error: %s", e, exc_info=True)
             return {"message": f"Unexpected error: {e}", "success": False, "type": "error", "intent": "LLM_DRIVEN"}
 
