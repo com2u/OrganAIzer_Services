@@ -529,8 +529,9 @@ class TestOutboundOpeningLineWithPurpose:
             "test_ol_default",
             "call +4930123456789",
         )
-        # No purpose → default OrganAIzer intro should appear
-        assert "OrganAIzer" in line or "KI-Assistent" in line
+        # No purpose → canonical Teleprofi outbound default greeting (no OrganAIzer)
+        assert "Teleprofi Fulda" in line
+        assert "OrganAIzer" not in line
 
     def test_purpose_message_content_in_opening_line(self):
         sid = "test_ol_content"
@@ -575,8 +576,8 @@ class TestOutboundSystemPromptHasNoReintroduction:
 
     def test_outbound_system_prompt_constant_still_has_fallback_intro(self):
         from voice.llm_bridge import OUTBOUND_SYSTEM_PROMPT
-        # A fallback intro for when history is empty must still exist
-        assert "OrganAIzer" in OUTBOUND_SYSTEM_PROMPT
+        # A fallback intro for when history is empty must still exist (Teleprofi identity)
+        assert "Teleprofi Fulda" in OUTBOUND_SYSTEM_PROMPT
         assert "history" in OUTBOUND_SYSTEM_PROMPT.lower() or \
                "already been delivered" in OUTBOUND_SYSTEM_PROMPT.lower()
 
@@ -855,3 +856,403 @@ class TestEmptyTurnLogic:
         assert not farewell_spoken, (
             f"Farewell spoken too early after counter reset; spoken={spoken}"
         )
+
+
+# =============================================================================
+# Missed-call voicemail fallback
+# =============================================================================
+
+from datetime import datetime, timezone
+from voice import config as _vcfg
+import voice.esl_call_handler as _esl
+import voice.escalation as _esc
+
+
+class TestVoicemailFallback:
+    """Voicemail triggers only on no-answer; answered calls never enter it."""
+
+    def _started(self):
+        return datetime.now(timezone.utc)
+
+    def _vm_handler(self, tmp, uuid):
+        """Mock ESL handler that 'creates' the voicemail WAV when record runs."""
+        handler = MagicMock()
+        handler.is_hung_up = False
+
+        def _exec(app, arg=None, **kw):
+            if app == "record":
+                (tmp / f"{uuid}_voicemail.wav").write_bytes(b"\x00" * 200)
+            return True
+
+        handler.execute.side_effect = _exec
+        return handler
+
+    # ── trigger logic ─────────────────────────────────────────────────────────
+
+    def test_timeout_triggers_voicemail_flow(self):
+        handler = MagicMock()
+        handler.is_hung_up = False
+        sentinel = {"voicemail_received": True}
+        with patch("voice.esl_call_handler._attempt_transfer", return_value=False), \
+             patch("voice.esl_call_handler._run_voicemail", return_value=sentinel) as m_vm:
+            result = _esl._handle_transfer_or_voicemail(
+                handler, "+496611234", None, "u1", self._started(), "de"
+            )
+        m_vm.assert_called_once()
+        assert result is sentinel
+
+    def test_answered_call_never_enters_voicemail(self):
+        handler = MagicMock()
+        handler.is_hung_up = False
+        with patch("voice.esl_call_handler._attempt_transfer", return_value=True), \
+             patch("voice.esl_call_handler._run_voicemail") as m_vm:
+            result = _esl._handle_transfer_or_voicemail(
+                handler, "+496611234", None, "u1", self._started(), "de"
+            )
+        m_vm.assert_not_called()
+        assert result is None
+
+    def test_no_voicemail_if_caller_already_hung_up(self):
+        handler = MagicMock()
+        handler.is_hung_up = True
+        with patch("voice.escalation.send_voicemail_notification") as m_send, \
+             patch("voice.esl_call_handler._speak_and_play"):
+            info = _esl._run_voicemail(handler, "+49", None, "u", self._started(), "de")
+        assert info["voicemail_received"] is False
+        m_send.assert_not_called()
+
+    # ── recording → email → summary ───────────────────────────────────────────
+
+    def test_voicemail_summary_fields_populated(self, tmp_path):
+        handler = self._vm_handler(tmp_path, "uuidA")
+        with patch("voice.esl_call_handler._audio_dir", return_value=tmp_path), \
+             patch("voice.esl_call_handler._speak_and_play"), \
+             patch("voice.esl_call_handler.transcribe_file", return_value=("hallo test", "de")), \
+             patch("voice.esl_call_handler._wav_duration_seconds", return_value=6), \
+             patch("voice.escalation.send_voicemail_notification"):
+            info = _esl._run_voicemail(
+                handler, "+4966112345", "Hans", "uuidA", self._started(), "de"
+            )
+        assert info["caller_number"] == "+4966112345"
+        assert info["voicemail_received"] is True
+        assert info["voicemail_duration"] == 6
+        assert info["voicemail_file"].endswith("uuidA_voicemail.wav")
+
+    def test_voicemail_email_generated(self, tmp_path):
+        handler = self._vm_handler(tmp_path, "uuidB")
+        with patch("voice.esl_call_handler._audio_dir", return_value=tmp_path), \
+             patch("voice.esl_call_handler._speak_and_play"), \
+             patch("voice.esl_call_handler.transcribe_file", return_value=("hi", "de")), \
+             patch("voice.esl_call_handler._wav_duration_seconds", return_value=9), \
+             patch("voice.escalation.send_voicemail_notification") as m_send:
+            _esl._run_voicemail(handler, "+4966199", None, "uuidB", self._started(), "de")
+        m_send.assert_called_once()
+        kw = m_send.call_args.kwargs
+        assert kw["caller"] == "+4966199"
+        assert kw["call_uuid"] == "uuidB"
+        assert kw["duration_seconds"] == 9
+        assert kw["recording_path"].endswith("uuidB_voicemail.wav")
+
+    def test_voicemail_attachment_included(self):
+        with patch("voice.escalation._send_via_gmail", return_value=False) as m_gmail, \
+             patch("voice.escalation._send_smtp_email", return_value=True) as m_smtp:
+            sent = _esc.send_voicemail_notification(
+                caller="+4966199",
+                caller_name=None,
+                call_uuid="cid",
+                started_at=self._started(),
+                duration_seconds=12,
+                recording_path="/tmp/cid_voicemail.wav",
+                transcript="hallo",
+            )
+        assert sent is True
+        # Subject is the required German missed-call line; recording is attached.
+        assert "Verpasster Anruf" in m_gmail.call_args.args[0]
+        assert m_gmail.call_args.kwargs["recording_path"] == "/tmp/cid_voicemail.wav"
+        assert m_smtp.call_args.kwargs["recording_path"] == "/tmp/cid_voicemail.wav"
+
+    # ── configurability ───────────────────────────────────────────────────────
+
+    def test_transfer_timeout_defaults_to_35(self):
+        assert _vcfg.AI_ESCALATION_TRANSFER_TIMEOUT_SECONDS == 35
+        assert isinstance(_vcfg.AI_ESCALATION_TRANSFER_TIMEOUT_SECONDS, int)
+        assert isinstance(_vcfg.AI_VOICEMAIL_MAX_SECONDS, int)
+
+    def test_handle_passes_configured_timeout(self):
+        handler = MagicMock()
+        handler.is_hung_up = False
+        with patch("voice.esl_call_handler._attempt_transfer", return_value=True) as m_t:
+            _esl._handle_transfer_or_voicemail(
+                handler, "+496611234", None, "u1", self._started(), "de"
+            )
+        m_t.assert_called_once()
+        assert m_t.call_args.args[1] == _vcfg.AI_ESCALATION_TRANSFER_TIMEOUT_SECONDS
+
+    # ── call stays alive through the ring window ──────────────────────────────
+
+    def test_transfer_keeps_caller_alive_on_no_answer(self):
+        # A failed/unanswered bridge must NOT hang up the caller — continue_on_fail
+        # is set and the function returns False (→ voicemail), caller still on line.
+        handler = MagicMock()
+        handler.is_hung_up = False
+        result = _esl._attempt_transfer(handler, 35)
+        set_vars = [
+            c.args[1] for c in handler.execute.call_args_list if c.args and c.args[0] == "set"
+        ]
+        assert any("continue_on_fail=true" == v for v in set_vars)
+        assert any(v.startswith("call_timeout=35") for v in set_vars)
+        handler.hangup.assert_not_called()
+        # With at least one waiting-room target unset by default, returns False.
+        assert result in (False, True)  # structural: never raises, returns a bool
+
+    def test_run_voicemail_does_not_hang_up_call(self, tmp_path):
+        handler = self._vm_handler(tmp_path, "uuidH")
+        with patch("voice.esl_call_handler._audio_dir", return_value=tmp_path), \
+             patch("voice.esl_call_handler._speak_and_play"), \
+             patch("voice.esl_call_handler.transcribe_file", return_value=("x", "de")), \
+             patch("voice.esl_call_handler._wav_duration_seconds", return_value=5), \
+             patch("voice.escalation.send_voicemail_notification"):
+            _esl._run_voicemail(handler, "+49661", None, "uuidH", self._started(), "de")
+        handler.hangup.assert_not_called()
+
+    # ── prompt + recording + email content ────────────────────────────────────
+
+    def test_voicemail_prompt_text_is_used(self, tmp_path):
+        handler = self._vm_handler(tmp_path, "uuidP")
+        spoken = []
+        with patch("voice.esl_call_handler._audio_dir", return_value=tmp_path), \
+             patch("voice.esl_call_handler._speak_and_play",
+                   side_effect=lambda h, t, lang=None: spoken.append(t)), \
+             patch("voice.esl_call_handler.transcribe_file", return_value=("x", "de")), \
+             patch("voice.esl_call_handler._wav_duration_seconds", return_value=5), \
+             patch("voice.escalation.send_voicemail_notification"):
+            _esl._run_voicemail(handler, "+49661", None, "uuidP", self._started(), "de")
+        assert any(
+            "hinterlassen Sie nach dem Signalton" in s
+            and "schnellstmöglich bei Ihnen zurück" in s
+            for s in spoken
+        ), f"voicemail prompt not spoken; got {spoken}"
+
+    def test_voicemail_recording_is_attempted(self, tmp_path):
+        handler = self._vm_handler(tmp_path, "uuidR")
+        with patch("voice.esl_call_handler._audio_dir", return_value=tmp_path), \
+             patch("voice.esl_call_handler._speak_and_play"), \
+             patch("voice.esl_call_handler.transcribe_file", return_value=("x", "de")), \
+             patch("voice.esl_call_handler._wav_duration_seconds", return_value=5), \
+             patch("voice.escalation.send_voicemail_notification"):
+            _esl._run_voicemail(handler, "+49661", None, "uuidR", self._started(), "de")
+        apps = [c.args[0] for c in handler.execute.call_args_list if c.args]
+        assert "record" in apps
+
+    def test_voicemail_email_contains_reason_and_received_flag(self):
+        with patch("voice.escalation._send_via_gmail", return_value=True) as m_gmail, \
+             patch("voice.escalation._send_smtp_email") as m_smtp:
+            _esc.send_voicemail_notification(
+                caller="+4966199",
+                caller_name=None,
+                call_uuid="cid",
+                started_at=self._started(),
+                duration_seconds=14,
+                recording_path="/tmp/cid_voicemail.wav",
+                transcript=None,
+                escalation_reason="Totalausfall Telefonanlage",
+            )
+        body = m_gmail.call_args.args[1]
+        assert "Totalausfall Telefonanlage" in body
+        assert "voicemail_received=true" in body
+        assert "/tmp/cid_voicemail.wav" in body
+        m_smtp.assert_not_called()  # gmail succeeded → no SMTP fallback
+
+    def test_run_voicemail_forwards_escalation_reason_to_email(self, tmp_path):
+        handler = self._vm_handler(tmp_path, "uuidE")
+        with patch("voice.esl_call_handler._audio_dir", return_value=tmp_path), \
+             patch("voice.esl_call_handler._speak_and_play"), \
+             patch("voice.esl_call_handler.transcribe_file", return_value=("x", "de")), \
+             patch("voice.esl_call_handler._wav_duration_seconds", return_value=8), \
+             patch("voice.escalation.send_voicemail_notification") as m_send:
+            _esl._run_voicemail(
+                handler, "+49661", None, "uuidE", self._started(), "de",
+                escalation_reason="Praxis nicht erreichbar",
+            )
+        assert m_send.call_args.kwargs["escalation_reason"] == "Praxis nicht erreichbar"
+
+    # ── minimum hold before voicemail ─────────────────────────────────────────
+
+    def test_default_min_hold_is_10_seconds(self):
+        assert _vcfg.AI_ESCALATION_MIN_HOLD_SECONDS == 10
+
+    def test_voicemail_waits_for_min_hold_before_starting(self):
+        handler = MagicMock()
+        handler.is_hung_up = False
+        calls = []
+        with patch("voice.esl_call_handler._attempt_transfer", return_value=False), \
+             patch("voice.esl_call_handler._ensure_min_hold",
+                   side_effect=lambda h, r: calls.append("hold")), \
+             patch("voice.esl_call_handler._run_voicemail",
+                   side_effect=lambda *a, **k: calls.append("vm") or {"voicemail_received": True}):
+            _esl._handle_transfer_or_voicemail(
+                handler, "+496611234", None, "u1", self._started(), "de"
+            )
+        # Min-hold must run before voicemail.
+        assert calls == ["hold", "vm"]
+
+    def test_early_failed_bridge_waits_until_min_hold(self):
+        handler = MagicMock()
+        handler.is_hung_up = False
+        captured = {}
+        # _attempt_transfer (mocked) returns instantly → elapsed ~0 → remaining ~10.
+        with patch("voice.esl_call_handler._attempt_transfer", return_value=False), \
+             patch("voice.esl_call_handler._ensure_min_hold",
+                   side_effect=lambda h, r: captured.__setitem__("remaining", r)), \
+             patch("voice.esl_call_handler._run_voicemail", return_value={}):
+            _esl._handle_transfer_or_voicemail(
+                handler, "+496611234", None, "u1", self._started(), "de"
+            )
+        assert captured["remaining"] >= _vcfg.AI_ESCALATION_MIN_HOLD_SECONDS - 1
+
+    def test_answered_transfer_skips_min_hold_and_voicemail(self):
+        handler = MagicMock()
+        handler.is_hung_up = False
+        with patch("voice.esl_call_handler._attempt_transfer", return_value=True), \
+             patch("voice.esl_call_handler._ensure_min_hold") as m_hold, \
+             patch("voice.esl_call_handler._run_voicemail") as m_vm:
+            result = _esl._handle_transfer_or_voicemail(
+                handler, "+496611234", None, "u1", self._started(), "de"
+            )
+        assert result is None
+        m_hold.assert_not_called()
+        m_vm.assert_not_called()
+
+    def test_min_hold_plays_waiting_audio(self):
+        handler = MagicMock()
+        handler.is_hung_up = False
+        _esl._ensure_min_hold(handler, 8)
+        playbacks = [
+            c.args[1] for c in handler.execute.call_args_list
+            if c.args and c.args[0] == "playback"
+        ]
+        # Bounded waiting audio is played, and it is NOT an artificial ring tone.
+        assert playbacks, "expected bounded waiting audio playback"
+        assert any("silence_stream" in str(p) for p in playbacks)
+
+    def test_min_hold_does_not_use_artificial_ringback_tone(self):
+        handler = MagicMock()
+        handler.is_hung_up = False
+        _esl._ensure_min_hold(handler, 8)
+        playbacks = " ".join(
+            str(c.args[1]) for c in handler.execute.call_args_list
+            if c.args and c.args[0] == "playback"
+        )
+        assert "tone_stream" not in playbacks
+        assert "440,480" not in playbacks  # the old ring cadence is gone
+
+    def test_min_hold_noop_when_already_satisfied(self):
+        handler = MagicMock()
+        handler.is_hung_up = False
+        _esl._ensure_min_hold(handler, 0)
+        handler.execute.assert_not_called()
+
+    def test_min_hold_noop_when_caller_hung_up(self):
+        handler = MagicMock()
+        handler.is_hung_up = True
+        _esl._ensure_min_hold(handler, 8)
+        handler.execute.assert_not_called()
+
+    # ── COMtrexx early-media bridge (no artificial ringback) ──────────────────
+
+    def _transfer_set_vars(self, handler):
+        return [
+            c.args[1] for c in handler.execute.call_args_list
+            if c.args and c.args[0] == "set"
+        ]
+
+    def test_attempt_transfer_no_artificial_ringback_by_default(self):
+        handler = MagicMock()
+        handler.is_hung_up = False
+        _esl._attempt_transfer(handler, 35)
+        set_vars = " ".join(self._transfer_set_vars(handler))
+        assert "instant_ringback" not in set_vars
+        assert "ringback=%(" not in set_vars
+
+    def test_attempt_transfer_enables_early_media(self):
+        handler = MagicMock()
+        handler.is_hung_up = False
+        _esl._attempt_transfer(handler, 35)
+        set_vars = self._transfer_set_vars(handler)
+        assert any(v == "bridge_early_media=true" for v in set_vars)
+
+    def test_attempt_transfer_sets_continue_on_fail(self):
+        handler = MagicMock()
+        handler.is_hung_up = False
+        _esl._attempt_transfer(handler, 35)
+        assert any(v == "continue_on_fail=true" for v in self._transfer_set_vars(handler))
+
+    def test_attempt_transfer_call_timeout_is_35(self):
+        handler = MagicMock()
+        handler.is_hung_up = False
+        _esl._attempt_transfer(handler, 35)
+        set_vars = self._transfer_set_vars(handler)
+        assert any(v == "call_timeout=35" for v in set_vars)
+        assert any(v == "originate_timeout=35" for v in set_vars)
+
+    def test_attempt_transfer_ringback_fallback_when_early_media_disabled(self):
+        handler = MagicMock()
+        handler.is_hung_up = False
+        with patch.object(_vcfg, "AI_ESCALATION_USE_COMTREXX_EARLY_MEDIA", False), \
+             patch.object(_vcfg, "AI_ESCALATION_HOLD_MUSIC", ""):
+            _esl._attempt_transfer(handler, 35)
+        set_vars = " ".join(self._transfer_set_vars(handler))
+        # With early media disabled and no hold music, a synthetic ringback is ok.
+        assert "instant_ringback=true" in set_vars
+        assert "bridge_early_media=true" not in set_vars
+
+    # ── FreeSWITCH-side hold music ────────────────────────────────────────────
+
+    def test_hold_music_config_exists(self):
+        assert hasattr(_vcfg, "AI_ESCALATION_HOLD_MUSIC")
+
+    def test_attempt_transfer_uses_hold_music_when_configured(self):
+        handler = MagicMock()
+        handler.is_hung_up = False
+        with patch.object(_vcfg, "AI_ESCALATION_HOLD_MUSIC", "/snd/teleprofi_hold.wav"):
+            _esl._attempt_transfer(handler, 35)
+        set_vars = self._transfer_set_vars(handler)
+        assert "ringback=/snd/teleprofi_hold.wav" in set_vars
+        assert "instant_ringback=true" in set_vars
+        # The company WAV is used — never an artificial ring tone.
+        assert all("ringback=%(" not in v for v in set_vars)
+
+    def test_hold_music_takes_precedence_over_early_media(self):
+        handler = MagicMock()
+        handler.is_hung_up = False
+        with patch.object(_vcfg, "AI_ESCALATION_HOLD_MUSIC", "/snd/teleprofi_hold.wav"), \
+             patch.object(_vcfg, "AI_ESCALATION_USE_COMTREXX_EARLY_MEDIA", True):
+            _esl._attempt_transfer(handler, 35)
+        set_vars = self._transfer_set_vars(handler)
+        assert "ringback=/snd/teleprofi_hold.wav" in set_vars
+        assert "bridge_early_media=true" not in set_vars
+
+    def test_min_hold_uses_hold_music_when_configured(self):
+        handler = MagicMock()
+        handler.is_hung_up = False
+        with patch.object(_vcfg, "AI_ESCALATION_HOLD_MUSIC", "/snd/teleprofi_hold.wav"):
+            _esl._ensure_min_hold(handler, 8)
+        playbacks = [
+            c.args[1] for c in handler.execute.call_args_list
+            if c.args and c.args[0] == "playback"
+        ]
+        assert playbacks == ["/snd/teleprofi_hold.wav"]
+        assert all("tone_stream" not in str(p) for p in playbacks)
+
+    def test_missing_hold_music_does_not_crash(self):
+        handler = MagicMock()
+        handler.is_hung_up = False
+        with patch.object(_vcfg, "AI_ESCALATION_HOLD_MUSIC", ""):
+            # Neither call should raise; min-hold falls back to silence.
+            _esl._attempt_transfer(handler, 35)
+            _esl._ensure_min_hold(handler, 5)
+        playbacks = [
+            c.args[1] for c in handler.execute.call_args_list
+            if c.args and c.args[0] == "playback"
+        ]
+        assert any("silence_stream" in str(p) for p in playbacks)

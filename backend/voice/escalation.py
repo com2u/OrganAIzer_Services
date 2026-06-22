@@ -237,6 +237,63 @@ def _send_smtp_email(subject: str, body: str, recording_path: Optional[str] = No
         return False
 
 
+def send_voicemail_notification(
+    caller: str,
+    caller_name: Optional[str],
+    call_uuid: str,
+    started_at: datetime,
+    duration_seconds: int,
+    recording_path: Optional[str] = None,
+    transcript: Optional[str] = None,
+    escalation_reason: str = "",
+) -> bool:
+    """Email the Teleprofi escalation mailbox about a missed call + voicemail.
+
+    Reuses the existing escalation mail transport (Gmail OAuth → SMTP fallback)
+    and the existing ESCALATION_EMAIL_TO mailbox — escalation recipients are
+    unchanged. The voicemail WAV is attached when available; when attachment
+    support is unavailable the file path is still included in the body. Returns
+    True if an email was sent. Never raises.
+    """
+    display = caller_name or caller
+    subject = "Verpasster Anruf – Voicemail hinterlassen"
+    lines = [
+        "Teleprofi-Fulda KI-Telefonassistent — Verpasster Anruf",
+        "=" * 50,
+        "",
+        f"Anrufer:          {display}",
+        f"Rufnummer:        {caller}",
+        f"Zeitpunkt:        {started_at.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}",
+        f"Call-ID:          {call_uuid}",
+        f"Eskalationsgrund: {escalation_reason or 'nicht angegeben'}",
+        f"Voicemail erhalten: Ja (voicemail_received=true)",
+        f"Voicemail-Länge:  {duration_seconds}s",
+        f"Audiodatei:       {recording_path or '(keine)'}",
+    ]
+    if transcript:
+        lines += ["", "Transkript (automatisch, ohne Gewähr):", transcript]
+    else:
+        # No transcription available in this batch — left as a future TODO.
+        lines += ["", "Transkript: (nicht verfügbar)"]
+    if recording_path:
+        lines += ["", "Die Sprachnachricht ist als Audiodatei angehängt."]
+    body = "\n".join(lines)
+
+    try:
+        sent = _send_via_gmail(subject, body, recording_path=recording_path)
+        if not sent:
+            sent = _send_smtp_email(subject, body, recording_path=recording_path)
+    except Exception as exc:
+        logger.error("Voicemail notification failed: %s", exc)
+        return False
+
+    logger.info(
+        "Voicemail notification sent=%s caller=%s duration=%ss",
+        sent, display, duration_seconds,
+    )
+    return sent
+
+
 def transfer_to_extension(
     extension: str,
     call_uuid: str = "",

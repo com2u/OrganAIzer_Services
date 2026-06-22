@@ -55,6 +55,48 @@ AI_AFTER_HOURS_END: int   = int(os.environ.get("AI_AFTER_HOURS_END", "8"))
 AI_WAITING_ROOM_PRIMARY: str   = os.environ.get("AI_WAITING_ROOM_PRIMARY", "")
 AI_WAITING_ROOM_SECONDARY: str = os.environ.get("AI_WAITING_ROOM_SECONDARY", "")
 
+# ── Escalation transfer + voicemail fallback ──────────────────────────────────
+# After the AI tells the caller it will connect them, the system rings/bridges
+# the waiting room and the caller hears ringback / company music for up to this
+# many seconds. Only if nobody answers within the window does it fall back to an
+# automated voicemail — the call is NOT ended right after the escalation email.
+AI_ESCALATION_TRANSFER_TIMEOUT_SECONDS: int = int(
+    os.environ.get("AI_ESCALATION_TRANSFER_TIMEOUT_SECONDS", "35")
+)
+# Minimum audible waiting period: the caller must hear waiting audio / hold
+# music for at least this many seconds before voicemail can start — even if the
+# bridge fails/returns early. Must be <= the transfer timeout.
+AI_ESCALATION_MIN_HOLD_SECONDS: int = int(
+    os.environ.get("AI_ESCALATION_MIN_HOLD_SECONDS", "10")
+)
+# Prefer COMtrexx's own waiting / queue music (early media) during the escalation
+# bridge instead of a FreeSWITCH-generated ringback tone. Default on. Set to
+# false only where COMtrexx does not provide early media and a synthetic ringback
+# is needed so the caller hears something while ringing.
+AI_ESCALATION_USE_COMTREXX_EARLY_MEDIA: bool = (
+    os.environ.get("AI_ESCALATION_USE_COMTREXX_EARLY_MEDIA", "true").strip().lower()
+    in ("1", "true", "yes", "on")
+)
+# FreeSWITCH-side Teleprofi hold-music source played to the caller during the
+# escalation transfer window (as ringback while the technician is rung, and as
+# the minimum-hold padding). Must be a path/stream readable by FreeSWITCH, e.g.
+# an absolute WAV path or a loopable source like local_stream://moh. When set it
+# takes precedence over COMtrexx early media. Empty → fall back to early media /
+# silence (never crashes).
+AI_ESCALATION_HOLD_MUSIC: str = os.environ.get("AI_ESCALATION_HOLD_MUSIC", "").strip()
+# Maximum length of a single recorded voicemail message.
+AI_VOICEMAIL_MAX_SECONDS: int = int(os.environ.get("AI_VOICEMAIL_MAX_SECONDS", "120"))
+# Trailing silence (seconds) that ends the voicemail recording early.
+VOICEMAIL_SILENCE_SECONDS: float = float(os.environ.get("VOICEMAIL_SILENCE_SECONDS", "3.0"))
+
+# Backward-compatible aliases (earlier batch names) — default to the new values.
+VOICEMAIL_FALLBACK_SECONDS: int = int(
+    os.environ.get("VOICEMAIL_FALLBACK_SECONDS", str(AI_ESCALATION_TRANSFER_TIMEOUT_SECONDS))
+)
+VOICEMAIL_MAX_SECONDS: int = int(
+    os.environ.get("VOICEMAIL_MAX_SECONDS", str(AI_VOICEMAIL_MAX_SECONDS))
+)
+
 # Optional webhook called when a call starts ringing (for push notification).
 # POST {"event": "ringing", "caller": str, "caller_name": str|null, "ringing_since": ISO-8601}
 AI_RING_WEBHOOK_URL: str = os.environ.get("AI_RING_WEBHOOK_URL", "")

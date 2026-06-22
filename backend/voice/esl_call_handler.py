@@ -26,6 +26,7 @@ import os
 import queue as _queue
 import re
 import threading
+import time
 import urllib.request
 import json as _json
 from datetime import datetime, timezone
@@ -672,29 +673,34 @@ def _conversation_loop(
             except Exception as _e:
                 logger.warning("Could not set last_escalation in phone_state: %s", _e)
 
-            # Park the call at COMtrexx orbit 778/779 using SIP REFER (deflect).
-            # Since 003010 is an internal COMtrexx extension, a REFER to a park
-            # orbit is accepted. A direct bridge INVITE to 778 is rejected by
-            # COMtrexx (cause 88 INCOMPATIBLE_DESTINATION) — deflect is the
-            # correct mechanism.
-            # COMtrexx must be configured: park orbit 778 timeout = 10 min,
-            # on-timeout forward → 003010 (so the AI can handle the fallback).
-            transferred = False
-            for ext in filter(None, [
-                config.AI_WAITING_ROOM_PRIMARY,
-                config.AI_WAITING_ROOM_SECONDARY,
-            ]):
-                logger.info("Parking call at COMtrexx orbit %s via SIP REFER", ext)
-                completed = handler.execute(
-                    "deflect", f"sip:{ext}@{config.COMTREXX_IP}", timeout=15.0
-                )
-                if completed or handler.is_hung_up:
-                    transferred = True
-                    logger.info("Deflect to park orbit %s succeeded", ext)
-                    break
-                logger.warning("Deflect to orbit %s did not complete, trying next", ext)
+            # Transfer to the waiting room. If no Teleprofi employee answers
+            # within VOICEMAIL_FALLBACK_SECONDS (caller hears COMtrexx waiting
+            # music), fall back to an automated voicemail instead of ringing
+            # indefinitely. Existing escalation behavior is unchanged when the
+            # call is answered.
+            voicemail_info = _handle_transfer_or_voicemail(
+                handler, caller, caller_name, uuid, started_at, conv_lang,
+                escalation_reason=reason,
+            )
 
-            if not transferred:
+            if voicemail_info and voicemail_info.get("voicemail_received"):
+                # Reflect the voicemail in the structured escalation summary
+                # surfaced to the operator (no redesign of the summary system).
+                try:
+                    from api.phone import phone_state as _ps_vm
+                    last = _ps_vm.get("last_escalation")
+                    if isinstance(last, dict):
+                        last.update({
+                            "caller_number":      voicemail_info["caller_number"],
+                            "voicemail_received": True,
+                            "voicemail_duration": voicemail_info["voicemail_duration"],
+                            "voicemail_file":     voicemail_info["voicemail_file"],
+                        })
+                except Exception as _e:
+                    logger.warning("Could not attach voicemail info to summary: %s", _e)
+            elif voicemail_info is not None and not handler.is_hung_up:
+                # Voicemail flow ran but captured nothing (e.g. caller left during
+                # the prompt) and the caller is somehow still connected → farewell.
                 farewell = (
                     "A team member will call you back as soon as possible. "
                     "Thank you for calling. Goodbye!"
@@ -716,6 +722,247 @@ def _conversation_loop(
                 _cleanup(_proc["wav"])
 
     return False
+
+
+# ── Missed-call voicemail fallback ────────────────────────────────────────────
+
+_VOICEMAIL_PROMPT_DE = (
+    "Leider können wir Ihren Anruf derzeit nicht persönlich entgegennehmen. "
+    "Bitte hinterlassen Sie nach dem Signalton Ihren Namen, Ihre Rückrufnummer "
+    "und kurz Ihr Anliegen. Wir melden uns schnellstmöglich bei Ihnen zurück."
+)
+_VOICEMAIL_PROMPT_EN = (
+    "Unfortunately we cannot take your call in person right now. "
+    "Please leave your name, your callback number, and a short message after the tone. "
+    "We will get back to you as soon as possible. Thank you for calling."
+)
+
+
+def _wav_duration_seconds(path) -> int:
+    """Best-effort duration of a recorded WAV in whole seconds. Returns 0 on error."""
+    try:
+        import wave
+        with wave.open(str(path), "rb") as w:
+            rate = w.getframerate() or 8000
+            return int(w.getnframes() / rate)
+    except Exception:
+        try:
+            size = Path(path).stat().st_size
+            # s16le, 8 kHz, mono → 16000 bytes/sec; minus the 44-byte header.
+            return max(0, int((size - 44) / 16000))
+        except Exception:
+            return 0
+
+
+def _attempt_transfer(handler, timeout_seconds: int) -> bool:
+    """Transfer the caller to the waiting room, ringing for at most timeout_seconds.
+
+    Uses a monitored bridge (not a blind REFER/deflect) so control returns to us
+    if nobody answers, enabling the voicemail fallback. Heuristic: if the caller
+    leg ends (is_hung_up) the call was answered/handled; if it is still up after
+    the bridge attempt, the destination did not answer in time. The exact dial
+    string / answer detection may need tuning per FreeSWITCH+COMtrexx deployment.
+
+    Returns True if answered/handed off, False on no-answer within the window.
+    """
+    targets = [e for e in (config.AI_WAITING_ROOM_PRIMARY, config.AI_WAITING_ROOM_SECONDARY) if e]
+    if not targets:
+        return False
+
+    # Keep the caller's leg alive through the whole ring window and after a
+    # failed/unanswered bridge, so we can fall back to voicemail instead of the
+    # call ending right after the escalation email:
+    #   continue_on_fail=true     → a rejected/timed-out bridge does NOT hang up A
+    #   (default) hangup_after_bridge=true → an ANSWERED+ended call DOES hang up A
+    #                                        (so answered calls never hit voicemail)
+    #   call_timeout/originate_timeout → ring for up to timeout_seconds
+    channel_vars = [
+        "continue_on_fail=true",
+        f"call_timeout={int(timeout_seconds)}",
+        f"originate_timeout={int(timeout_seconds)}",
+    ]
+    hold_music = (config.AI_ESCALATION_HOLD_MUSIC or "").strip()
+    if hold_music:
+        # Play the Teleprofi hold-music WAV to the caller as ringback while the
+        # technician is rung — company music, not a tone, not silence. FreeSWITCH
+        # stops it automatically on answer and bridges; on no-answer it stops and
+        # we fall back to voicemail. Takes precedence over COMtrexx early media.
+        channel_vars += [
+            "instant_ringback=true",
+            f"ringback={hold_music}",
+        ]
+    elif config.AI_ESCALATION_USE_COMTREXX_EARLY_MEDIA:
+        # No FS hold music configured → let COMtrexx's own waiting / queue music
+        # (early media) reach the caller. No ringback tone is set.
+        channel_vars += [
+            "bridge_early_media=true",
+            "ignore_early_media=false",
+        ]
+    else:
+        # Last resort → synthesize a ringback tone so the caller hears something.
+        channel_vars += [
+            "instant_ringback=true",
+            "ringback=%(2000,4000,440,480)",
+        ]
+    for var in channel_vars:
+        try:
+            handler.execute("set", var, timeout=5.0)
+        except Exception:
+            pass
+
+    for ext in targets:
+        logger.info("Transferring to waiting room %s (answer timeout %ss)", ext, timeout_seconds)
+        handler.execute(
+            "bridge", f"sofia/gateway/comtrexx/{ext}", timeout=float(timeout_seconds) + 10.0
+        )
+        if handler.is_hung_up:
+            # Caller answered+ended, or hung up — no voicemail needed.
+            return True
+        logger.warning("Waiting room %s not answered within %ss — caller still on the line",
+                       ext, timeout_seconds)
+    return False
+
+
+def _run_voicemail(
+    handler, caller, caller_name, uuid, started_at,
+    conv_lang: str = "de", escalation_reason: str = "",
+) -> dict:
+    """Play the voicemail prompt + beep, record the caller, email the recording.
+
+    Returns structured voicemail info for the call summary. Never raises.
+    """
+    info = {
+        "caller_number": caller,
+        "voicemail_received": False,
+        "voicemail_duration": 0,
+        "voicemail_file": None,
+    }
+    if handler.is_hung_up:
+        return info
+
+    prompt = _VOICEMAIL_PROMPT_EN if conv_lang == "en" else _VOICEMAIL_PROMPT_DE
+    _speak_and_play(handler, prompt, lang=conv_lang)
+    if handler.is_hung_up:
+        return info
+
+    # Beep (signal tone) before recording.
+    try:
+        handler.execute("playback", "tone_stream://%(500,0,800)", timeout=5.0)
+    except Exception:
+        pass
+
+    vm_path = _audio_dir() / f"{uuid}_voicemail.wav"
+    silence_hits = max(1, int(config.VOICEMAIL_SILENCE_SECONDS / 0.02))
+    record_arg = (
+        f"{_fs_path(vm_path)} "
+        f"{config.AI_VOICEMAIL_MAX_SECONDS} "
+        f"{_RECORD_SILENCE_THRESH} "
+        f"{silence_hits}"
+    )
+    handler.execute("record", record_arg, timeout=float(config.AI_VOICEMAIL_MAX_SECONDS) + 10.0)
+
+    if not vm_path.exists():
+        logger.info("Voicemail: no recording captured for uuid=%s", uuid)
+        return info
+
+    duration = _wav_duration_seconds(vm_path)
+    info.update({
+        "voicemail_received": True,
+        "voicemail_duration": duration,
+        "voicemail_file": str(vm_path),
+    })
+    logger.info("Voicemail captured uuid=%s duration=%ss", uuid, duration)
+
+    # Optional transcription — reuse the existing STT mechanism if it works.
+    transcript = ""
+    try:
+        transcript, _ = transcribe_file(str(vm_path), lang=conv_lang)
+    except Exception as exc:
+        logger.warning("Voicemail transcription failed (left out of email): %s", exc)
+        transcript = ""
+
+    # Email the Teleprofi escalation mailbox with the recording attached.
+    try:
+        from voice.escalation import send_voicemail_notification
+        send_voicemail_notification(
+            caller=caller,
+            caller_name=caller_name,
+            call_uuid=uuid,
+            started_at=started_at,
+            duration_seconds=duration,
+            recording_path=str(vm_path),
+            transcript=transcript or None,
+            escalation_reason=escalation_reason,
+        )
+    except Exception as exc:
+        logger.error("Voicemail email notification failed: %s", exc)
+
+    if not handler.is_hung_up:
+        closing = (
+            "Thank you, we will get back to you. Goodbye."
+            if conv_lang == "en"
+            else "Vielen Dank, wir melden uns bei Ihnen. Auf Wiederhören."
+        )
+        _speak_and_play(handler, closing, lang=conv_lang)
+
+    return info
+
+
+def _ensure_min_hold(handler, remaining_seconds: float) -> None:
+    """Hold the caller for the remaining minimum hold time before voicemail.
+
+    No-op when already satisfied or the caller hung up. Plays the configured
+    Teleprofi hold music when set, otherwise bounded silence — never an
+    artificial ringback tone and never an AI voice. With hold music used as
+    bridge ringback the caller is already on music for the window, so this
+    padding is rarely reached.
+    """
+    if remaining_seconds <= 0 or handler.is_hung_up:
+        return
+    hold_music = (config.AI_ESCALATION_HOLD_MUSIC or "").strip()
+    if hold_music:
+        # Company hold music (not a tone). Played once to fill the remaining hold.
+        waiting_audio = hold_music
+    else:
+        # No music configured → bounded silence (never an artificial ring tone).
+        waiting_audio = f"silence_stream://{max(1, int(remaining_seconds * 1000))}"
+    logger.info("Min-hold: %.0fs of waiting audio before voicemail", remaining_seconds)
+    try:
+        handler.execute("playback", waiting_audio, timeout=remaining_seconds + 10.0)
+    except Exception:
+        pass
+
+
+def _handle_transfer_or_voicemail(
+    handler, caller, caller_name, uuid, started_at,
+    conv_lang: str = "de", escalation_reason: str = "",
+) -> Optional[dict]:
+    """Try to transfer; on no-answer within the configured timeout, run voicemail.
+
+    Enforces AI_ESCALATION_MIN_HOLD_SECONDS of audible waiting audio before
+    voicemail can start — so an early-failing bridge does not jump straight to
+    voicemail. Returns voicemail info dict when the voicemail flow ran, or None
+    when the call was answered / handed off (existing escalation behavior).
+    """
+    timeout = config.AI_ESCALATION_TRANSFER_TIMEOUT_SECONDS
+    min_hold = config.AI_ESCALATION_MIN_HOLD_SECONDS
+
+    started = time.monotonic()
+    answered = _attempt_transfer(handler, timeout)
+    if answered or handler.is_hung_up:
+        return None
+
+    # Bridge ended without an answer. If it returned early, keep the caller on
+    # waiting audio until the minimum hold period has elapsed before voicemail.
+    elapsed = time.monotonic() - started
+    _ensure_min_hold(handler, min_hold - elapsed)
+    if handler.is_hung_up:
+        return None
+
+    logger.info("No answer within %ss — starting voicemail fallback", timeout)
+    return _run_voicemail(
+        handler, caller, caller_name, uuid, started_at, conv_lang, escalation_reason
+    )
 
 
 def handle_esl_call(handler, phone_state: dict) -> None:
