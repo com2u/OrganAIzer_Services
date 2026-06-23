@@ -55,34 +55,38 @@ AI_AFTER_HOURS_END: int   = int(os.environ.get("AI_AFTER_HOURS_END", "8"))
 AI_WAITING_ROOM_PRIMARY: str   = os.environ.get("AI_WAITING_ROOM_PRIMARY", "")
 AI_WAITING_ROOM_SECONDARY: str = os.environ.get("AI_WAITING_ROOM_SECONDARY", "")
 
-# ── Escalation transfer + voicemail fallback ──────────────────────────────────
-# After the AI tells the caller it will connect them, the system rings/bridges
-# the waiting room and the caller hears ringback / company music for up to this
-# many seconds. Only if nobody answers within the window does it fall back to an
-# automated voicemail — the call is NOT ended right after the escalation email.
+# ── Escalation transfer + (retained) voicemail settings ───────────────────────
+# IMPORTANT: There is NO automatic voicemail fallback after escalation. The live
+# escalation path (esl_call_handler._conversation_loop) deflects the caller into
+# the COMtrexx waiting room via SIP REFER (orbit 778, then 779); the caller hears
+# COMtrexx's native waiting music until a technician picks up MANUALLY. COMtrexx
+# park orbit 778 does NOT return the call to the AI on timeout, so the settings
+# below do not fire on their own.
+#
+# The voicemail helpers in esl_call_handler.py are kept in the repository but are
+# NOT wired to escalation; the settings below only parameterize those helpers.
+# Voicemail after deflect would require COMtrexx to be configured to forward the
+# timed-out orbit back to extension 003010 AND the (unimplemented) orbit-return
+# detection.
 AI_ESCALATION_TRANSFER_TIMEOUT_SECONDS: int = int(
     os.environ.get("AI_ESCALATION_TRANSFER_TIMEOUT_SECONDS", "35")
 )
-# Minimum audible waiting period: the caller must hear waiting audio / hold
-# music for at least this many seconds before voicemail can start — even if the
-# bridge fails/returns early. Must be <= the transfer timeout.
+# Retained voicemail-helper setting (not used by the live deflect escalation
+# path): minimum audible waiting period for _ensure_min_hold. Must be <= timeout.
 AI_ESCALATION_MIN_HOLD_SECONDS: int = int(
     os.environ.get("AI_ESCALATION_MIN_HOLD_SECONDS", "10")
 )
-# Prefer COMtrexx's own waiting / queue music (early media) during the escalation
-# bridge instead of a FreeSWITCH-generated ringback tone. Default on. Set to
-# false only where COMtrexx does not provide early media and a synthetic ringback
-# is needed so the caller hears something while ringing.
+# Retained voicemail-helper setting (not used by the live deflect escalation
+# path): prefer COMtrexx early media over a FreeSWITCH-generated ringback tone.
 AI_ESCALATION_USE_COMTREXX_EARLY_MEDIA: bool = (
     os.environ.get("AI_ESCALATION_USE_COMTREXX_EARLY_MEDIA", "true").strip().lower()
     in ("1", "true", "yes", "on")
 )
-# FreeSWITCH-side Teleprofi hold-music source played to the caller during the
-# escalation transfer window (as ringback while the technician is rung, and as
-# the minimum-hold padding). Must be a path/stream readable by FreeSWITCH, e.g.
-# an absolute WAV path or a loopable source like local_stream://moh. When set it
-# takes precedence over COMtrexx early media. Empty → fall back to early media /
-# silence (never crashes).
+# Retained voicemail-helper setting (not used by the live deflect escalation
+# path): FreeSWITCH-side hold-music source for the voicemail helpers. Must be a
+# path/stream readable by FreeSWITCH (absolute WAV path or e.g. local_stream://moh).
+# Empty → bounded silence (never crashes). NOTE: the live waiting-room music is
+# COMtrexx's own orbit music, reached via deflect — NOT this setting.
 AI_ESCALATION_HOLD_MUSIC: str = os.environ.get("AI_ESCALATION_HOLD_MUSIC", "").strip()
 # Maximum length of a single recorded voicemail message.
 AI_VOICEMAIL_MAX_SECONDS: int = int(os.environ.get("AI_VOICEMAIL_MAX_SECONDS", "120"))

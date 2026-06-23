@@ -78,6 +78,31 @@ upstream of FreeSWITCH: COMtrexx is not routing the call to extension 003010.
 
 ---
 
+## Escalation / waiting room
+
+When the AI escalates, it parks the caller in the COMtrexx waiting room using a
+SIP **REFER (deflect)** to `sip:778@<COMtrexx IP>` (primary orbit), falling back
+to `779` (secondary). REFER is used because a direct bridge INVITE to a park
+orbit is rejected by COMtrexx with cause 88 `INCOMPATIBLE_DESTINATION` — only the
+REFER from the internal `003010` leg is accepted.
+
+After the deflect:
+
+- The caller hears COMtrexx's **native waiting music**.
+- A technician must **pick up the call manually** from the orbit.
+- COMtrexx park orbit 778 does **not** return the call to the AI on timeout.
+
+**There is no automatic voicemail fallback after parking.** The voicemail helpers
+in `esl_call_handler.py` are retained in the repository but are not wired to the
+escalation path. Voicemail after deflect would require **both**:
+
+1. COMtrexx configured to forward the timed-out orbit back to extension `003010`, and
+2. orbit-return detection in the backend (not implemented).
+
+Until both exist, escalation = deflect to the manned waiting room only.
+
+---
+
 ## Configuration files in this directory
 
 | File | Deploy to | Apply with |
