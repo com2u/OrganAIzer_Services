@@ -39,6 +39,12 @@ consult the relevant guardian for accuracy.
 | CI, build/test pipeline, lint, release gating, `requirements.txt`/`package.json` versions | `pipeline-guardian` |
 | `docker-compose.yml`, Dockerfiles, `nginx/`, `deploy.sh`, `setup-deployment.sh`, container security | `docker-guardian` |
 | `backend/api/*`, `backend/services/*`, `backend/routers/*`, executive agent, integrations, OAuth | `backend-guardian` |
+| `frontend/*`, React/Vite UI, frontend API clients, page tabs, provider-selection UX | `frontend-guardian` |
+| API keys, OAuth scopes, token storage, CORS, env handling, log redaction, auth flows | `security-auth-guardian` |
+| Sessions, OAuth tokens, documents, knowledge-base storage, generated media, call logs, idempotency | `data-persistence-guardian` |
+| AI prompts, model calls, tool schemas, STT/TTS, document QA, RAG, translation, OpenClaw text use | `ai-model-prompt-guardian` |
+| Browser-level tests, frontend smoke tests, WebSocket UI checks, Playwright-style validation | `e2e-ui-regression-guardian` |
+| Future Executive Agent tools for documents, knowledge base, TTS/STT, phone, or OpenClaw | `executive-agent-tools-guardian` |
 | `backend/voice/*`, FreeSWITCH XML, ESL, COMtrexx, phone, STT/TTS pipeline, escalation | `voice-freeswitch-guardian` |
 | Any user-facing behavior, endpoint, env var, or protocol change | `documentation-sync` |
 | `infra/openclaw/*`, `backend/services/openclaw_client.py`, `backend/api/openclaw.py` | `docker-guardian` + `backend-guardian` (OpenClaw bounded-access rules) |

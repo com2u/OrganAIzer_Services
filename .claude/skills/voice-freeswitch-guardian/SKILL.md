@@ -65,10 +65,17 @@ Python ──ESL inbound──▶ FreeSWITCH 127.0.0.1:8021  (originate/status, 
    Layer 2 = `AI_COMPANY_*` env vars in `config.py`. Layer 3 = knowledge markdown
    (`backend/voice/knowledge/*.md`, default `teleprofi_fulda.md`). Never hardcode a
    client into Layer 1.
-5. **Escalation timing safety.** The caller must hear waiting audio for at least
-   `AI_ESCALATION_MIN_HOLD_SECONDS` (≤ transfer timeout); voicemail is a *fallback*
-   only after the transfer window — the call is NOT ended right after the
-   escalation email. Hold-music/early-media fallbacks must never crash the call.
+5. **Escalation = deflect to the manned waiting room.** Escalation parks the
+   caller via SIP REFER (`deflect sip:778@<COMtrexx IP>`, then `779`) — never a
+   bridge to the gateway (COMtrexx rejects that with cause 88
+   `INCOMPATIBLE_DESTINATION`). The caller then hears COMtrexx's native waiting
+   music and a technician picks up MANUALLY. COMtrexx orbit 778 does NOT return
+   the call to the AI on timeout, so there is **no automatic voicemail fallback
+   after deflect**. The voicemail helpers in `esl_call_handler.py` are retained
+   but NOT wired to escalation; wiring them would require COMtrexx to forward the
+   timed-out orbit back to `003010` plus orbit-return detection (not implemented).
+   The `AI_ESCALATION_*` / voicemail config vars only parameterize those retained
+   helpers — they do not fire on the live escalation path.
 6. **Templates only in repo.** XML files contain `YOUR_SIP_PASSWORD_HERE`
    placeholders. Never commit a real SIP password; never assume the repo XML is the
    deployed XML (deployed copies live under `/etc/freeswitch/...`).
