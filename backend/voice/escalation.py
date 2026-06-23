@@ -80,6 +80,21 @@ def _format_transcript(transcript: list[dict]) -> str:
     return "\n".join(lines) if lines else "(kein Gesprächsverlauf)"
 
 
+def _format_local(dt: datetime) -> str:
+    """Format *dt* in Europe/Berlin local time (e.g. '2026-06-24 11:14:32 CEST').
+
+    Falls back to UTC if the timezone database is unavailable. Never raises.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        return dt.astimezone(ZoneInfo("Europe/Berlin")).strftime("%Y-%m-%d %H:%M:%S %Z")
+    except Exception:
+        try:
+            return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        except Exception:
+            return str(dt)
+
+
 async def _llm_summary(
     transcript: list[dict],
     caller: str,
@@ -404,22 +419,43 @@ def handle_escalation(
     subject = f"KI-Eskalation: {display} – {escalation_reason or 'Eskalation'}"
     transcript_block = _format_transcript(transcript)
     consent_line = "Ja" if recording_consent else "Nein"
+
+    # Waiting room the caller is parked in (primary, with secondary fallback).
+    # The caller is deflected into this COMtrexx orbit right after this email is
+    # sent and waits there until a Mitarbeiter picks up MANUALLY.
+    primary_room = config.AI_WAITING_ROOM_PRIMARY or "?"
+    secondary_room = config.AI_WAITING_ROOM_SECONDARY
+    waiting_room = primary_room + (f" (Fallback {secondary_room})" if secondary_room else "")
+
     body = (
         f"Teleprofi-Fulda KI-Telefonassistent — Eskalation\n"
         f"{'=' * 50}\n\n"
+        f">> ANRUFER WARTET JETZT in Warteraum {primary_room} — bitte manuell abholen. <<\n"
+        f"   Annahme: Anruf aus Warteposition {primary_room} entgegennehmen.\n\n"
+        f"Status:               Anrufer wartet in der Warteschleife\n"
+        f"Warteraum:            {waiting_room}\n"
         f"Anrufer:              {display}\n"
         f"Nummer:               {caller}\n"
-        f"Anrufbeginn:          {started_at.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+        f"Anrufbeginn (lokal):  {_format_local(started_at)}\n"
+        f"Anrufbeginn (UTC):    {started_at.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
         f"Dauer:                {duration_s}s\n"
+        f"Call-ID:              {call_uuid or 'unbekannt'}\n"
         f"Grund:                {escalation_reason or 'nicht angegeben'}\n"
         f"Aufzeichnung erlaubt: {consent_line}\n\n"
         f"Zusammenfassung:\n{summary}\n\n"
         f"Gesprächsverlauf:\n{transcript_block}\n"
     )
+
+    # Attach the call recording ONLY when the caller consented. Without consent
+    # the consent status is still reported in the body, but the audio is withheld.
+    attach_path = recording_path if recording_consent else None
+    if recording_path and not recording_consent:
+        logger.info("Recording NOT attached to escalation email — no consent (uuid=%s)", call_uuid)
+
     # Try Gmail OAuth first (no SMTP config needed), fall back to SMTP
-    email_sent = _send_via_gmail(subject, body, recording_path=recording_path)
+    email_sent = _send_via_gmail(subject, body, recording_path=attach_path)
     if not email_sent:
-        email_sent = _send_smtp_email(subject, body, recording_path=recording_path)
+        email_sent = _send_smtp_email(subject, body, recording_path=attach_path)
 
     # 3. Transfer — try waiting room primary, then secondary.
     # Requires FREESWITCH_ESL_* env vars and FreeSWITCH running with a SIP route to COMtrexx.
