@@ -869,7 +869,15 @@ import voice.escalation as _esc
 
 
 class TestVoicemailFallback:
-    """Voicemail triggers only on no-answer; answered calls never enter it."""
+    """Unit tests for the retained voicemail helpers.
+
+    NOTE: these helpers are NOT wired to escalation. The live escalation path
+    deflects the caller into the COMtrexx waiting room (orbit 778/779), where a
+    technician picks up manually; COMtrexx does not return the call to the AI on
+    timeout, so there is no automatic voicemail fallback after deflect. These
+    tests exercise the kept helpers in isolation; see TestEscalationUsesDeflect
+    for the guarantee that escalation does not invoke them.
+    """
 
     def _started(self):
         return datetime.now(timezone.utc)
@@ -886,31 +894,6 @@ class TestVoicemailFallback:
 
         handler.execute.side_effect = _exec
         return handler
-
-    # ── trigger logic ─────────────────────────────────────────────────────────
-
-    def test_timeout_triggers_voicemail_flow(self):
-        handler = MagicMock()
-        handler.is_hung_up = False
-        sentinel = {"voicemail_received": True}
-        with patch("voice.esl_call_handler._attempt_transfer", return_value=False), \
-             patch("voice.esl_call_handler._run_voicemail", return_value=sentinel) as m_vm:
-            result = _esl._handle_transfer_or_voicemail(
-                handler, "+496611234", None, "u1", self._started(), "de"
-            )
-        m_vm.assert_called_once()
-        assert result is sentinel
-
-    def test_answered_call_never_enters_voicemail(self):
-        handler = MagicMock()
-        handler.is_hung_up = False
-        with patch("voice.esl_call_handler._attempt_transfer", return_value=True), \
-             patch("voice.esl_call_handler._run_voicemail") as m_vm:
-            result = _esl._handle_transfer_or_voicemail(
-                handler, "+496611234", None, "u1", self._started(), "de"
-            )
-        m_vm.assert_not_called()
-        assert result is None
 
     def test_no_voicemail_if_caller_already_hung_up(self):
         handler = MagicMock()
@@ -977,33 +960,6 @@ class TestVoicemailFallback:
         assert _vcfg.AI_ESCALATION_TRANSFER_TIMEOUT_SECONDS == 35
         assert isinstance(_vcfg.AI_ESCALATION_TRANSFER_TIMEOUT_SECONDS, int)
         assert isinstance(_vcfg.AI_VOICEMAIL_MAX_SECONDS, int)
-
-    def test_handle_passes_configured_timeout(self):
-        handler = MagicMock()
-        handler.is_hung_up = False
-        with patch("voice.esl_call_handler._attempt_transfer", return_value=True) as m_t:
-            _esl._handle_transfer_or_voicemail(
-                handler, "+496611234", None, "u1", self._started(), "de"
-            )
-        m_t.assert_called_once()
-        assert m_t.call_args.args[1] == _vcfg.AI_ESCALATION_TRANSFER_TIMEOUT_SECONDS
-
-    # ── call stays alive through the ring window ──────────────────────────────
-
-    def test_transfer_keeps_caller_alive_on_no_answer(self):
-        # A failed/unanswered bridge must NOT hang up the caller — continue_on_fail
-        # is set and the function returns False (→ voicemail), caller still on line.
-        handler = MagicMock()
-        handler.is_hung_up = False
-        result = _esl._attempt_transfer(handler, 35)
-        set_vars = [
-            c.args[1] for c in handler.execute.call_args_list if c.args and c.args[0] == "set"
-        ]
-        assert any("continue_on_fail=true" == v for v in set_vars)
-        assert any(v.startswith("call_timeout=35") for v in set_vars)
-        handler.hangup.assert_not_called()
-        # With at least one waiting-room target unset by default, returns False.
-        assert result in (False, True)  # structural: never raises, returns a bool
 
     def test_run_voicemail_does_not_hang_up_call(self, tmp_path):
         handler = self._vm_handler(tmp_path, "uuidH")
@@ -1081,48 +1037,6 @@ class TestVoicemailFallback:
     def test_default_min_hold_is_10_seconds(self):
         assert _vcfg.AI_ESCALATION_MIN_HOLD_SECONDS == 10
 
-    def test_voicemail_waits_for_min_hold_before_starting(self):
-        handler = MagicMock()
-        handler.is_hung_up = False
-        calls = []
-        with patch("voice.esl_call_handler._attempt_transfer", return_value=False), \
-             patch("voice.esl_call_handler._ensure_min_hold",
-                   side_effect=lambda h, r: calls.append("hold")), \
-             patch("voice.esl_call_handler._run_voicemail",
-                   side_effect=lambda *a, **k: calls.append("vm") or {"voicemail_received": True}):
-            _esl._handle_transfer_or_voicemail(
-                handler, "+496611234", None, "u1", self._started(), "de"
-            )
-        # Min-hold must run before voicemail.
-        assert calls == ["hold", "vm"]
-
-    def test_early_failed_bridge_waits_until_min_hold(self):
-        handler = MagicMock()
-        handler.is_hung_up = False
-        captured = {}
-        # _attempt_transfer (mocked) returns instantly → elapsed ~0 → remaining ~10.
-        with patch("voice.esl_call_handler._attempt_transfer", return_value=False), \
-             patch("voice.esl_call_handler._ensure_min_hold",
-                   side_effect=lambda h, r: captured.__setitem__("remaining", r)), \
-             patch("voice.esl_call_handler._run_voicemail", return_value={}):
-            _esl._handle_transfer_or_voicemail(
-                handler, "+496611234", None, "u1", self._started(), "de"
-            )
-        assert captured["remaining"] >= _vcfg.AI_ESCALATION_MIN_HOLD_SECONDS - 1
-
-    def test_answered_transfer_skips_min_hold_and_voicemail(self):
-        handler = MagicMock()
-        handler.is_hung_up = False
-        with patch("voice.esl_call_handler._attempt_transfer", return_value=True), \
-             patch("voice.esl_call_handler._ensure_min_hold") as m_hold, \
-             patch("voice.esl_call_handler._run_voicemail") as m_vm:
-            result = _esl._handle_transfer_or_voicemail(
-                handler, "+496611234", None, "u1", self._started(), "de"
-            )
-        assert result is None
-        m_hold.assert_not_called()
-        m_vm.assert_not_called()
-
     def test_min_hold_plays_waiting_audio(self):
         handler = MagicMock()
         handler.is_hung_up = False
@@ -1158,79 +1072,10 @@ class TestVoicemailFallback:
         _esl._ensure_min_hold(handler, 8)
         handler.execute.assert_not_called()
 
-    # ── COMtrexx early-media bridge (no artificial ringback) ──────────────────
-
-    def _transfer_set_vars(self, handler):
-        return [
-            c.args[1] for c in handler.execute.call_args_list
-            if c.args and c.args[0] == "set"
-        ]
-
-    def test_attempt_transfer_no_artificial_ringback_by_default(self):
-        handler = MagicMock()
-        handler.is_hung_up = False
-        _esl._attempt_transfer(handler, 35)
-        set_vars = " ".join(self._transfer_set_vars(handler))
-        assert "instant_ringback" not in set_vars
-        assert "ringback=%(" not in set_vars
-
-    def test_attempt_transfer_enables_early_media(self):
-        handler = MagicMock()
-        handler.is_hung_up = False
-        _esl._attempt_transfer(handler, 35)
-        set_vars = self._transfer_set_vars(handler)
-        assert any(v == "bridge_early_media=true" for v in set_vars)
-
-    def test_attempt_transfer_sets_continue_on_fail(self):
-        handler = MagicMock()
-        handler.is_hung_up = False
-        _esl._attempt_transfer(handler, 35)
-        assert any(v == "continue_on_fail=true" for v in self._transfer_set_vars(handler))
-
-    def test_attempt_transfer_call_timeout_is_35(self):
-        handler = MagicMock()
-        handler.is_hung_up = False
-        _esl._attempt_transfer(handler, 35)
-        set_vars = self._transfer_set_vars(handler)
-        assert any(v == "call_timeout=35" for v in set_vars)
-        assert any(v == "originate_timeout=35" for v in set_vars)
-
-    def test_attempt_transfer_ringback_fallback_when_early_media_disabled(self):
-        handler = MagicMock()
-        handler.is_hung_up = False
-        with patch.object(_vcfg, "AI_ESCALATION_USE_COMTREXX_EARLY_MEDIA", False), \
-             patch.object(_vcfg, "AI_ESCALATION_HOLD_MUSIC", ""):
-            _esl._attempt_transfer(handler, 35)
-        set_vars = " ".join(self._transfer_set_vars(handler))
-        # With early media disabled and no hold music, a synthetic ringback is ok.
-        assert "instant_ringback=true" in set_vars
-        assert "bridge_early_media=true" not in set_vars
-
     # ── FreeSWITCH-side hold music ────────────────────────────────────────────
 
     def test_hold_music_config_exists(self):
         assert hasattr(_vcfg, "AI_ESCALATION_HOLD_MUSIC")
-
-    def test_attempt_transfer_uses_hold_music_when_configured(self):
-        handler = MagicMock()
-        handler.is_hung_up = False
-        with patch.object(_vcfg, "AI_ESCALATION_HOLD_MUSIC", "/snd/teleprofi_hold.wav"):
-            _esl._attempt_transfer(handler, 35)
-        set_vars = self._transfer_set_vars(handler)
-        assert "ringback=/snd/teleprofi_hold.wav" in set_vars
-        assert "instant_ringback=true" in set_vars
-        # The company WAV is used — never an artificial ring tone.
-        assert all("ringback=%(" not in v for v in set_vars)
-
-    def test_hold_music_takes_precedence_over_early_media(self):
-        handler = MagicMock()
-        handler.is_hung_up = False
-        with patch.object(_vcfg, "AI_ESCALATION_HOLD_MUSIC", "/snd/teleprofi_hold.wav"), \
-             patch.object(_vcfg, "AI_ESCALATION_USE_COMTREXX_EARLY_MEDIA", True):
-            _esl._attempt_transfer(handler, 35)
-        set_vars = self._transfer_set_vars(handler)
-        assert "ringback=/snd/teleprofi_hold.wav" in set_vars
-        assert "bridge_early_media=true" not in set_vars
 
     def test_min_hold_uses_hold_music_when_configured(self):
         handler = MagicMock()
@@ -1248,11 +1093,157 @@ class TestVoicemailFallback:
         handler = MagicMock()
         handler.is_hung_up = False
         with patch.object(_vcfg, "AI_ESCALATION_HOLD_MUSIC", ""):
-            # Neither call should raise; min-hold falls back to silence.
-            _esl._attempt_transfer(handler, 35)
+            # Should not raise; min-hold falls back to bounded silence.
             _esl._ensure_min_hold(handler, 5)
         playbacks = [
             c.args[1] for c in handler.execute.call_args_list
             if c.args and c.args[0] == "playback"
         ]
         assert any("silence_stream" in str(p) for p in playbacks)
+
+
+# =============================================================================
+# Escalation waiting-room handoff — deflect/orbit restored (Phase 1 regression)
+# =============================================================================
+
+class TestEscalationUsesDeflect:
+    """Escalation must park the caller in the COMtrexx waiting room via SIP
+    REFER (deflect), never via a bridge to the gateway. A direct bridge INVITE
+    to a park orbit (778/779) is rejected by COMtrexx with cause 88
+    INCOMPATIBLE_DESTINATION — deflect is the only mechanism it accepts.
+    These tests pin the regression that commit e6ce4d7 introduced.
+    """
+
+    def _escalation_src(self):
+        import inspect
+        return inspect.getsource(_esl._conversation_loop)
+
+    def test_escalation_uses_deflect_refer(self):
+        src = self._escalation_src()
+        assert '"deflect"' in src
+        assert "sip:{ext}@" in src
+
+    def test_escalation_does_not_bridge_to_gateway(self):
+        # The bridge-to-gateway path is what produced INCOMPATIBLE_DESTINATION.
+        src = self._escalation_src()
+        assert "sofia/gateway/comtrexx" not in src
+        assert '"bridge"' not in src
+
+    def test_escalation_tries_primary_then_secondary_orbit(self):
+        src = self._escalation_src()
+        assert "AI_WAITING_ROOM_PRIMARY" in src
+        assert "AI_WAITING_ROOM_SECONDARY" in src
+
+    def test_bridge_transfer_helpers_removed(self):
+        # Dead bridge-only logic must be gone from the module.
+        assert not hasattr(_esl, "_attempt_transfer")
+        assert not hasattr(_esl, "_handle_transfer_or_voicemail")
+
+    def test_voicemail_retained_but_not_invoked_by_escalation(self):
+        # Voicemail code stays in the repo (Phase 2) but escalation must not call it.
+        assert hasattr(_esl, "_run_voicemail")
+        assert "_run_voicemail" not in self._escalation_src()
+
+
+# =============================================================================
+# Escalation email content + consent-gated recording (Phase 1.5)
+# =============================================================================
+
+class TestEscalationEmail:
+    """The escalation email must give the technician what they need to pick the
+    caller up from the COMtrexx waiting room, and must only attach the call
+    recording when the caller consented.
+    """
+
+    def _started(self):
+        return datetime(2026, 6, 24, 9, 14, 32, tzinfo=timezone.utc)
+
+    def _transcript(self):
+        return [
+            {"role": "caller", "content": "Unsere Telefonanlage ist komplett tot."},
+            {"role": "assistant", "content": "Ich verbinde Sie mit einem Mitarbeiter."},
+        ]
+
+    def _run(self, consent, recording_path="/tmp/7f3c_call.wav"):
+        """Invoke handle_escalation with network/transfer stubbed; return body+kwargs."""
+        with patch.object(_esc.config, "OPENROUTER_API_KEY", ""), \
+             patch.object(_esc.config, "AI_WAITING_ROOM_PRIMARY", "778"), \
+             patch.object(_esc.config, "AI_WAITING_ROOM_SECONDARY", "779"), \
+             patch("voice.escalation._send_via_gmail", return_value=True) as m_gmail, \
+             patch("voice.escalation._send_smtp_email") as m_smtp:
+            _esc.handle_escalation(
+                caller="+4966198765432",
+                caller_name="Dr. Weber",
+                transcript=self._transcript(),
+                escalation_reason="Totalausfall Telefonanlage",
+                started_at=self._started(),
+                call_uuid="7f3c-abcd",
+                esl_handler=MagicMock(),  # non-None → skip transfer attempt (no network)
+                recording_consent=consent,
+                recording_path=recording_path,
+            )
+        body = m_gmail.call_args.args[1]
+        return body, m_gmail.call_args.kwargs, m_smtp
+
+    # ── new fields ────────────────────────────────────────────────────────────
+
+    def test_body_includes_waiting_room_primary_and_secondary(self):
+        body, _, _ = self._run(consent=True)
+        assert "Warteraum:" in body
+        assert "778" in body
+        assert "779" in body  # secondary listed as fallback
+
+    def test_body_includes_currently_waiting_flag(self):
+        body, _, _ = self._run(consent=True)
+        assert "Status:" in body
+        assert "wartet in der Warteschleife" in body
+
+    def test_body_includes_pickup_instruction(self):
+        body, _, _ = self._run(consent=True)
+        assert "ANRUFER WARTET JETZT" in body
+        assert "abholen" in body
+        assert "Warteposition 778" in body
+
+    def test_body_includes_call_uuid(self):
+        body, _, _ = self._run(consent=True)
+        assert "Call-ID:" in body
+        assert "7f3c-abcd" in body
+
+    def test_body_includes_local_berlin_timestamp(self):
+        body, _, _ = self._run(consent=True)
+        assert "Anrufbeginn (lokal):" in body
+        # Still keeps the UTC line as well.
+        assert "Anrufbeginn (UTC):" in body
+
+    def test_format_local_converts_utc_to_berlin(self):
+        # 09:14:32 UTC in June → 11:14:32 CEST (UTC+2).
+        out = _esc._format_local(self._started())
+        assert "11:14:32" in out
+
+    # ── consent-gated recording attachment ─────────────────────────────────────
+
+    def test_recording_attached_when_consent_true(self):
+        _, kwargs, _ = self._run(consent=True)
+        assert kwargs["recording_path"] == "/tmp/7f3c_call.wav"
+
+    def test_recording_withheld_when_consent_false(self):
+        body, kwargs, _ = self._run(consent=False)
+        assert kwargs["recording_path"] is None
+        # Consent status is still reported, email is still sent.
+        assert "Aufzeichnung erlaubt: Nein" in body
+
+    def test_smtp_fallback_also_consent_gated(self):
+        # When Gmail fails, the SMTP fallback must receive the same gated path.
+        with patch.object(_esc.config, "OPENROUTER_API_KEY", ""), \
+             patch.object(_esc.config, "AI_WAITING_ROOM_PRIMARY", "778"), \
+             patch.object(_esc.config, "AI_WAITING_ROOM_SECONDARY", "779"), \
+             patch("voice.escalation._send_via_gmail", return_value=False), \
+             patch("voice.escalation._send_smtp_email", return_value=True) as m_smtp:
+            _esc.handle_escalation(
+                caller="+4966198765432", caller_name="Dr. Weber",
+                transcript=self._transcript(), escalation_reason="Ausfall",
+                started_at=self._started(), call_uuid="7f3c-abcd",
+                esl_handler=MagicMock(), recording_consent=False,
+                recording_path="/tmp/7f3c_call.wav",
+            )
+        assert m_smtp.call_args.kwargs["recording_path"] is None
