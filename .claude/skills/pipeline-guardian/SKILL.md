@@ -34,9 +34,11 @@ build/test/release change converges toward a safe, reproducible gate.
 
 ## How testing works (intended)
 
-Backend tests are pure unit tests — **no real network, no FreeSWITCH, no Docker,
-no real OAuth.** External calls are mocked (aiohttp, originate_call, MSAL,
-provider HTTP). This is by design and must stay true so CI can run them anywhere.
+Backend tests are pure unit tests — **no real network, no FreeSWITCH, no COMtrexx,
+no SIP, no Docker, no real OAuth.** External calls are mocked (aiohttp,
+originate_call, MSAL, provider HTTP). This is by design and must stay true so CI
+can run them anywhere. COMtrexx/FreeSWITCH behavior is validated manually,
+separately from CI (see `comtrexx-integration-guardian`).
 
 Test environment:
 ```bash
@@ -80,11 +82,26 @@ cd frontend && npm ci && npm run lint && npm run build
 ## Intended CI pipeline (create under `.github/workflows/`)
 
 A workflow should, on push/PR:
-1. Set up Python 3.10/3.11 (NOT 3.13 — torch/whisper + pyVoIP constraints).
+1. Set up Python 3.11 (NOT 3.13 — torch/whisper + pyVoIP constraints).
 2. `pip install -r backend/requirements.txt`.
-3. Run `pytest backend/tests/ -q` (hermetic; no secrets needed).
+3. Run `pytest backend/tests/ -q` (hermetic; no secrets needed) — **backend
+   safety test suite is a required, non-skippable job.**
 4. Set up Node 18+, `npm ci` + `npm run lint` + `npm run build` in `frontend/`.
-5. Mark the safety subset as a required, non-skippable job.
+5. **Docker build check:** `docker compose build backend` (the backend image
+   exists today). Add `frontend` to the build once `frontend/Dockerfile` exists;
+   until then the full `docker compose build` is expected to fail (see
+   `docker-guardian`). Build only — do not start the stack or hit external services.
+6. **No live COMtrexx / FreeSWITCH / SIP in CI.** The suite is hermetic by design;
+   the deflect-not-bridge guarantee is pinned by source/mechanism assertions, not a
+   live call. CI must never dial, register a gateway, or require a real PBX.
+
+### Manual COMtrexx validation stays separate from CI
+
+Live PBX behavior (gateway `REGED`, inbound INVITE to `003010`, deflect→orbit
+music→manual pickup, no `INCOMPATIBLE_DESTINATION`) cannot run in CI and must stay
+an **out-of-band manual checklist** on the FreeSWITCH host — see
+`comtrexx-integration-guardian`. Do not try to fold it into the pipeline, and do
+not gate CI on it.
 
 ## Documentation updates required
 
@@ -106,7 +123,8 @@ A workflow should, on push/PR:
 ## Forbidden behavior
 
 - Do NOT run or recommend backend tests via Windows Python.
-- Do NOT make tests depend on real network, FreeSWITCH, Docker, or OAuth.
+- Do NOT make tests depend on real network, FreeSWITCH, COMtrexx, SIP, Docker, or OAuth.
+- Do NOT add a live COMtrexx/PBX dependency to CI, or gate CI on manual PBX validation.
 - Do NOT bump version-pinned dependencies without reading their comment and testing.
 - Do NOT add CI that skips or soft-fails the safety subset.
 - Do NOT add `Co-Authored-By` trailers to commits the pipeline produces.

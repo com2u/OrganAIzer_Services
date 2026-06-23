@@ -26,6 +26,8 @@ Owns how OrganAIzer Services is packaged and deployed: the compose stack
 ## Files/directories to inspect
 
 - `docker-compose.yml` — backend (`5263:8000`), frontend (`5264:80`), openclaw (no ports).
+- `backend/Dockerfile` — Python 3.11-slim backend image (exists). `backend/.dockerignore`.
+- `frontend/Dockerfile` — **does not exist yet** (compose declares `build: ./frontend`).
 - `infra/openclaw/openclaw-data/openclaw.json` — gateway + tool deny-list (JSON5).
 - `backend/tests/test_openclaw_safety.py` — the executable spec for the bounds.
 - `nginx/conf.d/`, `frontend/nginx.conf` — reverse proxy + WS upgrade headers.
@@ -49,6 +51,26 @@ Owns how OrganAIzer Services is packaged and deployed: the compose stack
 Any edit that loosens these must be rejected unless the test is deliberately and
 explicitly updated with justification.
 
+## Backend image contract (MUST hold)
+
+`backend/Dockerfile` packages the FastAPI/voice backend. Keep these properties:
+
+- **Python 3.11** (`FROM python:3.11-slim`). Do NOT bump to 3.13 — `openai-whisper`/
+  `torch` have no 3.13 support and `pyVoIP==1.6.4` uses `audioop` (removed in 3.13).
+  Mirrors the `pipeline-guardian` version pins.
+- **`ffmpeg` on PATH** — required by voice mode (webm/opus → 16 kHz WAV for Whisper).
+- **`curl` on PATH** — the compose healthcheck is `curl -f http://localhost:8000/health`.
+  The healthcheck lives in `docker-compose.yml`, not as a `HEALTHCHECK` line in the
+  Dockerfile; if you move it into the image, keep `curl` (or use an equivalent).
+- **No secrets in image layers.** `backend/.dockerignore` must keep `.env`/`.env.*`
+  (except `.env.example`), `credentials.json`, `token*.json`, `data/tokens/`,
+  virtualenvs, caches, and runtime data (`data/esl_audio`, `data/tts`, logs) out of
+  the build context. `COPY . .` relies on it — never weaken it. Secrets arrive at
+  runtime via `.env` + `env_file`, never baked in.
+- **Layer caching:** `COPY requirements.txt` + install before `COPY . .`.
+- **Run command:** `uvicorn main:app` with **no `--reload`** (reload wipes
+  in-memory session state and forces a slow Whisper reload; see `backend/main.py`).
+
 ## Mandatory checklist BEFORE editing
 
 - [ ] Read `test_openclaw_safety.py` to know exactly what is asserted.
@@ -60,6 +82,10 @@ explicitly updated with justification.
 ## Mandatory checklist AFTER editing
 
 - [ ] `docker compose config` parses (no YAML/interpolation errors).
+- [ ] `docker compose build backend` succeeds (and `frontend` once its Dockerfile exists).
+- [ ] `.dockerignore` still excludes `.env*`, `credentials.json`, `token*.json`,
+      `data/tokens/`, venvs, caches, and runtime data — no secrets in layers.
+- [ ] Backend image still has `ffmpeg` + `curl` and stays on Python 3.11.
 - [ ] OpenClaw safety tests still pass (see Validation).
 - [ ] Ports in `docker-compose.yml`, `deploy.sh`, nginx, and docs all agree.
 - [ ] Healthchecks still target valid endpoints (`/health` for backend, `/` for frontend).
@@ -74,7 +100,9 @@ docker compose config >/dev/null && echo "compose OK"
 # OpenClaw bounds (WSL debian12, .venv-wsl):
 cd backend && ../.venv-wsl/bin/python -m pytest tests/test_openclaw_safety.py -q
 
-# Build (will FAIL until Dockerfiles exist — see risks):
+# Build the backend image (exists today):
+docker compose build backend
+# Full build — FAILS until frontend/Dockerfile is added (see risks):
 docker compose build
 ```
 
@@ -87,12 +115,12 @@ docker compose build
 
 ## Known repository risks
 
-- **Missing Dockerfiles (high):** `docker-compose.yml` declares `build: ./backend`
-  and `build: ./frontend`, but no `backend/Dockerfile` or `frontend/Dockerfile`
-  exists. `docker compose build` and `deploy.sh` will fail until they are created.
-  When adding them: backend needs `ffmpeg` on PATH (voice) and Python 3.10/3.11
-  (not 3.13); frontend is a Vite build served by nginx with the `VITE_API_KEY`
-  build arg and WS-upgrade proxy headers.
+- **Frontend Dockerfile still missing (high):** `backend/Dockerfile` now exists
+  (Python 3.11-slim, ffmpeg + curl), but `frontend/Dockerfile` does **not**, while
+  `docker-compose.yml` declares `build: ./frontend`. A full `docker compose build`
+  and `deploy.sh` still fail until it is added. When adding it: a Vite build served
+  by nginx with the `VITE_API_KEY` build arg and WS-upgrade proxy headers; keep
+  `curl` available for the `curl -f http://localhost/` healthcheck.
 - `openclaw.json` is **JSON5** (unquoted keys, `//` comments) — `json.load` fails;
   the test reads it as raw text. Keep it JSON5 and keep the deny strings literal.
 - The OpenClaw `openclaw-data` volume contains a large npm cache and session

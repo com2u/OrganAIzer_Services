@@ -46,6 +46,8 @@ consult the relevant guardian for accuracy.
 | Browser-level tests, frontend smoke tests, WebSocket UI checks, Playwright-style validation | `e2e-ui-regression-guardian` |
 | Future Executive Agent tools for documents, knowledge base, TTS/STT, phone, or OpenClaw | `executive-agent-tools-guardian` |
 | `backend/voice/*`, FreeSWITCH XML, ESL, COMtrexx, phone, STT/TTS pipeline, escalation | `voice-freeswitch-guardian` |
+| FreeSWITCH/COMtrexx, ext `003010`, orbits `778`/`779`, deflect / SIP REFER, waiting-room/orbit behavior, manual pickup, transfer/bridge logic, gateway registration diagnostics | `comtrexx-integration-guardian` |
+| Escalation email content, caller-number display, transcript content, recording attachment, consent handling, pickup instructions, waiting-room email fields, call-summary emails | `escalation-email-privacy-guardian` |
 | Any user-facing behavior, endpoint, env var, or protocol change | `documentation-sync` |
 | `infra/openclaw/*`, `backend/services/openclaw_client.py`, `backend/api/openclaw.py` | `docker-guardian` + `backend-guardian` (OpenClaw bounded-access rules) |
 | Adding/changing tests, or any change to safety-critical behavior | `regression-protection` |
