@@ -1,0 +1,30 @@
+# Keep secrets, virtualenvs, caches and runtime artifacts OUT of the build
+# context so they are never copied into image layers.
+
+# Secrets (NEVER bake into an image — see SECURITY.md)
+.env
+.env.*
+!.env.example
+credentials.json
+token.json
+token*.json
+data/tokens/
+
+# Virtualenvs (multi-GB; the image installs deps system-wide instead)
+venv/
+.venv/
+.venv-wsl/
+
+# Python caches / test artifacts
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+
+# Runtime-generated data (recreated on startup by config.ensure_directories)
+data/esl_audio/
+data/tts/
+data/images/
+cache/
+logs/
+*.log
