@@ -131,10 +131,12 @@ AI_RECORD_MAX_SECONDS: int = int(os.environ.get("AI_RECORD_MAX_SECONDS", "8"))
 # Trailing-silence duration that ends the recording (seconds). Converted to
 # FreeSWITCH "silence hits" (consecutive 20 ms frames) internally. Larger
 # values give callers more think-time before the AI starts processing.
-# Bumped from 1.2 → 1.8 so real callers who pause mid-sentence (especially
-# annoyed/hesitant ones) are not cut off prematurely.
+# Bumped 1.2 → 1.8 → 2.4 so real callers who pause mid-sentence, hesitate, or
+# say "ähm"/"Moment" are not cut off prematurely. This is end-of-speech only —
+# it does NOT enable barge-in and does not change FreeSWITCH routing. Raising it
+# further mainly adds latency after the caller genuinely stops talking.
 AI_RECORD_SILENCE_SECONDS: float = float(
-    os.environ.get("AI_RECORD_SILENCE_SECONDS", "1.8")
+    os.environ.get("AI_RECORD_SILENCE_SECONDS", "2.4")
 )
 
 # Extra slack added to the ESL execute() timeout on top of AI_RECORD_MAX_SECONDS,

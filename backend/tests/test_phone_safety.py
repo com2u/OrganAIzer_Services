@@ -1247,3 +1247,228 @@ class TestEscalationEmail:
                 recording_path="/tmp/7f3c_call.wav",
             )
         assert m_smtp.call_args.kwargs["recording_path"] is None
+
+
+# =============================================================================
+# Turn-taking — end-of-speech timing + unfinished-utterance detection
+# =============================================================================
+
+class TestEndOfSpeechTiming:
+    """The AI must wait long enough after the caller stops before treating the
+    turn as finished. This pins the trailing-silence window (end-of-speech only,
+    not barge-in) and its wiring into the FreeSWITCH record silence-hits.
+    """
+
+    def test_silence_window_longer_than_legacy(self):
+        # Was 1.8 s; raised by ~0.5–0.8 s so hesitant callers are not cut off.
+        assert _vcfg.AI_RECORD_SILENCE_SECONDS > 1.8
+
+    def test_silence_window_in_expected_range(self):
+        # Keep it bounded so we do not add excessive latency after real silence.
+        assert 2.3 <= _vcfg.AI_RECORD_SILENCE_SECONDS <= 2.6
+
+    def test_silence_seconds_wired_to_record_silence_hits(self):
+        # esl_call_handler converts the seconds into 20 ms silence frames.
+        expected_hits = max(1, round(_vcfg.AI_RECORD_SILENCE_SECONDS * 1000 / 20))
+        assert _esl._RECORD_SILENCE_TIMEOUT == expected_hits
+
+    def test_silence_hits_increased_over_legacy(self):
+        # Legacy 1.8 s == 90 frames; the new window must be strictly longer.
+        assert _esl._RECORD_SILENCE_TIMEOUT > 90
+
+    def test_threshold_and_max_seconds_defaults_unchanged(self):
+        # Turn-taking change must touch ONLY the trailing-silence window. The
+        # energy threshold and per-utterance cap are env-driven at runtime, so
+        # pin their source defaults instead of runtime values (scope guard).
+        import inspect
+        src = inspect.getsource(_vcfg)
+        assert '"AI_RECORD_SILENCE_THRESHOLD_MS", "500"' in src
+        assert '"AI_RECORD_MAX_SECONDS", "8"' in src
+
+
+class TestUnfinishedUtteranceDetection:
+    """Mid-sentence pauses / hesitations must NOT trigger the LLM. The caller is
+    still talking — the loop should offer a gentle continuation prompt instead.
+    """
+
+    @pytest.mark.parametrize("text", [
+        "ähm",
+        "Ähm",
+        "also",
+        "Moment",
+        "ich wollte",
+        "Ich wollte…",
+        "und dann",
+        "Und dann…",
+        "Ich möchte",
+        "Ja, und",
+        "Das ist, weil",
+    ])
+    def test_unfinished_examples_detected(self, text):
+        assert _esl._is_likely_unfinished_utterance(text) is True
+
+    @pytest.mark.parametrize("text", [
+        "Ja",
+        "Nein",
+        "OK",
+        "Hallo",
+        "Ich möchte einen Termin vereinbaren",
+        "Ich wollte einen Rückruf bei Herrn Meyer",
+        "Und dann hat er aufgelegt",
+        "Vielen Dank für Ihre Hilfe",
+    ])
+    def test_complete_utterances_not_flagged(self, text):
+        assert _esl._is_likely_unfinished_utterance(text) is False
+
+
+# =============================================================================
+# Inbound live-call prompt — concise, receptionist-style phone answers
+# =============================================================================
+
+class TestInboundPromptStyle:
+    """The inbound live-call system prompt must instruct concise, natural,
+    receptionist-style German answers (Priority 2). These pin the style rules
+    in the prompt text; live answer quality is validated manually.
+    """
+
+    def _prompt(self) -> str:
+        from voice.llm_bridge import _SYSTEM_PROMPT
+        return _SYSTEM_PROMPT
+
+    def test_prompt_has_character_budget(self):
+        p = self._prompt()
+        assert "60–140 characters" in p
+        assert "180 characters" in p
+
+    def test_prompt_requires_one_question_at_a_time(self):
+        assert "One question at a time" in self._prompt()
+
+    def test_prompt_forbids_long_empathy_paragraphs(self):
+        assert "No long empathy paragraphs" in self._prompt()
+
+    def test_prompt_sets_technical_support_default_context(self):
+        assert "technical-support or reception enquiry" in self._prompt()
+
+    def test_prompt_has_receptionist_persona(self):
+        p = self._prompt().lower()
+        assert "receptionist" in p
+
+    def test_prompt_has_technical_diagnostic_pattern(self):
+        # brief acknowledgement + one diagnostic question
+        p = self._prompt()
+        assert "ONE diagnostic question" in p
+        assert "Betrifft es alle Geräte oder nur einzelne?" in p
+
+    def test_prompt_keeps_safety_carveout_for_distress(self):
+        # Brevity must not override the distress/crisis SAFETY RULES.
+        assert "SAFETY RULES" in self._prompt()
+
+    def test_prompt_retains_no_credentials_rule(self):
+        # Scope guard: existing safety lines must remain.
+        assert "Do not ask for passwords, PINs, or payment data." in self._prompt()
+
+
+# =============================================================================
+# Conversation craft — natural spoken German, intent, memory, varied
+# acknowledgements, flow, and closing (Priorities 1–8).
+# =============================================================================
+
+class TestConversationCraftPrompt:
+    """The inbound live-call prompt must steer the model toward receptionist-style
+    conversation: spoken German, early intent recognition, in-call memory, varied
+    acknowledgements, smooth flow, and a natural close. These pin the instruction
+    text; real conversation quality is validated manually on live calls.
+    """
+
+    def _prompt(self) -> str:
+        from voice.llm_bridge import _SYSTEM_PROMPT
+        return _SYSTEM_PROMPT
+
+    def test_has_conversation_craft_section(self):
+        assert "CONVERSATION CRAFT" in self._prompt()
+
+    def test_steers_spoken_not_written_german(self):
+        p = self._prompt()
+        assert "Spoken German, not written German" in p
+
+    def test_recognises_intent_early(self):
+        p = self._prompt()
+        assert "Recognise the intent early" in p
+        # do not over-diagnose once the intent is known
+        assert "already know what they need" in p
+
+    def test_active_listening_no_parroting(self):
+        p = self._prompt()
+        assert "Active listening, not parroting" in p
+        # Backslash-newline continuations collapse to a single space at runtime.
+        assert "Never repeat the caller's whole sentence" in p
+
+    def test_varies_acknowledgements(self):
+        p = self._prompt()
+        assert "Vary your acknowledgements" in p
+
+    def test_in_call_memory_never_ask_twice(self):
+        p = self._prompt()
+        assert "Remember within the call" in p
+        assert "Never ask for the same thing twice" in p
+
+    def test_natural_closing_once(self):
+        p = self._prompt()
+        assert "Haben Sie sonst noch eine Frage?" in p
+        assert "only once" in p
+
+    def test_scope_guard_safety_and_brevity_preserved(self):
+        # The craft section must NOT have removed the brevity/safety pins.
+        p = self._prompt()
+        assert "60–140 characters" in p
+        assert "One question at a time" in p
+        assert "SAFETY RULES" in p
+
+
+class TestOutboundPromptCraft:
+    """The outbound persona prompt mirrors the key conversation-craft rules."""
+
+    def _prompt(self) -> str:
+        from voice.llm_bridge import OUTBOUND_SYSTEM_PROMPT
+        return OUTBOUND_SYSTEM_PROMPT
+
+    def test_outbound_varies_acknowledgements(self):
+        assert "Vary your acknowledgements" in self._prompt()
+
+    def test_outbound_remembers_within_call(self):
+        assert "Never ask for the same thing twice" in self._prompt()
+
+    def test_outbound_natural_close(self):
+        assert "Auf Wiederhören" in self._prompt()
+
+
+class TestContinuationRotation:
+    """Repeated mid-sentence pauses must not replay the identical continuation
+    sentence. The rotation is deterministic and keeps attempt 1 unchanged.
+    """
+
+    def test_attempt_one_preserves_original_de(self):
+        assert _esl._rotating_continuation("de", 1) == (
+            "Ja, ich höre zu — bitte fahren Sie fort."
+        )
+
+    def test_attempt_one_preserves_original_en(self):
+        assert _esl._rotating_continuation("en", 1) == (
+            "Yes, I'm listening — please go ahead."
+        )
+
+    def test_consecutive_attempts_differ(self):
+        a1 = _esl._rotating_continuation("de", 1)
+        a2 = _esl._rotating_continuation("de", 2)
+        a3 = _esl._rotating_continuation("de", 3)
+        assert a1 != a2 != a3
+        assert len({a1, a2, a3}) == 3
+
+    def test_unknown_lang_falls_back_to_german(self):
+        assert _esl._rotating_continuation("fr", 1) == (
+            "Ja, ich höre zu — bitte fahren Sie fort."
+        )
+
+    def test_attempt_zero_or_negative_is_safe(self):
+        # Defensive: never index out of range on a 0/negative attempt.
+        assert _esl._rotating_continuation("de", 0) == _esl._rotating_continuation("de", 1)

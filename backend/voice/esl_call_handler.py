@@ -178,7 +178,10 @@ _UNFINISHED_TRAILING_TOKENS = frozenset({
     "äh", "ähm", "öh", "öhm", "hm", "hmm", "mh", "mhm",
     # German trailing conjunctions / mid-thought words
     "und", "oder", "weil", "also", "aber", "dass", "denn", "doch",
-    "warte", "moment",
+    "warte", "moment", "dann",
+    # German trailing modal/aux verbs — a caller cut off after these is almost
+    # always still forming the request ("Ich wollte…", "Ich möchte…").
+    "wollte", "möchte", "hätte", "würde", "könnte", "sollte", "müsste",
     # English hesitation / conjunctions
     "uh", "uhm", "um", "er", "erm",
     "and", "or", "because", "but", "so", "well",
@@ -187,6 +190,9 @@ _UNFINISHED_TRAILING_TOKENS = frozenset({
 _UNFINISHED_TRAILING_PHRASES = (
     "ich meine",
     "ich glaube also",
+    "ich wollte",
+    "ich möchte",
+    "und dann",
     "let me",
     "i mean",
     "you know",
@@ -242,6 +248,38 @@ def _is_likely_unfinished_utterance(text: str) -> bool:
         return True
 
     return False
+
+
+# ── continuation prompts (varied) ─────────────────────────────────────────────
+# Played when the caller paused mid-sentence ("…äh", "…und") so the AI signals
+# "I'm still listening" without jumping in. The unfinished streak can fire this
+# several times in a row, so the phrases are rotated to avoid the robotic effect
+# of repeating the exact same sentence each time. Deterministic (indexed by the
+# attempt count) so it stays unit-testable and introduces no global state.
+# The first entry preserves the original wording so attempt 1 is unchanged.
+_CONTINUATION_PROMPTS: dict[str, tuple[str, ...]] = {
+    "de": (
+        "Ja, ich höre zu — bitte fahren Sie fort.",
+        "Ich bin noch dran — sagen Sie ruhig.",
+        "Kein Problem, nehmen Sie sich Zeit.",
+    ),
+    "en": (
+        "Yes, I'm listening — please go ahead.",
+        "I'm still here — take your time.",
+        "No problem, go ahead whenever you're ready.",
+    ),
+}
+
+
+def _rotating_continuation(lang: str, attempt: int) -> str:
+    """Return a continuation prompt for *lang*, rotating by the 1-based *attempt*.
+
+    attempt 1 → the original wording (unchanged behaviour); later consecutive
+    attempts cycle through the pool so the caller never hears the identical
+    sentence twice in a row.
+    """
+    pool = _CONTINUATION_PROMPTS.get(lang, _CONTINUATION_PROMPTS["de"])
+    return pool[(max(1, attempt) - 1) % len(pool)]
 
 
 def _audio_dir() -> Path:
@@ -520,11 +558,9 @@ def _conversation_loop(
             )
             _unfinished_streak += 1
             if _unfinished_streak <= _MAX_UNFINISHED_STREAK:
-                continuation_msg = (
-                    "Yes, I'm listening — please go ahead."
-                    if conv_lang == "en"
-                    else "Ja, ich höre zu — bitte fahren Sie fort."
-                )
+                # Rotate the wording so repeated mid-sentence pauses don't get
+                # the identical sentence each time (Priority: reduce repetition).
+                continuation_msg = _rotating_continuation(conv_lang, _unfinished_streak)
                 _speak_and_play(handler, continuation_msg, lang=conv_lang)
                 if handler.is_hung_up:
                     break
