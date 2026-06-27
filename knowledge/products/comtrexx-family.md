@@ -90,6 +90,25 @@ leans Next, **leasing (Grenke) may make Flex affordable** and avoid replacing th
 PBX in a few years — but technical fit is decided first; financing only supports it
 ([[financing-philosophy]]).
 
+## AI Conversation Examples
+
+Worked examples of the Next-vs-Flex decision in a customer conversation (the
+canonical pair; the product entries each carry their own side):
+
+- **Growth → Flex.** Customer: *"We currently have five employees but expect to
+  double within two years."* Five today would fit Next, but doubling to ~10 users
+  crosses the ~7–8 evaluation point within the system's lifetime. Size to **future**
+  needs ([[growth-planning-philosophy]]) → recommend **COMtrexx Flex despite the
+  higher initial investment**: it avoids replacing the PBX in ~2 years and scales via
+  floating licences/modules. If the upfront cost is the obstacle, **leasing (Grenke)
+  turns it into manageable monthly payments** ([[financing-philosophy]]) — technical
+  fit decided first, financing supports it.
+- **Small & static → Next.** Customer: *"I only need two desk phones."* A two-phone
+  small office sits squarely in Next's 1–5 sweet spot with light telephony and no
+  growth / analog / door signals → **COMtrexx Next is sufficient** and right-sized at
+  the lowest entry cost ([[product-selection-philosophy]]). (Still confirm there are
+  no growth/analog/door signals before finalizing.)
+
 ## Knowledge shared by all COMtrexx systems
 
 Applies family-wide; product files reference it rather than restating it:
@@ -158,6 +177,7 @@ These reusable rules apply across the whole COMtrexx family — captured once in
 | Version | Date | Change | Source |
 |---|---|---|---|
 | 0.1 | 2026-06-25 | Initial family entry; Next-vs-Flex logic centralized here | Teleprofi operational knowledge + repo |
+| 0.1 | 2026-06-25 | Added AI conversation examples (canonical Next-vs-Flex pair) | Teleprofi (Renato) |
 
 ## Knowledge Confidence
 

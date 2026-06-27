@@ -249,6 +249,13 @@ moment any growth-or-complexity signal appears, switch to the family decision lo
 in `comtrexx-family.md` (which leans Flex). Cross-product selection logic belongs in
 a future `ai-rules/` entry that references the family entry and the philosophy files.
 
+**Conversation example.** Customer: *"I only need two desk phones."* → A two-phone
+small office sits squarely in Next's 1–5 sweet spot with light telephony and no
+stated growth / analog / door signals → **Next is sufficient** and right-sized at the
+lowest entry cost. Confirm there are no growth/analog/door signals before finalizing
+([[product-selection-philosophy]]). Contrasting pair in
+[`comtrexx-family.md`](./comtrexx-family.md).
+
 # Knowledge Status
 
 **Renato-answerable knowledge is complete (v1.0).** Everything Renato provides —
@@ -349,6 +356,7 @@ deepens the deployment sections when answered):
 | 0.1 | 2026-06-25 | Initial Teleprofi-first draft (repo + official Auerswald); gaps framed as interview questions | repo + Auerswald docs |
 | 0.2 | 2026-06-25 | Integrated Teleprofi operational knowledge: ideal ~1–5 users, lower-entry-price positioning, Next→Flex upgrade triggers, typical 2 desk + 3 soft/headset, firmware stability, maintenance-as-service | Teleprofi (Renato) |
 | 1.0 | 2026-06-25 | Provider/router + financing routed to `business-philosophy/`; Next-vs-Flex logic centralized in `comtrexx-family.md`; added Migration section; closed Renato-answerable items; remaining hands-on items moved to Patrick interview backlog; status → active | Teleprofi (Renato) + reusable knowledge |
+| 1.0 | 2026-06-25 | Added AI conversation example (two-desk-phones → Next) | Teleprofi (Renato) |
 
 # Knowledge Confidence
 

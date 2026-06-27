@@ -15,19 +15,37 @@ Rules → Compatibility → Playbooks) and the per-entry workflow in
 
 ## Phase 1 — Products (foundation)
 
-Populate `products/` for the current Teleprofi catalogue, in this order:
+Populate `products/` for the current Teleprofi catalogue. Strategy: create each as a
+high-quality **v0.1 draft** first (reusing family/philosophy/providers/services/
+solutions), capturing gaps as interview questions, then deepen via consolidated
+Renato/Patrick interviews. Current build order and progress:
 
-1. **COMtrexx Next** (PBX)
-2. **COMtrexx Flex** (PBX)
-3. **COMfortel M-710** (DECT handset)
-4. **COMfortel M-730** (DECT handset)
-5. **WS-500S** (DECT base)
-6. **WS-500M** (DECT base)
-7. **FRITZ!Box family** (routers — current + legacy/supported)
-8. **FRITZ!Repeater family** (WLAN repeaters)
-9. **TFS systems** (door / Türsprech systems)
+**PBX**
+- ✅ **COMtrexx Next** — v1.0 (`products/comtrexx-next.md`)
+- ✅ **COMtrexx Flex** — v0.2 (`products/comtrexx-flex.md`)
+- (family) **COMtrexx family** decision logic (`products/comtrexx-family.md`)
 
-Each as a full product entry (Customer/Sales/Technician views, no pricing).
+**DECT** (done)
+- ✅ **COMfortel M-730** — v0.1 (`products/comfortel-m730.md`)
+- ✅ **COMfortel M-710** — v0.1 (`products/comfortel-m710.md`)
+
+**Remaining, reordered by recommendation impact** (routers/migration paths first —
+the Executive Agent recommends these more often than individual DECT infrastructure):
+
+1. ✅ **FRITZ!Box 5690 Pro** — v0.1 (`products/fritzbox-5690-pro.md`)
+2. ✅ **FRITZ!Box 5590 Fiber** — v0.1 (`products/fritzbox-5590-fiber.md`)
+3. ✅ **FRITZ!Box 7590 AX** — v0.1 (`products/fritzbox-7590-ax.md`)
+   - (family) ✅ **FRITZ!Box router selection model** (`products/fritzbox-family.md`)
+4. ✅ **FRITZ!Repeater 6000** — v0.1 (`products/fritz-repeater-6000.md`)
+5. ✅ **WS-500S** (DECT base) — v0.1 (`products/ws-500s.md`)
+6. ✅ **Gigaset N670** (DECT base — alternative) — v0.1 (`products/gigaset-n670.md`)
+7. ✅ **COMfortel D-210** (desk phone) — v0.1 (`products/comfortel-d210.md`)
+8. ✅ **COMfortel D-400** (desk phone) — v0.1 (`products/comfortel-d400.md`)
+9. ✅ **COMfortel D-600** (desk phone) — v0.1 (`products/comfortel-d600.md`)
+10. ✅ **TFS door systems** — v0.1 (`products/tfs-door-systems.md`)
+
+Each entry is Teleprofi-first (≈60/30/10), references reusable knowledge, and
+carries Knowledge History + Knowledge Confidence. No pricing in product entries.
 
 ## Phase 2 — Teleprofi services
 
