@@ -1,21 +1,34 @@
 <include>
   <!--
-    inbound_ai_dialplan.xml
+    inbound_ai_dialplan.xml  (TEMPLATE — contains placeholders, do NOT deploy as-is)
     Routes inbound calls from COMtrexx to the Python AI call handler.
 
-    DEPLOY TO (WSL2 Debian12):
-      /etc/freeswitch/dialplan/public/00_inbound_ai.xml
+    This file is a TEMPLATE. The socket destination is parameterised with the
+    placeholders {{AI_ESL_OUTBOUND_HOST}} and {{AI_ESL_OUTBOUND_PORT}} so the
+    same source works across local WSL, Windows portproxy, and Docker/Linux
+    deployments without committing a host-specific IP to the repository.
+
+    DO NOT `cp` this file directly into FreeSWITCH — the placeholders would
+    break the dialplan. Render it first.
+
+    RENDER + DEPLOY TO (WSL2 Debian12):
+      bash backend/voice/freeswitch/render_inbound_dialplan.sh --reload
+      # renders to /etc/freeswitch/dialplan/public/00_inbound_ai.xml and reloads
+
+    The renderer substitutes the placeholders from (first match wins):
+      AI_ESL_OUTBOUND_HOST  ->  FREESWITCH_ESL_OUTBOUND_HOST  ->  127.0.0.1
+      AI_ESL_OUTBOUND_PORT  ->  FREESWITCH_ESL_OUTBOUND_PORT  ->  8085
 
     The FS external profile routes to the "public" context (not "default").
     Inbound calls from gateways always land in "public".
 
-    APPLY WITH (in fs_cli):
+    APPLY WITH (in fs_cli), after rendering:
       reloadxml
 
     HOW IT WORKS:
-      When a call arrives from COMtrexx, FreeSWITCH connects to the Python
-      app on port 8085 (ESL outbound socket).  Python answers, plays TTS,
-      records speech, runs Whisper + LLM, and hangs up.
+      When a call arrives from COMtrexx, FreeSWITCH connects back to the Python
+      app on the ESL outbound socket.  Python answers, plays TTS, records
+      speech, runs Whisper + LLM, and hangs up.
 
     NOTE: sip_gateway_name is NOT set for inbound calls (only outbound).
     We match destination_number instead — catches all calls to this FS instance.
@@ -27,11 +40,17 @@
       <action application="set"    data="hangup_after_bridge=true"/>
       <action application="set"    data="continue_on_fail=false"/>
       <!--
-        172.20.0.42 = Windows host LAN IP where Python backend runs.
-        Port 8085   = FREESWITCH_ESL_OUTBOUND_PORT.
-        async full  = full event stream, non-blocking dialplan thread.
+        {{AI_ESL_OUTBOUND_HOST}} = address FreeSWITCH uses to reach the Python
+                                    backend's ESL outbound listener. Rendered by
+                                    render_inbound_dialplan.sh:
+                                      - local WSL (FS+Python same host): 127.0.0.1
+                                      - Windows portproxy (Python on Windows): the
+                                        host/LAN IP the portproxy forwards from
+                                      - Docker/Linux: the backend container/host IP
+        {{AI_ESL_OUTBOUND_PORT}} = FREESWITCH_ESL_OUTBOUND_PORT (default 8085).
+        async full               = full event stream, non-blocking dialplan thread.
       -->
-      <action application="socket" data="127.0.0.1:8085 async full"/>
+      <action application="socket" data="{{AI_ESL_OUTBOUND_HOST}}:{{AI_ESL_OUTBOUND_PORT}} async full"/>
     </condition>
   </extension>
 </include>

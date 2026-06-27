@@ -152,11 +152,20 @@ if [[ -f "$DEPLOYED_INBOUND_XML" ]]; then
         if [[ -n "$socket_target" ]]; then
             host_port="${socket_target%% *}"   # strip " async full"
             ok "Dialplan socket target: $host_port"
-            if [[ "$host_port" == "127.0.0.1:8085" ]]; then
-                ok "Target is 127.0.0.1:8085 — correct for WSL-local topology"
+            # Expected endpoint is configurable (see render_inbound_dialplan.sh):
+            #   AI_ESL_OUTBOUND_HOST -> FREESWITCH_ESL_OUTBOUND_HOST -> 127.0.0.1
+            #   AI_ESL_OUTBOUND_PORT -> FREESWITCH_ESL_OUTBOUND_PORT -> 8085
+            exp_host="${AI_ESL_OUTBOUND_HOST:-${FREESWITCH_ESL_OUTBOUND_HOST:-127.0.0.1}}"
+            exp_port="${AI_ESL_OUTBOUND_PORT:-${FREESWITCH_ESL_OUTBOUND_PORT:-8085}}"
+            if [[ "$host_port" == "${exp_host}:${exp_port}" ]]; then
+                ok "Target matches configured endpoint ${exp_host}:${exp_port}"
             else
-                warn "Target is $host_port — expected 127.0.0.1:8085 for WSL-local setup"
-                warn "If backend and FreeSWITCH are on the same WSL instance, update to 127.0.0.1:8085"
+                warn "Target $host_port differs from configured AI_ESL_OUTBOUND endpoint ${exp_host}:${exp_port}"
+                warn "If this is intentional (e.g. Windows portproxy uses a host IP), ignore."
+                warn "Otherwise re-render: bash backend/voice/freeswitch/render_inbound_dialplan.sh --reload"
+            fi
+            if [[ "$host_port" == *'{{'* ]]; then
+                fail "Deployed dialplan still contains an unrendered placeholder — run render_inbound_dialplan.sh"
             fi
         fi
     else
@@ -164,30 +173,40 @@ if [[ -f "$DEPLOYED_INBOUND_XML" ]]; then
     fi
 else
     fail "Not found: $DEPLOYED_INBOUND_XML"
-    warn "Inbound calls will not be routed to the backend until this file is deployed"
-    warn "Deploy with:"
-    warn "  cp $REPO_INBOUND_XML $DEPLOYED_INBOUND_XML"
-    warn "  fs_cli -x 'reloadxml'"
+    warn "Inbound calls will not be routed to the backend until this file is rendered"
+    warn "Render + deploy with (do NOT cp the template — it has placeholders):"
+    warn "  bash $SCRIPT_DIR/render_inbound_dialplan.sh --reload"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-hdr "6. Drift check — repo template vs deployed inbound dialplan"
+hdr "6. Drift check — rendered repo template vs deployed inbound dialplan"
 # ══════════════════════════════════════════════════════════════════════════════
 
+# The repo template carries {{AI_ESL_OUTBOUND_*}} placeholders, so it never
+# matches the deployed file byte-for-byte. Render it with the same endpoint the
+# deployment uses, then compare — this still catches genuine drift (extra rules,
+# stale logic) without flagging the expected placeholder substitution.
 cmd "test -f $REPO_INBOUND_XML"
 if [[ ! -f "$REPO_INBOUND_XML" ]]; then
     fail "Repo template not found: $REPO_INBOUND_XML"
 elif [[ ! -f "$DEPLOYED_INBOUND_XML" ]]; then
     warn "Deployed file does not exist — cannot compare (see section 5)"
 else
-    cmd "diff $REPO_INBOUND_XML $DEPLOYED_INBOUND_XML"
-    diff_out=$(diff "$REPO_INBOUND_XML" "$DEPLOYED_INBOUND_XML" 2>&1 || true)
-    if [[ -z "$diff_out" ]]; then
-        ok "Files are identical — no drift detected"
+    rendered_tmp="$(mktemp)"
+    if bash "$SCRIPT_DIR/render_inbound_dialplan.sh" "$rendered_tmp" >/dev/null 2>&1; then
+        cmd "diff <(render template) $DEPLOYED_INBOUND_XML"
+        diff_out=$(diff "$rendered_tmp" "$DEPLOYED_INBOUND_XML" 2>&1 || true)
+        if [[ -z "$diff_out" ]]; then
+            ok "Rendered template matches deployed file — no drift detected"
+        else
+            warn "Deployed file differs from rendered template:"
+            echo "$diff_out"
+            warn "Re-render if needed: bash $SCRIPT_DIR/render_inbound_dialplan.sh --reload"
+        fi
     else
-        warn "Deployed file differs from repo template:"
-        echo "$diff_out"
+        warn "Could not render template for comparison (see render_inbound_dialplan.sh)"
     fi
+    rm -f "$rendered_tmp"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -226,7 +245,7 @@ echo
 echo -e "  ${BLD}Key things to check if inbound calls are not arriving:${RST}"
 echo    "    1. Gateway must be REGED   (section 2)"
 echo    "    2. Port 8085 must be bound (section 1)"
-echo    "    3. Deployed dialplan must exist and point to 127.0.0.1:8085 (section 5)"
+echo    "    3. Deployed dialplan must exist and point to the configured AI_ESL_OUTBOUND endpoint (section 5)"
 echo    "    4. COMtrexx must be routing calls to extension 003010"
 echo    "       — OPTIONS in the log means SIP is up; INVITE means a call was sent"
 echo    "       — No INVITE = COMtrexx is not forwarding to 003010"

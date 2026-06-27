@@ -34,7 +34,7 @@ Windows and the other in WSL — that is NOT the current topology.
 | COMtrexx internal user | `29 / Renato AI` | COMtrexx admin UI |
 | FS → COMtrexx (SIP/TLS) | `172.20.0.244:5061` | `comtrexx_gateway.xml` |
 | Python listens for ESL outbound | `0.0.0.0:8085` | `main.py` / `FREESWITCH_ESL_OUTBOUND_PORT` |
-| FS connects to Python | `127.0.0.1:8085` | `inbound_ai_dialplan.xml` socket action |
+| FS connects to Python (socket target) | `{{AI_ESL_OUTBOUND_HOST}}:{{AI_ESL_OUTBOUND_PORT}}` → rendered (local default `127.0.0.1:8085`) | `inbound_ai_dialplan.xml` template, rendered by `render_inbound_dialplan.sh` from `AI_ESL_OUTBOUND_HOST/PORT` |
 | Python → FS ESL inbound | `127.0.0.1:8021` | `FREESWITCH_ESL_HOST` / `FREESWITCH_ESL_PORT` |
 | ESL password | `ClueCon` (default) | `FREESWITCH_ESL_PASSWORD` |
 | Escalation park orbits | `778`, `779` | `AI_WAITING_ROOM_PRIMARY/SECONDARY` |
@@ -108,12 +108,47 @@ Until both exist, escalation = deflect to the manned waiting room only.
 | File | Deploy to | Apply with |
 |---|---|---|
 | `comtrexx_gateway.xml` | `/etc/freeswitch/sip_profiles/external/comtrexx_gateway.xml` | `fs_cli -x "sofia profile external restart"` |
-| `inbound_ai_dialplan.xml` | `/etc/freeswitch/dialplan/public/00_inbound_ai.xml` | `fs_cli -x "reloadxml"` |
+| `inbound_ai_dialplan.xml` | `/etc/freeswitch/dialplan/public/00_inbound_ai.xml` (**render — do not `cp`**) | `render_inbound_dialplan.sh --reload` |
 | `default_transfer_dialplan.xml` | `/etc/freeswitch/dialplan/default/10_comtrexx_transfer.xml` | `fs_cli -x "reloadxml"` |
 
 **These files are templates.** Replace `YOUR_SIP_PASSWORD_HERE` in
 `comtrexx_gateway.xml` with the real SIP password for extension 003010 before
 deploying. Do not commit the password to source control.
+
+### Rendering the inbound dialplan (configurable ESL socket endpoint)
+
+`inbound_ai_dialplan.xml` is host-agnostic: its `socket` action carries the
+placeholders `{{AI_ESL_OUTBOUND_HOST}}` and `{{AI_ESL_OUTBOUND_PORT}}` so no
+host-specific IP is ever committed. **Never `cp` the template into FreeSWITCH** —
+the placeholders would break the dialplan. Render it first:
+
+```bash
+# Reads AI_ESL_OUTBOUND_HOST/PORT from backend/.env (real env vars win),
+# writes /etc/freeswitch/dialplan/public/00_inbound_ai.xml, then reloads.
+bash backend/voice/freeswitch/render_inbound_dialplan.sh --reload
+```
+
+The renderer resolves the endpoint with this precedence (first match wins):
+
+```
+AI_ESL_OUTBOUND_HOST  ->  FREESWITCH_ESL_OUTBOUND_HOST  ->  127.0.0.1
+AI_ESL_OUTBOUND_PORT  ->  FREESWITCH_ESL_OUTBOUND_PORT  ->  8085
+```
+
+| Deployment | `AI_ESL_OUTBOUND_HOST` | Notes |
+|---|---|---|
+| Local WSL (FS + backend same WSL) | `127.0.0.1` | Default; nothing to set. |
+| Windows portproxy (backend on Windows, FS in WSL) | host/LAN IP the `netsh portproxy` forwards from, e.g. `172.20.0.42` | This is a local Wi-Fi/LAN IP — keep it in `.env`, never in the template. |
+| Docker/Linux | backend container/host address FS can reach | — |
+
+Inspect the rendered output without touching FreeSWITCH:
+
+```bash
+bash backend/voice/freeswitch/render_inbound_dialplan.sh /tmp/00_inbound_ai.xml
+```
+
+After rendering, apply with `fs_cli -x "reloadxml"` (the `--reload` flag does this
+for you).
 
 ---
 
