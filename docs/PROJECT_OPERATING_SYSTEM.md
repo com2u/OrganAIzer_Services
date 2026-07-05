@@ -174,7 +174,9 @@ Layered, from fastest/most-automated to manual:
    CI. On the FreeSWITCH host: gateway `REGED`, inbound **INVITE** (not just
    OPTIONS) reaching `003010`, escalation using **deflect/REFER** (not bridge) to
    `778`/`779`, native orbit music, manual technician pickup, and no
-   `INCOMPATIBLE_DESTINATION`. See `comtrexx-integration-guardian`.
+   `INCOMPATIBLE_DESTINATION`. See `comtrexx-integration-guardian`. For scoring AI
+   conversational quality on these live calls, use
+   `docs/AI_PHONE_EVALUATION_FRAMEWORK.md`.
 
 ---
 
