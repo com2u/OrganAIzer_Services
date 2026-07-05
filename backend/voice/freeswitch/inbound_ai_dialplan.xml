@@ -12,8 +12,11 @@
     break the dialplan. Render it first.
 
     RENDER + DEPLOY TO (WSL2 Debian12):
-      bash backend/voice/freeswitch/render_inbound_dialplan.sh --reload
-      # renders to /etc/freeswitch/dialplan/public/00_inbound_ai.xml and reloads
+      bash backend/voice/freeswitch/render_inbound_dialplan.sh
+      Pass the reload flag to the script to apply immediately; it renders to
+      /etc/freeswitch/dialplan/public/00_inbound_ai.xml and reloads.
+      (An XML comment may not contain a double hyphen, so the flag is not
+      written literally here — see the script header for its exact spelling.)
 
     The renderer substitutes the placeholders from (first match wins):
       AI_ESL_OUTBOUND_HOST  ->  FREESWITCH_ESL_OUTBOUND_HOST  ->  127.0.0.1

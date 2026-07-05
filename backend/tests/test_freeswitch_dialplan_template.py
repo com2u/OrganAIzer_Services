@@ -14,6 +14,7 @@ into the committed template.
 import re
 import shutil
 import subprocess
+import xml.parsers.expat
 from pathlib import Path
 
 import pytest
@@ -79,6 +80,39 @@ def test_no_private_ip_in_active_socket_action():
         )
 
 
+def _assert_well_formed_xml(text: str, label: str) -> None:
+    """
+    Parse *text* as XML and fail with a clear message if malformed. Wraps in a
+    synthetic root so the template's top-level <include> is valid to expat, while
+    still surfacing comment/tag errors (e.g. an illegal '--' inside a comment,
+    which FreeSWITCH reports as 'unclosed <!--').
+    """
+    parser = xml.parsers.expat.ParserCreate()
+    try:
+        parser.Parse(f"<__root__>{text}</__root__>", True)
+    except xml.parsers.expat.ExpatError as exc:  # pragma: no cover - message path
+        pytest.fail(f"{label} is not well-formed XML: {exc}")
+
+
+def test_template_is_well_formed_xml():
+    """
+    The committed template (placeholders and all) must be well-formed XML. This
+    guards against a regression where an illegal '--' inside an XML comment
+    (e.g. a documented '--flag') makes FreeSWITCH fail with 'unclosed <!--'.
+    """
+    _assert_well_formed_xml(TEMPLATE.read_text(encoding="utf-8"), "template")
+
+
+def test_no_double_hyphen_inside_comments():
+    """XML comments may not contain '--'; assert none of the template's do."""
+    text = TEMPLATE.read_text(encoding="utf-8")
+    for block in re.findall(r"<!--(.*?)-->", text, flags=re.DOTALL):
+        assert "--" not in block, (
+            "XML comment contains an illegal '--' sequence (FreeSWITCH will report "
+            f"'unclosed <!--'): {block.strip()[:80]!r}"
+        )
+
+
 def test_render_script_exists():
     assert RENDER_SCRIPT.is_file(), f"missing render script: {RENDER_SCRIPT}"
 
@@ -104,6 +138,7 @@ def test_render_substitutes_placeholders(tmp_path):
     assert 'data="10.1.2.3:9099 async full"' in rendered, (
         f"socket action not rendered as expected:\n{rendered}"
     )
+    _assert_well_formed_xml(rendered, "rendered dialplan")
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
