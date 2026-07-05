@@ -148,6 +148,28 @@ class TestBookingAfterConfirmation:
         # after booking, further unrelated turns defer to the LLM
         assert _turn(state, "Vielen Dank, das war alles", store) is None
 
+    def test_invoice_callback_scenario_end_to_end(self, store):
+        """Caller: "Ich brauche einen Rückruf wegen einer Rechnung." — the
+        motive text must not confuse intent detection, and the topic must
+        travel into the stored record."""
+        state = sd.new_state()
+        res = _turn(state, "Ich brauche einen Rückruf wegen einer Rechnung.", store)
+        assert res is not None
+        assert state["appointment_type"] == "callback"
+        _turn(state, "am Montag", store)
+        assert state["stage"] == "offered"
+        res = _turn(
+            state, "die erste passt", store,
+            phone="+491701234567", caller_name="Max Mustermann", call_id="call-inv-1",
+        )
+        assert res.booked
+        assert "kein garantierter Termin" in res.reply
+        rec = read_appointments(store)[0]
+        assert rec["status"] == "simulated"
+        assert "Rechnung" in rec["topic"]
+        assert "*" in rec["phone_masked"]
+        assert "+491701234567" not in store.read_text(encoding="utf-8")
+
 
 class TestRejectionAndReoffer:
     def test_negative_asks_for_another_day(self, store):
