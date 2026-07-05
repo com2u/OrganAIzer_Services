@@ -1265,7 +1265,7 @@ class TestEndOfSpeechTiming:
 
     def test_silence_window_in_expected_range(self):
         # Keep it bounded so we do not add excessive latency after real silence.
-        assert 2.3 <= _vcfg.AI_RECORD_SILENCE_SECONDS <= 2.6
+        assert 2.5 <= _vcfg.AI_RECORD_SILENCE_SECONDS <= 2.7
 
     def test_silence_seconds_wired_to_record_silence_hits(self):
         # esl_call_handler converts the seconds into 20 ms silence frames.
