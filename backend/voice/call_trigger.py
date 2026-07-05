@@ -25,35 +25,15 @@ import logging
 import re
 import threading
 
+# Number masking lives in the neutral core utility so non-voice layers (e.g. the
+# scheduler) can mask without importing the voice stack. Re-exported here so
+# existing `from voice.call_trigger import mask_number` call sites keep working.
+from core.phone_mask import mask_number
+
 logger = logging.getLogger(__name__)
 
 # -- phone number masking -----------------------------------------------------
-
-def mask_number(number: str) -> str:
-    """
-    Mask the middle of a phone number for safe display.
-
-    Keeps a short prefix (country code / trunk prefix) and the last 4 digits;
-    replaces everything in between with ******.
-
-      "+491234567890"  -> "+49******7890"
-      "06611234567"    -> "066******567"
-      "+1 800 555-0100" -> "+1******0100"
-    """
-    if not number:
-        return number
-    digits_only = re.sub(r"\D", "", number)
-    raw = number.strip()
-    if raw.startswith("+"):
-        prefix = raw[:4]
-    elif raw.startswith("00"):
-        prefix = raw[:5]
-    elif raw.startswith("0"):
-        prefix = raw[:3]
-    else:
-        prefix = raw[:2]
-    suffix = digits_only[-4:] if len(digits_only) >= 4 else digits_only
-    return f"{prefix}******{suffix}"
+# mask_number is provided by core.phone_mask (imported above).
 
 
 _GERMAN_RE = re.compile(r"^(\+49|0049|(?!00)0)\d")
