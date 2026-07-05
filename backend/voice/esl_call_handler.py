@@ -381,6 +381,7 @@ def _conversation_loop(
     uuid: str,
     call_rec_path: Optional[Path] = None,
     initial_lang: str = "de",
+    dialogue_state: Optional[dict] = None,
 ) -> bool:
     """
     Core record → transcribe → LLM → speak loop.
@@ -389,6 +390,7 @@ def _conversation_loop(
     Exits when the call hangs up or max duration is reached.
     """
     from voice.escalation import handle_escalation
+    from voice import scheduler_dialogue
 
     audio_dir = _audio_dir()
     turn = 0
@@ -473,6 +475,30 @@ def _conversation_loop(
                 _proc["unfinished"] = True
                 _proc_done.set()
                 return
+            # ── appointment scheduling (deterministic; slots come from Scheduler) ──
+            # A per-call state machine handles appointment intent WITHOUT the LLM
+            # inventing availability. It returns None when the turn is not part of
+            # an appointment flow, so every other call behaves exactly as before.
+            if dialogue_state is not None:
+                try:
+                    _sched = scheduler_dialogue.handle_turn(
+                        dialogue_state, t,
+                        call_id=uuid, phone=caller, caller_name=_cn,
+                    )
+                except Exception as exc:  # never let scheduling break a live call
+                    logger.error("Scheduler dialogue error: %s", exc, exc_info=True)
+                    _sched = None
+                if _sched is not None:
+                    _proc["text"] = t
+                    _proc["reply"] = _sched.reply
+                    _proc["lang"] = "de"
+                    # Keep the LLM history coherent for turns after the flow ends.
+                    history.append({"role": "user", "content": t})
+                    history.append({"role": "assistant", "content": _sched.reply})
+                    if not _sched.reply.upper().startswith("ESCALATE:"):
+                        _proc["wav"] = speak_to_file(_sched.reply, lang="de")
+                    _proc_done.set()
+                    return
             _proc["text"] = t
             # Update language from STT detection immediately — the filler for
             # this turn is already playing, but the NEXT turn's filler will use
@@ -922,12 +948,16 @@ def handle_esl_call(handler, phone_state: dict) -> None:
     from datetime import datetime, timezone
     from api.phone import wait_for_ring_decision
     from voice.outbound import pop_outbound_context
+    from voice import scheduler_dialogue
 
     started_at  = datetime.now(timezone.utc)
     uuid        = handler.get_uuid()
     caller      = handler.get_caller_id()
     turn_count  = 0
     history     = new_history()
+    # Per-call appointment dialogue state (in-memory, never persisted, no cross-call
+    # leakage). Drives the deterministic Scheduler flow inside _conversation_loop.
+    appointment_state = scheduler_dialogue.new_state()
 
     # ── check if this is an outbound call we originated ───────────────────────
     outbound_ctx = pop_outbound_context(uuid)
@@ -1006,6 +1036,7 @@ def handle_esl_call(handler, phone_state: dict) -> None:
                 turn_count_ref=turn_ref,
                 uuid=uuid, call_rec_path=call_rec_path,
                 initial_lang=greeting_lang,
+                dialogue_state=appointment_state,
             )
             turn_count = turn_ref[0]
             return
@@ -1085,6 +1116,7 @@ def handle_esl_call(handler, phone_state: dict) -> None:
             caller=caller, caller_name=caller_name, started_at=started_at,
             system_prompt=None, turn_count_ref=turn_ref,
             uuid=uuid, call_rec_path=call_rec_path,
+            dialogue_state=appointment_state,
         )
         turn_count = turn_ref[0]
 
