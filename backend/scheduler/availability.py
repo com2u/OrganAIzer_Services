@@ -119,3 +119,28 @@ def available_slots(
         for slot in candidates
         if not any(slots_overlap(slot.start, slot.end, b_start, b_end) for b_start, b_end in busy)
     ]
+
+
+def filter_by_time_window(
+    slots: list[Slot],
+    time_window: Optional[tuple] = None,
+) -> list[Slot]:
+    """
+    Filter slots by preferred time window (morning, afternoon, etc.).
+
+    If *time_window* is (start_time, end_time), returns only slots that start
+    within that window. Used by scheduler_dialogue to respect caller preferences
+    like "morgens" or "nachmittags".
+
+    Example:
+        morning_slots = filter_by_time_window(all_slots, (time(8,0), time(12,0)))
+    """
+    if not time_window:
+        return slots
+
+    start_time, end_time = time_window
+    return [
+        slot
+        for slot in slots
+        if start_time <= slot.start.time() < end_time
+    ]
