@@ -193,10 +193,14 @@ invalid_slot, in_past}`.
 
 ```bash
 # WSL debian12 + .venv-wsl, from backend/:
-../.venv-wsl/bin/python -m pytest \
-  tests/test_scheduler_models.py tests/test_scheduler_availability.py \
-  tests/test_scheduler_store.py tests/test_scheduler_service.py \
-  tests/test_scheduler_safety.py -q
+# Scheduler suites (core + phone integration + dialogue + seeding) and the
+# time-preference / farewell behaviour they depend on:
+../.venv-wsl/bin/python -m pytest tests/test_scheduler*.py \
+  tests/test_time_preferences.py tests/test_call_farewell.py -q
+
+# Voice/phone safety and regressions around the call flow:
+../.venv-wsl/bin/python -m pytest tests/test_phone_safety.py \
+  tests/test_voice_bugs_regression.py tests/test_escalation_language.py -q
 ```
 
 The suite covers model/record validation, business hours, no-weekend slots,
@@ -225,7 +229,11 @@ Flow and guarantees:
 1. Appointment intent (or a clearly named service type) starts the flow; the
    engine asks **one question at a time** but accepts the details in **any
    order** — a day given before the reason (or vice versa) is remembered and
-   never asked again. "Nächste Woche" resolves to next Monday.
+   never asked again. "Nächste Woche" resolves to next Monday. Natural German
+   time preferences („morgen früh", „nach Mittag", „ab 14 Uhr", „flexibel") are
+   parsed by `backend/voice/time_preferences.py` and used to filter the offered
+   slots to the caller's time window (see
+   `backend/tests/test_time_preferences.py`).
 2. It offers **1–3 real slots** from `list_available_slots(...)` via
    `phone.format_slot_offer(...)` — it never invents times.
 3. **Nothing is booked until the caller confirms a specific offered slot**
@@ -260,8 +268,10 @@ Tests: `backend/tests/test_scheduler_phone_integration.py` (engine state machine
 an end-to-end `_conversation_loop` wiring test proving a booking is written via the
 Scheduler and the LLM is never asked to invent slots),
 `backend/tests/test_scheduler_dialogue_fix.py` (no repeated/re-asked questions, no
-type menu, any-order details, callback fallback, offer/confirmation wording) and
-`backend/tests/test_call_farewell.py` (call ends naturally after the goodbye).
+type menu, any-order details, callback fallback, offer/confirmation wording),
+`backend/tests/test_time_preferences.py` (natural German time-preference parsing
+and slot-window filtering) and `backend/tests/test_call_farewell.py` (call ends
+naturally after the goodbye).
 
 ## Not implemented (deferred)
 

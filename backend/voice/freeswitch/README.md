@@ -46,7 +46,7 @@ Windows and the other in WSL — that is NOT the current topology.
 ### Outbound (Python-initiated)
 
 1. Python calls `originate_call()` in `voice/outbound.py`.
-2. `send_api_command()` sends `originate {vars}sofia/gateway/comtrexx/<number> &socket(127.0.0.1:8085 async full)` to FS over ESL inbound (port 8021).
+2. `send_api_command()` sends `originate {vars}sofia/gateway/comtrexx/<number> &socket(127.0.0.1:8085 async full)` to FS over ESL inbound (port 8021). The socket target is built from `FREESWITCH_ESL_OUTBOUND_HOST`/`FREESWITCH_ESL_OUTBOUND_PORT` — set the HOST explicitly in `.env` (`127.0.0.1` in the current same-WSL topology); the code default is the legacy WSL2-gateway IP from the old backend-on-Windows setup.
 3. FS dials the number via the `comtrexx` gateway (SIP/TLS → COMtrexx → PSTN).
 4. When the remote answers, FS connects back to Python on port 8085 (ESL outbound socket).
 5. `handle_esl_call()` picks it up, matches the UUID via `pop_outbound_context()`, and runs the outbound AI conversation loop.
@@ -149,6 +149,13 @@ bash backend/voice/freeswitch/render_inbound_dialplan.sh /tmp/00_inbound_ai.xml
 
 After rendering, apply with `fs_cli -x "reloadxml"` (the `--reload` flag does this
 for you).
+
+The template/renderer contract — placeholders present in the repo XML, no
+host-specific IP committed, and the documented `AI_ESL_OUTBOUND_*` →
+`FREESWITCH_ESL_OUTBOUND_*` → default precedence — is pinned by
+`backend/tests/test_freeswitch_dialplan_template.py` (run in WSL:
+`../.venv-wsl/bin/python -m pytest tests/test_freeswitch_dialplan_template.py -q`
+from `backend/`).
 
 ---
 

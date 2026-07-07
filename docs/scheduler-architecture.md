@@ -142,10 +142,14 @@ A future backend swaps that module without touching `service.py`:
 
 ```bash
 # WSL debian12 + .venv-wsl, from backend/:
-../.venv-wsl/bin/python -m pytest \
-  tests/test_scheduler_models.py tests/test_scheduler_availability.py \
-  tests/test_scheduler_store.py tests/test_scheduler_service.py \
-  tests/test_scheduler_safety.py -q
+# Scheduler suites (core + phone integration + dialogue + seeding) and the
+# time-preference / farewell behaviour they depend on:
+../.venv-wsl/bin/python -m pytest tests/test_scheduler*.py \
+  tests/test_time_preferences.py tests/test_call_farewell.py -q
+
+# Voice/phone safety and regressions around the call flow:
+../.venv-wsl/bin/python -m pytest tests/test_phone_safety.py \
+  tests/test_voice_bugs_regression.py tests/test_escalation_language.py -q
 ```
 
 The safety file also asserts the package imports no calendar/DB/network dependency
@@ -158,8 +162,10 @@ The Scheduler is wired into the live call loop via
 a single optional `dialogue_state` hook in
 `esl_call_handler.py::_conversation_loop`. The engine offers only
 Scheduler-provided slots and books (simulated) only after explicit caller
-confirmation; emergencies escalate instead. Full details in
-`docs/appointment-simulation.md` ("Phone integration").
+confirmation; emergencies escalate instead. Natural German time preferences
+(„morgen früh", „nach Mittag", „ab 14 Uhr") are parsed by
+`backend/voice/time_preferences.py` to filter the offered slots to the caller's
+window. Full details in `docs/appointment-simulation.md` ("Phone integration").
 
 ## Explicitly not implemented in v0.1
 

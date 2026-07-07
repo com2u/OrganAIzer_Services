@@ -78,7 +78,7 @@ excellent and poor look like, and a common failure example grounded in this
 agent's actual behaviour.
 
 > **Grounding:** these categories reflect what the agent really does today —
-> 1–2 sentence spoken replies, a ~2.4 s end-of-speech trailing-silence window with
+> 1–2 sentence spoken replies, a ~2.6 s end-of-speech trailing-silence window with
 > **no barge-in**, unfinished-utterance continuation prompts, within-call memory,
 > German default with English switch, and `ESCALATE:` → deflect to the COMtrexx
 > waiting room with **manual** pickup. Do not score the agent against capabilities
@@ -202,7 +202,9 @@ agent's actual behaviour.
   emergency, credentials/pricing needed, low confidence) it emits exactly
   `ESCALATE: <reason> — <key detail>`, then the caller is **deflected** into the
   COMtrexx waiting room (orbit `778`, then `779`) and hears native orbit music;
-  pickup is **manual**.
+  pickup is **manual**. The escalation consent question and transfer announcement
+  are always spoken in **German**, regardless of the conversation language
+  (pinned by `backend/tests/test_escalation_language.py`).
 - **Poor:** escalates too late (or never) on an emergency; escalates needlessly on a
   routine question; or the transfer fails.
 - **Common failure:** an escalation that tries to **bridge** to the orbit instead of
@@ -326,7 +328,7 @@ before any milestone or customer-facing demo. Each scenario names what to verify
 |---|----------|----------------|
 | 1 | **Internet outage** | Correct intent (support); one diagnostic question at a time; no fabricated fixes; sensible hand-off if it cannot triage. |
 | 2 | **Router issue** (FRITZ!Box) | Technical reasoning stays within real knowledge; no invented menu paths; offers a callback/Mitarbeiter when unsure. |
-| 3 | **Appointment request** | Does **not** confirm an appointment it was not given; takes a callback/message instead of promising a slot. |
+| 3 | **Appointment request** | Offers **only Scheduler-provided times** (never invented ones); notes a *Vormerkung* (simulated, non-binding) **only after** the caller explicitly confirms a concrete offered slot; never presents it as fixed, guaranteed, or entered in a real calendar. |
 | 4 | **New customer** | Captures who they are without over-asking; natural onboarding tone; no repeated questions. |
 | 5 | **Existing customer** | Within-call memory: remembers details given; doesn't re-ask name/company/device. |
 | 6 | **Invoice question** | Intent routed to billing, not troubleshooting; no pricing invented; escalates/handoff for account specifics. |
