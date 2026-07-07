@@ -130,26 +130,30 @@ Every record contains exactly these fields:
 ### Example record (fake)
 
 ```json
-{"status": "simulated", "schema_version": "0.1", "id": "0450ec1d-74d3-42ef-af88-7cbaa74ed172", "created_at": "2026-07-01T21:20:37Z", "source": "phone_ai_simulation", "caller_name": "Max Mustermann", "company": "Muster GmbH", "phone_masked": "+491******4567", "topic": "Drucker offline", "appointment_type": "callback", "selected_slot_start": "2026-07-06T09:00:00", "selected_slot_end": "2026-07-06T09:30:00", "assigned_resource": "remote_support_queue", "notes": null, "confirmation_summary": "Ich merke den Termin vor: Rückruf am Montag, 06.07.2026 um 09:00 Uhr (30 Min.). Dies ist eine Vormerkung, kein garantierter Termin.", "call_id": "call-abc123"}
+{"status": "simulated", "schema_version": "0.1", "id": "0450ec1d-74d3-42ef-af88-7cbaa74ed172", "created_at": "2026-07-01T21:20:37Z", "source": "phone_ai_simulation", "caller_name": "Max Mustermann", "company": "Muster GmbH", "phone_masked": "+491******4567", "topic": "Drucker offline", "appointment_type": "callback", "selected_slot_start": "2026-07-06T09:00:00", "selected_slot_end": "2026-07-06T09:30:00", "assigned_resource": "remote_support_queue", "notes": null, "confirmation_summary": "Perfekt, ich habe den Termin unverbindlich vorgemerkt: Rückruf am Montag, den 6. Juli um 9 Uhr (30 Minuten). Unser Team bestätigt ihn anschließend.", "call_id": "call-abc123"}
 ```
 
 ## Phone-facing wording (German)
 
 `scheduler.phone` builds only simulation-honest wording and guards it with
-`assert_phrase_safe()`.
+`assert_phrase_safe()`. Offers are ONE natural spoken sentence (never a bullet
+list — the text is read aloud by TTS), e.g. „Am Montag, den 6. Juli könnte ich
+Ihnen 9 Uhr, 9:30 Uhr oder 10 Uhr anbieten.“
 
 **Allowed:**
 - „Ich kann Ihnen einen Termin vormerken.“
-- „Ich kann Ihnen folgende Zeiten anbieten.“
-- „Ich merke den Termin vor.“
+- „Am Montag könnte ich Ihnen 9 Uhr oder 10 Uhr anbieten.“
+- „Perfekt, ich habe den Termin unverbindlich vorgemerkt.“
 
 **Forbidden (raise `UnsafePhoneWording`):**
 - „Der Termin ist garantiert.“
-- „Patrick kommt sicher morgen.“
+- „Renato kommt sicher morgen.“
 - „Ich habe es im echten Kalender eingetragen.“
+- „Der Termin ist fest gebucht.“
 
-The confirmation summary always frames the result as a *Vormerkung* — „Dies ist
-eine Vormerkung, kein garantierter Termin.“
+The confirmation summary always frames the result as a non-binding note —
+„Perfekt, ich habe den Termin unverbindlich vorgemerkt: … Unser Team bestätigt
+ihn anschließend.“ It never says „gebucht“ or claims a guarantee.
 
 ## Public API
 

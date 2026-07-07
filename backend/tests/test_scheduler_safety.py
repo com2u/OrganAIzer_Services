@@ -106,14 +106,17 @@ class TestPhoneWording:
     def test_offer_lists_slots_safely(self):
         slots = generate_slots(MONDAY, 30)[:3]
         text = sched_phone.format_slot_offer(slots)
-        assert "Ich kann Ihnen folgende Zeiten anbieten" in text
-        assert "08:00" in text
+        # One natural spoken sentence — an offer ("anbieten"), never a bullet list
+        assert "könnte ich Ihnen" in text
+        assert "anbieten" in text
+        assert "8 Uhr" in text
+        assert "\n" not in text
         for bad in sched_phone.FORBIDDEN_PHRASES:
             assert bad.lower() not in text.lower()
 
     def test_offer_accepts_tuples_too(self):
         text = sched_phone.format_slot_offer([(datetime(2026, 7, 6, 8, 0), datetime(2026, 7, 6, 8, 30))])
-        assert "08:00" in text
+        assert "8 Uhr" in text
 
     def test_empty_offer_is_honest(self):
         assert "keine passenden Zeiten" in sched_phone.format_slot_offer([])
@@ -128,9 +131,10 @@ class TestPhoneWording:
             assigned_resource="remote_support_queue",
         )
         summary = sched_phone.build_confirmation_summary(appt)
-        assert "merke den termin vor" in summary.lower()
-        assert "Vormerkung" in summary
-        assert "kein garantierter Termin" in summary
+        # Simulation-honest framing: noted non-bindingly, confirmed by the team —
+        # never "gebucht", never a guarantee.
+        assert "unverbindlich vorgemerkt" in summary
+        assert "gebucht" not in summary.lower()
         for bad in sched_phone.FORBIDDEN_PHRASES:
             assert bad.lower() not in summary.lower()
 

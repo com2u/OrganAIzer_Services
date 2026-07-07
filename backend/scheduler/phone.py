@@ -19,8 +19,8 @@ from .models import Appointment, Slot
 # Phrases the AI is allowed to use (simulation-honest).
 ALLOWED_PHRASES = (
     "Ich kann Ihnen einen Termin vormerken.",
-    "Ich kann Ihnen folgende Zeiten anbieten.",
-    "Ich merke den Termin vor.",
+    "Am Montag könnte ich Ihnen 9 Uhr oder 10 Uhr anbieten.",
+    "Perfekt, ich habe den Termin unverbindlich vorgemerkt.",
 )
 
 # Phrases the AI must NEVER use — they imply a guarantee or a real calendar write.
@@ -34,6 +34,9 @@ FORBIDDEN_PHRASES = (
     "im Kalender eingetragen",
     "fest eingetragen",
     "garantiert Ihnen",
+    "Termin ist gebucht",
+    "fest gebucht",
+    "verbindlich gebucht",
 )
 
 # German weekday names, Monday-first (datetime.weekday()).
@@ -45,6 +48,12 @@ _WEEKDAYS_DE = (
     "Freitag",
     "Samstag",
     "Sonntag",
+)
+
+# German month names (index 0 = Januar) for natural spoken dates.
+_MONTHS_DE = (
+    "Januar", "Februar", "März", "April", "Mai", "Juni",
+    "Juli", "August", "September", "Oktober", "November", "Dezember",
 )
 
 # Human-friendly German labels for the v0.1 appointment types.
@@ -74,10 +83,22 @@ def assert_phrase_safe(text: str) -> str:
     return text
 
 
-def _format_slot_de(start: datetime) -> str:
-    """e.g. 'Dienstag, 01.07.2026 um 09:00 Uhr'."""
+def _format_time_de(start: datetime) -> str:
+    """e.g. '9 Uhr' / '9:30 Uhr' — no leading zeros, so TTS reads it naturally."""
+    if start.minute == 0:
+        return f"{start.hour} Uhr"
+    return f"{start.hour}:{start.minute:02d} Uhr"
+
+
+def _format_day_de(start: datetime) -> str:
+    """e.g. 'Dienstag, den 1. Juli' — spoken date, no year (offers are ≤ 14 days out)."""
     weekday = _WEEKDAYS_DE[start.weekday()]
-    return f"{weekday}, {start.strftime('%d.%m.%Y')} um {start.strftime('%H:%M')} Uhr"
+    return f"{weekday}, den {start.day}. {_MONTHS_DE[start.month - 1]}"
+
+
+def _format_slot_de(start: datetime) -> str:
+    """e.g. 'Dienstag, den 1. Juli um 9 Uhr'."""
+    return f"{_format_day_de(start)} um {_format_time_de(start)}"
 
 
 def _slot_start(slot) -> datetime:
@@ -87,22 +108,36 @@ def _slot_start(slot) -> datetime:
     return slot[0]
 
 
+def _join_oder(parts: list[str]) -> str:
+    """'9 Uhr' | '9 Uhr oder 10 Uhr' | '9 Uhr, 9:30 Uhr oder 10 Uhr'."""
+    if len(parts) == 1:
+        return parts[0]
+    return ", ".join(parts[:-1]) + f" oder {parts[-1]}"
+
+
 def format_slot_offer(slots: Iterable) -> str:
     """
     Build a safe German sentence offering the given slots. Accepts :class:`Slot`
     objects (as returned by the service) or ``(start, end)`` tuples. If no slots
     are available, returns an honest "no slots" sentence.
+
+    The result is ONE natural spoken sentence (never a bullet list — it is read
+    aloud by TTS), e.g. "Am Montag, den 6. Juli könnte ich Ihnen 9 Uhr,
+    9:30 Uhr oder 10 Uhr anbieten."
     """
     slots = list(slots)
     if not slots:
         return assert_phrase_safe(
             "Aktuell kann ich Ihnen leider keine passenden Zeiten anbieten."
         )
-    lines = [f"- {_format_slot_de(_slot_start(slot))}" for slot in slots]
-    body = "\n".join(lines)
-    return assert_phrase_safe(
-        "Ich kann Ihnen folgende Zeiten anbieten:\n" + body
-    )
+    starts = [_slot_start(slot) for slot in slots]
+    if len({s.date() for s in starts}) == 1:
+        times = _join_oder([_format_time_de(s) for s in starts])
+        sentence = f"Am {_format_day_de(starts[0])} könnte ich Ihnen {times} anbieten."
+    else:
+        when = _join_oder([_format_slot_de(s) for s in starts])
+        sentence = f"Ich könnte Ihnen {when} anbieten."
+    return assert_phrase_safe(sentence)
 
 
 def build_confirmation_summary(
@@ -129,10 +164,11 @@ def build_confirmation_summary(
 
     label = APPOINTMENT_TYPE_LABELS_DE.get(appointment_type, appointment_type)
     when = _format_slot_de(selected_slot_start)
-    duration_part = f" ({duration_minutes} Min.)" if duration_minutes else ""
+    duration_part = f" ({duration_minutes} Minuten)" if duration_minutes else ""
 
     summary = (
-        f"Ich merke den Termin vor: {label} am {when}{duration_part}. "
-        "Dies ist eine Vormerkung, kein garantierter Termin."
+        f"Perfekt, ich habe den Termin unverbindlich vorgemerkt: "
+        f"{label} am {when}{duration_part}. "
+        "Unser Team bestätigt ihn anschließend."
     )
     return assert_phrase_safe(summary)

@@ -65,7 +65,9 @@ class TestSlotsAreOfferedNotInvented:
         _turn(state, "Ich hätte gerne einen Rückruf", store)      # → asks day
         res = _turn(state, "am Montag", store)                    # → offers slots
         assert state["stage"] == "offered"
-        assert "folgende Zeiten" in res.reply
+        # Natural spoken offer sentence, never a bullet list
+        assert "anbieten" in res.reply
+        assert "\n" not in res.reply
         # every offered slot must be a real Scheduler-generated slot for that day
         valid = {s.start for s in generate_slots(MONDAY, 30)}
         assert state["offered_slots"]
@@ -139,7 +141,8 @@ class TestBookingAfterConfirmation:
 
     def test_confirmation_wording_is_safe_vormerkung(self, store):
         _, res = self._book(store)
-        assert "kein garantierter Termin" in res.reply
+        assert "unverbindlich vorgemerkt" in res.reply
+        assert "gebucht" not in res.reply.lower()
         for bad in sd.sched_phone.FORBIDDEN_PHRASES:
             assert bad.lower() not in res.reply.lower()
 
@@ -163,7 +166,7 @@ class TestBookingAfterConfirmation:
             phone="+491701234567", caller_name="Max Mustermann", call_id="call-inv-1",
         )
         assert res.booked
-        assert "kein garantierter Termin" in res.reply
+        assert "unverbindlich vorgemerkt" in res.reply
         rec = read_appointments(store)[0]
         assert rec["status"] == "simulated"
         assert "Rechnung" in rec["topic"]
