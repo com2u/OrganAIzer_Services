@@ -39,6 +39,8 @@ from scheduler import (
     list_available_slots,
 )
 from scheduler import phone as sched_phone
+from scheduler.availability import filter_by_time_window
+from voice.time_preferences import parse_time_preference
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +88,16 @@ _WEEKDAYS_DE = {
     "freitag": 4, "samstag": 5, "sonntag": 6,
 }
 
-_TYPE_LABELS_DE = sched_phone.APPOINTMENT_TYPE_LABELS_DE
+# Natural spoken acknowledgement of the understood request (with article), so
+# the engine never reads a bare category label ("Alles klar, Rückruf.") aloud.
+_TYPE_ACK_DE = {
+    "callback": "einen Rückruf",
+    "remote_support": "eine Fernwartung",
+    "technical_consultation": "eine technische Beratung",
+    "on_site_visit_request": "einen Vor-Ort-Termin",
+    "sales_consultation": "eine Vertriebsberatung",
+    "maintenance_request": "einen Wartungstermin",
+}
 
 _NEGATIVE_WORDS = (
     "nein", "ne ", "nö", "passt nicht", "anderer", "anderen", "andere",
@@ -110,14 +121,21 @@ class TurnResult:
 def new_state() -> dict:
     """Create a fresh per-call appointment state."""
     return {
-        "stage": "idle",           # idle | collecting | offered | booked
+        "stage": "idle",                           # idle | collecting | offered | booked
         "appointment_type": None,
         "topic": None,
-        "preferred_day": None,     # date
-        "offered_slots": [],       # list[Slot]
-        "offer_day": None,         # date the offered slots belong to
+        "preferred_day": None,                     # date
+        "offered_slots": [],                       # list[Slot]
+        "offer_day": None,                         # date the offered slots belong to
         "classify_attempts": 0,
         "select_attempts": 0,
+        # ── Memory to prevent repetition ──
+        "last_asked_question": None,               # "reason" | "day" | "confirmation"
+        "have_time_preference": False,             # Did caller mention a time?
+        "reason_clarification_attempts": 0,        # How many times asked for reason?
+        "inferred_from": None,                     # "keywords" or "clarification_response"
+        "time_window": None,                       # (start, end) time-of-day preference
+        "auto_offer_done": False,                  # earliest-slot fallback already used?
     }
 
 
@@ -158,6 +176,21 @@ def _parse_preferred_day(text: str, today: date_cls) -> Optional[date_cls]:
     return None
 
 
+def _resolve_preferred_day(time_pref, text: str, today: date_cls) -> Optional[date_cls]:
+    """Turn a parsed time preference (plus the raw text) into a concrete date.
+
+    Also resolves the vaguer answers callers actually give: "nächste Woche" →
+    next Monday, "diese Woche" → first available from today.
+    """
+    if time_pref.days_offset is not None:
+        return today + timedelta(days=time_pref.days_offset)
+    if time_pref.target_day == "next_week":
+        return today + timedelta(days=7 - today.weekday())  # next Monday
+    if time_pref.target_day == "this_week":
+        return today
+    return _parse_preferred_day(text, today)
+
+
 def _first_available(
     appt_type: str, start: date_cls, now: datetime, path
 ) -> tuple[Optional[date_cls], list[Slot]]:
@@ -196,8 +229,126 @@ def _match_selection(text: str, slots: list[Slot]) -> Optional[Slot]:
     return None
 
 
-def _label(appt_type: str) -> str:
-    return _TYPE_LABELS_DE.get(appt_type, appt_type)
+def _ack(appt_type: str) -> str:
+    """Spoken acknowledgement with article: 'einen Rückruf', 'eine Fernwartung'."""
+    return _TYPE_ACK_DE.get(appt_type, "einen Termin")
+
+
+# ── context-aware inference (non-menu) ────────────────────────────────────
+def _infer_appointment_type_from_context(text: str, state: dict) -> Optional[str]:
+    """
+    Infer appointment type from caller's language + context.
+    Does NOT ask a menu; maps natural caller speech to internal types.
+
+    Maps:
+    - "Rechnung", "Zahlung", "berechnet" → callback (billing follow-up)
+    - "neue Anlage", "Installation", "Umzug" → sales_consultation
+    - "Fernwartung", "Remote", "TeamViewer" → remote_support (explicit)
+    - "vor Ort", "Techniker", "vorbeikommen" → on_site_visit_request
+    - "Wartung", "Vertrag", "regelmäßig" → maintenance_request
+    - "Rückruf", "ruft an", "anrufen" (no other details) → callback
+    - "Problem", "kaputt", "nicht" + urgency marker → remote_support or on_site_visit_request
+
+    Returns appointment type or None (unknown/unclear).
+    """
+    lowered = text.lower()
+
+    # Billing / invoice follow-up
+    if _contains(lowered, ("rechnung", "mahnung", "zahlung", "berechnet", "rechnungsfrage")):
+        return "callback"  # Not a technical appointment; callback for billing
+
+    # New system / installation / sales
+    has_neue = "neue" in lowered or "neuer" in lowered or "neuanlage" in lowered
+    has_system = any(word in lowered for word in ("anlage", "installation", "system", "telefon"))
+    if has_neue and has_system:
+        return "sales_consultation"
+    if _contains(lowered, ("umzug", "neukunde", "kaufen", "anschaffen")):
+        return "sales_consultation"
+
+    # Explicit remote support
+    if _contains(lowered, ("fernwartung", "fernzugriff", "remote", "teamviewer", "remote support")):
+        return "remote_support"
+
+    # On-site / technician visit
+    if _contains(lowered, ("vor ort", "vor-ort", "vorort", "techniker", "vorbeikommen",
+                           "monteur", "einbau", "vorbeischauen")):
+        return "on_site_visit_request"
+
+    # Maintenance contract / routine service
+    if _contains(lowered, ("wartung", "maintenance", "instandhaltung", "wartungsvertrag",
+                           "regelmäßig", "routine")):
+        return "maintenance_request"
+
+    # Explicit callback request
+    if _contains(lowered, ("rückruf", "rueckruf", "zurückrufen", "zurueckrufen", "ruft mich an",
+                           "anrufen", "callback")):
+        # Only if no other appointment intent mixed in
+        if not _contains(lowered, ("techniker", "installation", "monteur")):
+            return "callback"
+
+    # Problem context: could be remote_support or on_site_visit_request
+    # We infer based on context clues, not exact keywords
+    # Must have "problem"/"kaputt"/"funktioniert"/"down"/"ausfall"/"fehler" + "nicht"
+    # Not just "nicht" alone (which would match "weiß nicht", "keine ahnung", etc.)
+    has_problem_word = _contains(lowered, ("problem", "kaputt", "ausfall", "fehler", "down",
+                                            "funktioniert nicht", "funktioniert nicht mehr",
+                                            "geht nicht", "geht nicht mehr"))
+    if has_problem_word:
+        # If caller mentions sending someone or on-site, prefer on_site_visit_request
+        if _contains(lowered, ("vor ort", "vor-ort", "techniker vorbeischicken")):
+            return "on_site_visit_request"
+        # Otherwise assume remote_support is possible (diagnostics first)
+        return "remote_support"
+
+    # Generic consultation (not enough context to infer a specific type)
+    if _contains(lowered, ("beratung", "consultation", "erklär", "einweisung")):
+        return "technical_consultation"
+
+    # Nothing matched
+    return None
+
+
+def _ask_reason_clarification_question(state: dict) -> TurnResult:
+    """
+    Ask a natural follow-up about appointment reason (never a menu).
+    Varies by attempt so it doesn't sound robotic. Callers guard the attempt
+    cap (``_MAX_ATTEMPTS``) and fall back to a callback offer beyond it.
+    """
+    attempt = state.get("reason_clarification_attempts", 0)
+
+    if attempt == 0:
+        # First attempt: open question
+        return TurnResult(sched_phone.assert_phrase_safe(
+            "Worum geht es denn genau — ist es ein technisches Problem, "
+            "oder eher etwas anderes?"
+        ))
+    # Second attempt: rephrase, never the identical question again
+    return TurnResult(sched_phone.assert_phrase_safe(
+        "Was möchten Sie klären lassen — geht es um eine Fernwartung, "
+        "um eine Beratung, oder um etwas ganz anderes?"
+    ))
+
+
+def _fallback_to_callback(state: dict, now: datetime, path) -> TurnResult:
+    """
+    The reason stayed unclear after one rephrase — keep the conversation moving
+    with a callback a Mitarbeiter can pick up, instead of restarting or dropping
+    the caller back to the LLM mid-flow. Nothing is booked here; the caller
+    still has to confirm a concrete offered slot.
+    """
+    state["appointment_type"] = "callback"
+    state["inferred_from"] = "unclear_fallback"
+    if state.get("preferred_day") is not None:
+        return _offer_slots(
+            state, now, path,
+            intro="Das klärt am besten ein Mitarbeiter direkt mit Ihnen — "
+                  "ich kann Ihnen einen Rückruf vormerken. ",
+        )
+    state["last_asked_question"] = "day"
+    return TurnResult(sched_phone.assert_phrase_safe(
+        "Das klärt am besten ein Mitarbeiter direkt mit Ihnen. "
+        "An welchem Tag passt Ihnen ein Rückruf?"
+    ))
 
 
 # ── main entry point ─────────────────────────────────────────────────────────
@@ -238,9 +389,20 @@ def handle_turn(
             return None
         state["stage"] = "collecting"
         state["topic"] = utterance.strip()[:200]
-        state["appointment_type"] = _classify_type(text)
+
+        # Try both inference methods on the first utterance
+        state["appointment_type"] = _infer_appointment_type_from_context(text, state) or _classify_type(text)
+
         # A day may already be in the first utterance ("Rückruf morgen bitte").
-        state["preferred_day"] = _parse_preferred_day(text, today)
+        time_pref = parse_time_preference(text, now)
+        state["preferred_day"] = _resolve_preferred_day(time_pref, text, today)
+        if state["preferred_day"] is not None:
+            state["have_time_preference"] = True
+
+        # Store time window preference if present (morning, afternoon, etc.)
+        if time_pref.time_window:
+            state["time_window"] = time_pref.time_window
+
         return _advance_collecting(state, now, path)
 
     if stage == "collecting":
@@ -258,48 +420,107 @@ def handle_turn(
 
 # ── stage handlers ───────────────────────────────────────────────────────────
 def _advance_collecting(state: dict, now: datetime, path) -> TurnResult:
-    """Ask the next single missing detail, or move to offering when ready."""
-    if state.get("appointment_type") is None:
+    """
+    Called on entry to collecting stage (from idle).
+    Decide what to ask first: reason (type) or day?
+    Never expose the appointment-type menu, never ask for something already said.
+    """
+    # Type AND day already in the first utterance ("Rückruf morgen bitte") →
+    # nothing left to collect, offer real slots straight away.
+    if state.get("appointment_type") is not None and state.get("preferred_day") is not None:
+        return _offer_slots(state, now, path)
+
+    # If type was already inferred from the first utterance, ask for day
+    if state.get("appointment_type") is not None:
+        state["last_asked_question"] = "day"
         return TurnResult(sched_phone.assert_phrase_safe(
-            "Gerne, das kann ich für Sie vormerken. Geht es um einen Rückruf, "
-            "eine Fernwartung, einen Vor-Ort-Termin, eine Beratung oder eine Wartung?"
+            f"Alles klar, dann {_ack(state['appointment_type'])}. "
+            "An welchem Tag würde es Ihnen passen?"
         ))
-    if state.get("preferred_day") is None:
-        return TurnResult(sched_phone.assert_phrase_safe(
-            f"Alles klar, {_label(state['appointment_type'])}. An welchem Tag "
-            "würde es Ihnen am besten passen?"
-        ))
-    return _offer_slots(state, now, path)
+
+    # If time preference was detected in the first utterance, ask for reason
+    if state.get("have_time_preference"):
+        state["last_asked_question"] = "reason"
+        state["reason_clarification_attempts"] = 0
+        return _ask_reason_clarification_question(state)
+
+    # Default: ask what the appointment is about (natural question, not a menu)
+    state["last_asked_question"] = "reason"
+    state["reason_clarification_attempts"] = 0
+    return TurnResult(sched_phone.assert_phrase_safe(
+        "Gerne, das kann ich für Sie vormerken. Worum geht es denn?"
+    ))
 
 
 def _collecting_turn(state: dict, text: str, now: datetime, path) -> TurnResult:
+    """
+    Handle a turn while collecting appointment details.
+    Allow info in any order; never re-ask something already answered.
+    """
     today = now.date()
-    if state.get("appointment_type") is None:
-        appt_type = _classify_type(text)
-        if appt_type is None:
-            state["classify_attempts"] += 1
-            if state["classify_attempts"] >= _MAX_ATTEMPTS:
-                _reset(state)
-                return TurnResult(sched_phone.assert_phrase_safe(
-                    "Ich verbinde Sie dazu am besten mit einem Mitarbeiter."
-                ))
-            return TurnResult(sched_phone.assert_phrase_safe(
-                "Damit ich das richtig vormerke: Rückruf, Fernwartung, "
-                "Vor-Ort-Termin, Beratung oder Wartung?"
-            ))
-        state["appointment_type"] = appt_type
+    last_asked = state.get("last_asked_question")
 
+    # ── Absorb a day / time window from this utterance first (any order) ──────
+    # Even an answer to the *reason* question may carry the day ("Morgen bitte")
+    # — remember it so it is never asked again.
     if state.get("preferred_day") is None:
-        day = _parse_preferred_day(text, today)
-        if day is None:
-            # No parseable day — default to the next open day rather than loop.
-            day = today
-        state["preferred_day"] = day
+        time_pref = parse_time_preference(text, now)
+        day = _resolve_preferred_day(time_pref, text, today)
+        if day is not None:
+            state["preferred_day"] = day
+            state["have_time_preference"] = True
+        if time_pref.time_window:
+            state["time_window"] = time_pref.time_window
 
-    return _offer_slots(state, now, path)
+    # ── Try to infer appointment type if missing ──────────────────────────────
+    if state.get("appointment_type") is None:
+        # Context-aware inference first, then keyword matching
+        appt_type = _infer_appointment_type_from_context(text, state) or _classify_type(text)
+
+        if appt_type is None:
+            state["reason_clarification_attempts"] += 1
+            if state["reason_clarification_attempts"] >= _MAX_ATTEMPTS:
+                # Still unclear after one rephrase — continue as a callback
+                # offer instead of restarting or dropping to the LLM mid-flow.
+                return _fallback_to_callback(state, now, path)
+            # Ask a clarifying question (varies by attempt, never repeated)
+            state["last_asked_question"] = "reason"
+            return _ask_reason_clarification_question(state)
+
+        state["appointment_type"] = appt_type
+        state["inferred_from"] = "caller_utterance"
+
+    # ── We have enough info → offer real slots ────────────────────────────────
+    if state.get("preferred_day") is not None:
+        return _offer_slots(state, now, path)
+
+    # ── Type known, day still open → ask for the day exactly once ─────────────
+    if last_asked != "day":
+        state["last_asked_question"] = "day"
+        return TurnResult(sched_phone.assert_phrase_safe(
+            f"Gut, dann {_ack(state['appointment_type'])}. "
+            "An welchem Tag passt es Ihnen am besten?"
+        ))
+
+    # The day question was already asked and the answer contained no usable day —
+    # don't repeat it (and never fall back to the reason question, which was
+    # already answered). Keep the conversation moving with the earliest times.
+    if not state.get("auto_offer_done"):
+        state["auto_offer_done"] = True
+        state["preferred_day"] = today
+        return _offer_slots(
+            state, now, path,
+            intro="Dann schaue ich einfach, was als Nächstes frei ist. ",
+        )
+
+    # The earliest times were already tried too — a human sorts this out faster.
+    _reset(state)
+    return TurnResult(
+        reply="ESCALATE: Terminwunsch — Zeitabsprache bitte durch Mitarbeiter"
+    )
 
 
-def _offer_slots(state: dict, now: datetime, path) -> TurnResult:
+def _offer_slots(state: dict, now: datetime, path, intro: str = "") -> TurnResult:
     appt_type = state["appointment_type"]
     start = state.get("preferred_day") or now.date()
     day, slots = _first_available(appt_type, start, now, path)
@@ -309,14 +530,29 @@ def _offer_slots(state: dict, now: datetime, path) -> TurnResult:
             "Aktuell kann ich Ihnen leider keine passenden Zeiten anbieten. "
             "Ein Mitarbeiter kann sich bei Ihnen melden."
         ))
+
+    # Apply time window preference if available (morning, afternoon, etc.)
+    time_window = state.get("time_window")
+    if time_window:
+        filtered_slots = filter_by_time_window(slots, time_window)
+        # If filtering eliminates all slots, fall back to unfiltered
+        # (prefer some slots to none)
+        if filtered_slots:
+            slots = filtered_slots
+
     state["stage"] = "offered"
     state["offered_slots"] = slots
     state["offer_day"] = day
     state["select_attempts"] = 0
     offer = sched_phone.format_slot_offer(slots)
-    return TurnResult(sched_phone.assert_phrase_safe(
-        offer + " Welche Zeit passt Ihnen? Ich merke sie Ihnen dann unverbindlich vor."
-    ))
+    # One natural follow-up question, phrased for the number of options.
+    if len(slots) == 1:
+        tail = " Passt das für Sie? Ich merke die Zeit dann unverbindlich vor."
+    elif len(slots) == 2:
+        tail = " Was passt Ihnen besser? Ich merke die Zeit dann unverbindlich vor."
+    else:
+        tail = " Was passt Ihnen am besten? Ich merke die Zeit dann unverbindlich vor."
+    return TurnResult(sched_phone.assert_phrase_safe(intro + offer + tail))
 
 
 def _offered_turn(
@@ -330,6 +566,7 @@ def _offered_turn(
         state["stage"] = "collecting"
         state["preferred_day"] = None
         state["offered_slots"] = []
+        state["last_asked_question"] = "day"
         return TurnResult(sched_phone.assert_phrase_safe(
             "Kein Problem. An welchem anderen Tag würde es Ihnen passen?"
         ))
@@ -343,11 +580,18 @@ def _offered_turn(
             state["select_attempts"] += 1
             if state["select_attempts"] >= _MAX_ATTEMPTS:
                 _reset(state)
-                return None  # hand back to the LLM
-            return TurnResult(sched_phone.assert_phrase_safe(
-                "Welche der genannten Zeiten passt Ihnen — die erste, zweite "
-                "oder dritte?"
-            ))
+                return None  # hand back to the LLM (safety valve)
+            # Re-ask once, matched to how many times were actually offered.
+            if len(slots) == 1:
+                ask = ("Passt die genannte Zeit für Sie? "
+                       "Sonst schaue ich gern nach einem anderen Tag.")
+            elif len(slots) == 2:
+                ask = ("Welche der beiden Zeiten passt Ihnen besser — "
+                       "die erste oder die zweite?")
+            else:
+                ask = ("Welche der genannten Zeiten passt Ihnen — "
+                       "die erste, die zweite oder die dritte?")
+            return TurnResult(sched_phone.assert_phrase_safe(ask))
 
     # Explicit confirmation of a concrete slot → simulate the booking.
     duration = int((chosen.end - chosen.start).total_seconds() // 60)

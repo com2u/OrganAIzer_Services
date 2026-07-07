@@ -223,8 +223,9 @@ The Scheduler is wired into the live call loop through a single, narrow seam.
 Flow and guarantees:
 
 1. Appointment intent (or a clearly named service type) starts the flow; the
-   engine collects **one detail at a time**: appointment type, then a preferred
-   day.
+   engine asks **one question at a time** but accepts the details in **any
+   order** — a day given before the reason (or vice versa) is remembered and
+   never asked again. "Nächste Woche" resolves to next Monday.
 2. It offers **1–3 real slots** from `list_available_slots(...)` via
    `phone.format_slot_offer(...)` — it never invents times.
 3. **Nothing is booked until the caller confirms a specific offered slot**
@@ -234,8 +235,16 @@ Flow and guarantees:
    *Vormerkung*, never a guarantee).
 4. **Emergencies / high-risk** utterances are never booked — the engine emits the
    existing `ESCALATE:` directive so the loop's escalation path handles them.
-5. If it cannot classify the type or parse a selection after a couple of tries,
-   it resets and hands control back to the LLM.
+5. If the reason stays unclear after one rephrase, the engine **continues as a
+   callback offer** ("Das klärt am besten ein Mitarbeiter direkt mit Ihnen…")
+   instead of restarting — booking still requires an explicitly confirmed slot.
+   If the caller cannot name a day after being asked, it offers the **earliest
+   free times** once; if that fails too, it escalates. Only a failed slot
+   *selection* (two non-answers to an offer) resets and hands back to the LLM,
+   since those utterances are usually not appointment answers at all.
+6. When the AI speaks a farewell ("… Auf Wiederhören."), `_conversation_loop`
+   ends the call naturally instead of recording on and asking "Sind Sie noch
+   da?" after the goodbye.
 
 Intent → appointment-type mapping (keyword-based, German-first): Rückruf →
 `callback`; Fernwartung → `remote_support`; Vor-Ort / Techniker / Installation →
@@ -249,7 +258,10 @@ booking.
 
 Tests: `backend/tests/test_scheduler_phone_integration.py` (engine state machine +
 an end-to-end `_conversation_loop` wiring test proving a booking is written via the
-Scheduler and the LLM is never asked to invent slots).
+Scheduler and the LLM is never asked to invent slots),
+`backend/tests/test_scheduler_dialogue_fix.py` (no repeated/re-asked questions, no
+type menu, any-order details, callback fallback, offer/confirmation wording) and
+`backend/tests/test_call_farewell.py` (call ends naturally after the goodbye).
 
 ## Not implemented (deferred)
 

@@ -56,7 +56,11 @@ class TestIntentTriggersFlow:
         state = sd.new_state()
         res = _turn(state, "Ich möchte einen Termin vereinbaren", store)
         assert res is not None and state["appointment_type"] is None
-        assert "Rückruf" in res.reply and "Wartung" in res.reply
+        # Should ask 'Worum geht es denn?' (natural question, not menu)
+        assert "Worum geht es denn" in res.reply
+        # Should NOT expose the appointment-type menu
+        assert "Rückruf, Fernwartung" not in res.reply
+        assert "Beratung oder Wartung" not in res.reply
 
 
 class TestSlotsAreOfferedNotInvented:
@@ -202,14 +206,17 @@ class TestUnclearAndEmergencyDoNotBook:
         assert res.reply.upper().startswith("ESCALATE:")
         assert read_appointments(store) == []
 
-    def test_repeated_unclear_type_gives_up_without_booking(self, store):
+    def test_repeated_unclear_type_offers_callback_without_booking(self, store):
         state = sd.new_state()
         _turn(state, "Ich möchte einen Termin", store)   # type unknown → ask
-        _turn(state, "weiß nicht", store)                # attempt 1 → re-ask
-        res = _turn(state, "keine ahnung", store)        # attempt 2 → give up
-        assert read_appointments(store) == []
-        assert state["stage"] == "idle"
+        _turn(state, "weiß nicht", store)                # attempt 1 → rephrase
+        res = _turn(state, "keine ahnung", store)        # attempt 2 → callback offer
+        assert read_appointments(store) == []            # still nothing booked
         assert res is not None and "Mitarbeiter" in res.reply
+        # The flow continues deterministically as a callback (no restart, no
+        # dangling question handed to the LLM).
+        assert state["stage"] == "collecting"
+        assert state["appointment_type"] == "callback"
 
 
 class TestTypeMapping:
