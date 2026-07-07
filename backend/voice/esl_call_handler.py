@@ -662,16 +662,14 @@ def _conversation_loop(
             logger.info("Escalation triggered: %s", reason)
 
             # ── recording consent ─────────────────────────────────────────────
+            # IMPORTANT: Escalation consent is always German (legal/compliance requirement).
+            # Do not condition on conv_lang — consent wording must be stable and professional.
             consent_question = (
-                "Before I connect you with a team member — do you consent "
-                "to this call being recorded for quality purposes? "
-                "Please say yes or no."
-                if conv_lang == "en"
-                else "Bevor ich Sie weiterleite — sind Sie damit einverstanden, "
-                     "dass dieses Gespräch zu Qualitätszwecken aufgezeichnet wird? "
-                     "Bitte sagen Sie Ja oder Nein."
+                "Bevor ich Sie weiterleite — sind Sie damit einverstanden, "
+                "dass dieses Gespräch zu Qualitätszwecken aufgezeichnet wird? "
+                "Bitte sagen Sie Ja oder Nein."
             )
-            _speak_and_play(handler, consent_question, lang=conv_lang)
+            _speak_and_play(handler, consent_question, lang="de")
 
             recording_consent = False
             if not handler.is_hung_up:
@@ -695,12 +693,10 @@ def _conversation_loop(
 
             logger.info("Recording consent: %s", recording_consent)
 
-            hold_msg = (
-                "One moment please, I'm connecting you with a team member."
-                if conv_lang == "en"
-                else "Einen Moment bitte, ich leite Sie an einen Mitarbeiter weiter."
-            )
-            _speak_and_play(handler, hold_msg, lang=conv_lang)
+            # IMPORTANT: Escalation transfer message is always German (Teleprofi requirement).
+            # Do not condition on conv_lang — professional consistency during handoff.
+            hold_msg = "Einen Moment bitte, ich leite Sie an einen Mitarbeiter weiter."
+            _speak_and_play(handler, hold_msg, lang="de")
 
             # Stop the full-call recording so the file is finalised before emailing
             if call_rec_path:
