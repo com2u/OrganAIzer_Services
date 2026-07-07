@@ -282,6 +282,23 @@ def _rotating_continuation(lang: str, attempt: int) -> str:
     return pool[(max(1, attempt) - 1) % len(pool)]
 
 
+# ── natural call ending after a spoken goodbye ────────────────────────────────
+# When the AI's reply is a farewell ("… Auf Wiederhören.") the conversation is
+# over — without this the loop keeps recording and eventually asks "Sind Sie
+# noch da?" AFTER it already said goodbye. Detection is on the AI reply (not the
+# caller utterance) so a caller merely mentioning "Wiederhören" mid-sentence
+# never ends the call; the LLM only says it when closing.
+_FAREWELL_MARKERS = ("auf wiederhören", "auf wiederhoeren", "goodbye")
+
+
+def _is_farewell_reply(reply: str) -> bool:
+    """True when the AI reply is a closing farewell — the call should end."""
+    if not reply:
+        return False
+    lowered = reply.lower()
+    return any(marker in lowered for marker in _FAREWELL_MARKERS)
+
+
 def _audio_dir() -> Path:
     """Return (and ensure) the temp directory for WAV files."""
     p = Path(config.FREESWITCH_AUDIO_TEMP_DIR).resolve()
@@ -776,6 +793,13 @@ def _conversation_loop(
                 )
             finally:
                 _cleanup(_proc["wav"])
+
+        # ── natural end after goodbye ─────────────────────────────────────────
+        # The AI just said its farewell — end the call instead of recording on
+        # and asking "Sind Sie noch da?" after having said goodbye.
+        if _is_farewell_reply(reply):
+            logger.info("Farewell spoken — ending call naturally.")
+            break
 
     return False
 
