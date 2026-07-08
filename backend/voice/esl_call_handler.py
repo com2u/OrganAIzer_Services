@@ -32,6 +32,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from utils.lang_tracking import (
+    DE_CHARS as _DE_CHARS,
+    DE_WORDS as _DE_WORDS,
+    update_conversation_language as _update_conversation_language,
+)
 from voice import call_log, contacts as _contacts, config
 from voice.audio_bridge import transcribe_file, speak_to_file
 from voice.llm_bridge import get_response, new_history, OUTBOUND_SYSTEM_PROMPT
@@ -39,22 +44,39 @@ from voice.llm_bridge import get_response, new_history, OUTBOUND_SYSTEM_PROMPT
 logger = logging.getLogger(__name__)
 
 # ── language detection ────────────────────────────────────────────────────────
-_DE_CHARS = frozenset("äöüÄÖÜß")
-_DE_WORDS = frozenset([
-    "ich", "und", "die", "das", "ist", "sie", "der", "ein", "eine",
-    "auf", "mit", "von", "für", "nicht", "haben", "kann", "bitte",
-    "danke", "gerne", "herr", "frau", "guten",
-])
+# Marker sets live in utils.lang_tracking, shared with the browser voice mode
+# (api/voice_mode.py) so both surfaces apply identical switching rules.
 
 
 def _detect_lang(text: str) -> str:
-    """Return 'de' or 'en' based on text content. Fast, no external library."""
+    """Return 'de' or 'en' based on text content. Fast, no external library.
+
+    Only used as the last-resort fallback in _speak_and_play when no explicit
+    language is passed. The conversation language itself is owned by the CALLER
+    and tracked via _caller_language — never re-derived from AI-generated text
+    (a short LLM reply like "Okay." has no German markers and would otherwise
+    flip the TTS voice to English mid-call).
+    """
     if any(c in _DE_CHARS for c in text):
         return "de"
     words = set(text.lower().split())
     if words & _DE_WORDS:
         return "de"
     return "en"
+
+
+def _caller_language(text: str, current: str) -> str:
+    """Return the conversation language after hearing caller *text*.
+
+    The conversation language belongs to the caller: it only changes when a
+    sufficiently long caller utterance carries unambiguous markers of the
+    other language. Anything short or ambiguous keeps *current* — so the AI
+    speaks with one consistent voice for the whole call.
+
+    Delegates to the shared tracker in utils.lang_tracking so the phone path
+    and the browser voice mode can never drift apart.
+    """
+    return _update_conversation_language(text, current)
 
 
 # ── filler phrase cache ───────────────────────────────────────────────────────
@@ -411,8 +433,11 @@ def _conversation_loop(
 
     audio_dir = _audio_dir()
     turn = 0
-    # Track conversation language so TTS and STT stay in sync after a switch.
-    # Starts at initial_lang (passed from call context); updates each turn.
+    # Conversation language — owned by the CALLER, not the AI. Starts at
+    # initial_lang (from call context) and only changes when a caller utterance
+    # carries strong evidence of a language switch (see _caller_language).
+    # It is never derived from AI-generated replies, so the TTS voice stays
+    # consistent for the whole call.
     conv_lang = initial_lang
     # Prevent infinite loops when the caller is silent or audio is lost.
     _empty_turns = 0
@@ -431,7 +456,11 @@ def _conversation_loop(
         elapsed = (datetime.now(timezone.utc) - started_at).total_seconds()
         if elapsed >= config.AI_MAX_CALL_SECONDS:
             logger.info("Max call duration reached (%ds), hanging up.", config.AI_MAX_CALL_SECONDS)
-            _speak_and_play(handler, "Die maximale Gesprächsdauer wurde erreicht. Auf Wiederhören!")
+            _speak_and_play(
+                handler,
+                "Die maximale Gesprächsdauer wurde erreicht. Auf Wiederhören!",
+                lang="de",
+            )
             break
 
         # ── record caller speech ──────────────────────────────────────────────
@@ -468,27 +497,26 @@ def _conversation_loop(
             _cn=caller_name,
             _sp=system_prompt,
         ) -> None:
-            t, stt_lang = "", conv_lang
+            t = ""
             if Path(_rec).exists():
                 # Pass the current conversation language so Whisper doesn't
                 # misidentify German phone audio as English (common on noisy lines).
-                t, stt_lang = transcribe_file(_rec, lang=conv_lang)
+                t, _ = transcribe_file(_rec, lang=conv_lang)
             _cleanup(_rec)
             if not t:
                 _proc_done.set()
                 return
             # Skip the LLM call for garbage transcriptions — the main loop
             # handles them with a one-time polite "could you repeat?" prompt.
+            # _proc["lang"] stays at conv_lang: noise carries no language signal.
             if _is_garbage_transcription(t):
                 _proc["text"] = t
-                _proc["lang"] = stt_lang
                 _proc_done.set()
                 return
             # Mid-sentence pause ("…äh", "…und, also,") — skip the LLM and let
             # the main loop offer a gentle continuation prompt instead.
             if _is_likely_unfinished_utterance(t):
                 _proc["text"] = t
-                _proc["lang"] = stt_lang
                 _proc["unfinished"] = True
                 _proc_done.set()
                 return
@@ -517,10 +545,12 @@ def _conversation_loop(
                     _proc_done.set()
                     return
             _proc["text"] = t
-            # Update language from STT detection immediately — the filler for
-            # this turn is already playing, but the NEXT turn's filler will use
-            # the correct language.
-            _proc["lang"] = stt_lang
+            # The conversation language belongs to the CALLER. It only changes
+            # when this utterance carries strong evidence of a language switch;
+            # short/ambiguous utterances keep the current language. AI replies
+            # are never used for detection — a short LLM acknowledgement like
+            # "Okay." must not flip the TTS voice mid-call.
+            _proc["lang"] = _caller_language(t, conv_lang)
             extra = _drain_whisper_queue()
             try:
                 r = asyncio.run(
@@ -535,14 +565,13 @@ def _conversation_loop(
                 logger.error("LLM error: %s", exc)
                 r = (
                     "Es tut mir leid, es gab ein technisches Problem. Bitte versuchen Sie es erneut."
-                    if stt_lang == "de"
+                    if _proc["lang"] == "de"
                     else "I'm sorry, there was a technical issue. Please try again."
                 )
             _proc["reply"] = r
-            # Refine language from LLM reply (handles mixed-language edge cases)
-            _proc["lang"] = _detect_lang(r)
-            # Pre-generate TTS unless the LLM triggered a special action
-            # (ESCALATE replies are never spoken directly to the caller)
+            # Pre-generate TTS in the caller's conversation language, unless the
+            # LLM triggered a special action (ESCALATE replies are never spoken
+            # directly to the caller).
             if not r.upper().startswith("ESCALATE:"):
                 wav = speak_to_file(r, lang=_proc["lang"])
                 _proc["wav"] = wav
@@ -781,7 +810,7 @@ def _conversation_loop(
                     else "Ein Mitarbeiter wird Sie so schnell wie möglich zurückrufen. "
                          "Vielen Dank für Ihren Anruf. Auf Wiederhören."
                 )
-                _speak_and_play(handler, farewell)
+                _speak_and_play(handler, farewell, lang=conv_lang)
             return True
 
         # ── speak reply (WAV already generated in background thread) ─────────
@@ -1136,6 +1165,7 @@ def handle_esl_call(handler, phone_state: dict) -> None:
             caller=caller, caller_name=caller_name, started_at=started_at,
             system_prompt=None, turn_count_ref=turn_ref,
             uuid=uuid, call_rec_path=call_rec_path,
+            initial_lang=config.AI_LANGUAGE,
             dialogue_state=appointment_state,
         )
         turn_count = turn_ref[0]
