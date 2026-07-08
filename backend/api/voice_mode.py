@@ -41,11 +41,11 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from services.executive_agent_service import ExecutiveAgent
 from services.tts_service import (
     normalize_markdown_to_text,
-    detect_language,
     preprocess_text_for_tts,
     synthesize_speech_to_mp3,
 )
 from services.stt_service import get_voice_whisper_model
+from utils.lang_tracking import update_conversation_language
 
 logger = logging.getLogger(__name__)
 
@@ -73,9 +73,17 @@ DEV_MODE        = os.getenv("VOICE_DEBUG", "false").lower() in ("true", "1", "ye
 #      preload — subsequent calls on the same thread are faster.
 _cpu_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="voice-worker")
 
-# ── Session registry for interrupt support ────────────────────────────────────
-# Maps session_id → {"interrupted": bool}
+# ── Session registry for interrupt + language support ────────────────────────
+# Maps session_id → {"interrupted": bool, "lang": "de"|"en"}
 _session_registry: dict = {}
+
+# Conversation language for TTS — owned by the USER, mirroring the phone-path
+# fix in voice/esl_call_handler.py: the session starts German and only switches
+# when the user's transcript carries strong evidence of the other language
+# (see utils.lang_tracking). AI replies are never language-detected — a short
+# reply like "Okay." has no German markers and used to flip the TTS voice to
+# English mid-session (the "two receptionists" bug).
+DEFAULT_SESSION_LANG = "de"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -279,6 +287,25 @@ def _set_interrupt(session_id: str) -> None:
     _session_registry[session_id]["interrupted"] = True
 
 
+def _get_session_lang(session_id: str) -> str:
+    """Current conversation language for the session (user-owned)."""
+    return _session_registry.get(session_id, {}).get("lang", DEFAULT_SESSION_LANG)
+
+
+def _update_session_lang(session_id: str, transcript: str) -> str:
+    """Update the session language from USER input only and return it.
+
+    Called once per turn with the accepted STT transcript, BEFORE the AI
+    reply exists — so AI-generated text can never steer the TTS voice.
+    Short or ambiguous utterances keep the current language.
+    """
+    entry = _session_registry.setdefault(session_id, {})
+    entry["lang"] = update_conversation_language(
+        transcript, entry.get("lang", DEFAULT_SESSION_LANG)
+    )
+    return entry["lang"]
+
+
 # ── Low-information / partial transcript guard (Fix #6) ──────────────────────
 
 _FILLER_WORDS = frozenset({
@@ -338,7 +365,7 @@ async def voice_stream(
     await websocket.accept()
 
     ws_session_id = str(uuid.uuid4())[:8]   # short id for log correlation
-    _session_registry[session_id] = {"interrupted": False}
+    _session_registry[session_id] = {"interrupted": False, "lang": DEFAULT_SESSION_LANG}
 
     logger.info(
         "[VOICE] ▶ WS connected  ws=%s  session=%s  user=%s",
@@ -486,10 +513,19 @@ async def voice_stream(
                     len(transcript), transcript[:40], ws_session_id,
                 )
                 await _send(websocket, "stt.final", text=transcript)
+
+                # ── Conversation language (user-owned) ────────────────────────
+                # Update from the USER transcript, before the AI reply exists.
+                # The reply's TTS voice below uses this value — never a
+                # re-detection of AI-generated text, so short acknowledgements
+                # like "Okay." can no longer flip the voice mid-session.
+                conv_lang = _update_session_lang(session_id, transcript)
+
                 await _send_debug(websocket, {
                     "event": "stt_complete",
                     "transcript": transcript,
                     "latency_ms": time_to_first_transcript_ms,
+                    "lang": conv_lang,
                 })
 
                 # ── Executive AI ──────────────────────────────────────────────
@@ -606,7 +642,10 @@ async def voice_stream(
                 t0_tts = time.monotonic()
                 try:
                     normalized   = normalize_markdown_to_text(reply_text)
-                    lang         = detect_language(normalized)
+                    # Speak in the session's user-owned language. The AI reply
+                    # is deliberately NOT language-detected (see
+                    # _update_session_lang / utils.lang_tracking).
+                    lang         = conv_lang
                     preprocessed = preprocess_text_for_tts(normalized, lang)
                     audio_id     = synthesize_speech_to_mp3(preprocessed, lang)
                     audio_url    = f"/api/tts/audio/{audio_id}"

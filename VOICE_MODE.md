@@ -320,5 +320,10 @@ so the conversation context is preserved regardless of whether the user speaks o
   (e.g. ElevenLabs, Azure TTS) would reduce time-to-first-audio significantly.
 - **Whisper is synchronous**: For production scale, offload to a dedicated STT service.
 - **Idempotency store is in-process**: For multi-instance, replace with Redis TTL keys.
-- **Language**: The frontend UI is German-labelled; the AI replies match the user's
-  language automatically via `langdetect`.
+- **Language**: The frontend UI is German-labelled. The TTS language is tracked
+  per session and owned by the **user**: it starts German and only switches when
+  the user's transcript carries strong evidence of the other language
+  (`utils/lang_tracking.py`, shared with the phone path). AI replies are never
+  language-detected, so short acknowledgements like "Okay." cannot flip the
+  voice mid-session. Only German/English are tracked; other languages fall back
+  to the session language.
