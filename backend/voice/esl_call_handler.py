@@ -37,7 +37,7 @@ from utils.lang_tracking import (
     DE_WORDS as _DE_WORDS,
     update_conversation_language as _update_conversation_language,
 )
-from voice import call_log, contacts as _contacts, config
+from voice import call_log, caller_resolution_dialogue, contacts as _contacts, config
 from voice.audio_bridge import transcribe_file, speak_to_file
 from voice.llm_bridge import get_response, new_history, OUTBOUND_SYSTEM_PROMPT
 
@@ -421,6 +421,7 @@ def _conversation_loop(
     call_rec_path: Optional[Path] = None,
     initial_lang: str = "de",
     dialogue_state: Optional[dict] = None,
+    identity_state: Optional[dict] = None,
 ) -> bool:
     """
     Core record → transcribe → LLM → speak loop.
@@ -520,6 +521,30 @@ def _conversation_loop(
                 _proc["unfinished"] = True
                 _proc_done.set()
                 return
+            # ── sanitize BEFORE anything below can append this utterance to
+            # history / send it to the LLM / archive it in a transcript /
+            # hand it to escalation. Any phone-like number the caller just
+            # spoke is replaced with a neutral placeholder in `sanitized_t`;
+            # the raw value is preserved ONLY in `identity_state` (inbound
+            # calls) — never in text. Outbound calls have no identity_state
+            # (see handle_esl_call) but still get the same redaction via
+            # redact_phone_like() directly, since a callback number spoken
+            # mid-call must not leak either way. This MUST run before the
+            # scheduler-dialogue branch below, which also writes to history.
+            sanitized_t = t
+            if identity_state is not None:
+                try:
+                    sanitized_t = caller_resolution_dialogue.process_utterance(identity_state, t)
+                except Exception as exc:  # never let identification break a live call
+                    logger.error("Caller resolution error: %s", exc, exc_info=True)
+                    sanitized_t = t
+            else:
+                try:
+                    sanitized_t, _ = caller_resolution_dialogue.redact_phone_like(t)
+                except Exception as exc:
+                    logger.error("Utterance sanitization error: %s", exc, exc_info=True)
+                    sanitized_t = t
+
             # ── appointment scheduling (deterministic; slots come from Scheduler) ──
             # A per-call state machine handles appointment intent WITHOUT the LLM
             # inventing availability. It returns None when the turn is not part of
@@ -527,38 +552,53 @@ def _conversation_loop(
             if dialogue_state is not None:
                 try:
                     _sched = scheduler_dialogue.handle_turn(
-                        dialogue_state, t,
+                        dialogue_state, sanitized_t,
                         call_id=uuid, phone=caller, caller_name=_cn,
                     )
                 except Exception as exc:  # never let scheduling break a live call
                     logger.error("Scheduler dialogue error: %s", exc, exc_info=True)
                     _sched = None
                 if _sched is not None:
-                    _proc["text"] = t
+                    _proc["text"] = sanitized_t
                     _proc["reply"] = _sched.reply
                     _proc["lang"] = "de"
                     # Keep the LLM history coherent for turns after the flow ends.
-                    history.append({"role": "user", "content": t})
+                    history.append({"role": "user", "content": sanitized_t})
                     history.append({"role": "assistant", "content": _sched.reply})
                     if not _sched.reply.upper().startswith("ESCALATE:"):
                         _proc["wav"] = speak_to_file(_sched.reply, lang="de")
                     _proc_done.set()
                     return
-            _proc["text"] = t
+            _proc["text"] = sanitized_t
             # The conversation language belongs to the CALLER. It only changes
             # when this utterance carries strong evidence of a language switch;
             # short/ambiguous utterances keep the current language. AI replies
             # are never used for detection — a short LLM acknowledgement like
-            # "Okay." must not flip the TTS voice mid-call.
+            # "Okay." must not flip the TTS voice mid-call. Language detection
+            # uses the raw transcription (redaction never changes language cues).
             _proc["lang"] = _caller_language(t, conv_lang)
             extra = _drain_whisper_queue()
+            # ── caller/customer identification (deterministic; the LLM only
+            # phrases whatever question this decides is needed). Raw phone
+            # numbers never leave this block — build_prompt_extra only
+            # returns customer/location display labels. State was already
+            # updated by process_utterance() above; only the prompt fragment
+            # is computed here. ──
+            identity_extra = None
+            if identity_state is not None:
+                try:
+                    identity_extra = caller_resolution_dialogue.build_prompt_extra(identity_state)
+                except Exception as exc:  # never let identification break a live call
+                    logger.error("Caller resolution error: %s", exc, exc_info=True)
+            combined_extra_parts = [p for p in (extra, identity_extra) if p]
+            combined_extra = "\n".join(combined_extra_parts) if combined_extra_parts else None
             try:
                 r = asyncio.run(
                     get_response(
-                        history, t,
+                        history, sanitized_t,
                         caller_name=_cn,
                         system_prompt=_sp,
-                        system_extra=extra,
+                        system_extra=combined_extra,
                     )
                 )
             except Exception as exc:
@@ -1007,6 +1047,10 @@ def handle_esl_call(handler, phone_state: dict) -> None:
     # Per-call appointment dialogue state (in-memory, never persisted, no cross-call
     # leakage). Drives the deterministic Scheduler flow inside _conversation_loop.
     appointment_state = scheduler_dialogue.new_state()
+    # Per-call caller/customer identification state (in-memory, never persisted).
+    # Populated below for inbound calls only — outbound calls already know who
+    # they dialled via outbound_ctx. See voice/caller_resolution_dialogue.py.
+    identity_state: Optional[dict] = None
 
     # ── check if this is an outbound call we originated ───────────────────────
     outbound_ctx = pop_outbound_context(uuid)
@@ -1036,6 +1080,12 @@ def handle_esl_call(handler, phone_state: dict) -> None:
             if fs_name and fs_name.upper() not in ("UNKNOWN", "ANONYMOUS", ""):
                 from urllib.parse import unquote
                 caller_name = unquote(fs_name)
+
+        # Caller/customer resolution — separate from the contacts.py person
+        # lookup above (that resolves a display name; this resolves a
+        # customer/location record). See voice/caller_resolution_dialogue.py.
+        identity_state = caller_resolution_dialogue.new_state()
+        caller_resolution_dialogue.init_from_call(identity_state, caller)
 
     display = caller_name or caller
 
@@ -1167,6 +1217,7 @@ def handle_esl_call(handler, phone_state: dict) -> None:
             uuid=uuid, call_rec_path=call_rec_path,
             initial_lang=config.AI_LANGUAGE,
             dialogue_state=appointment_state,
+            identity_state=identity_state,
         )
         turn_count = turn_ref[0]
 

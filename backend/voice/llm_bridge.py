@@ -408,6 +408,77 @@ OUTBOUND_SYSTEM_PROMPT = (
 )
 
 
+# ── Caller-identity-stage instructions (Layer 1, client-neutral) ─────────────
+# Deterministic code (voice/caller_resolution_dialogue.py + the customers
+# package) decides WHICH stage applies and WHICH candidate labels to show —
+# this module only owns the wording, exactly like CALL_SUMMARY_INSTRUCTION
+# above. None of these templates ever reference a phone number: the caller
+# resolves via customers.resolve_caller(), and only customer/location display
+# labels (never raw digits) are handed in as `candidates`.
+_IDENTITY_STAGE_INSTRUCTIONS: dict[str, str] = {
+    "awaiting_affected_number": (
+        "## CALLER IDENTIFICATION\n"
+        "This caller has not yet been identified as an existing customer. Before "
+        "continuing with detailed technical troubleshooting, ask for their name and "
+        "the affected Festnetznummer (the landline number that has the problem) — "
+        "this may differ from the number they are calling from. Ask ONE question at "
+        "a time. If the situation is urgent (a complete outage) or the caller is only "
+        "asking a general question, do not block on identification — help first and "
+        "ask for identification once convenient. If the caller declines to give a "
+        "number, do not insist more than once or twice — continue helping anyway."
+    ),
+    "awaiting_disambiguation": (
+        "## CALLER IDENTIFICATION — DISAMBIGUATION NEEDED\n"
+        "More than one matching customer record was found. Ask the caller which one "
+        "applies, using only these labels (never invent or state any phone number): "
+        "{candidates}"
+    ),
+    "awaiting_location": (
+        "## CALLER IDENTIFICATION — LOCATION NEEDED\n"
+        "This customer has been identified, but has more than one location or line on "
+        "file. Ask which location or line is affected before proceeding with technical "
+        "troubleshooting. Known locations: {candidates}"
+    ),
+    "new_installation": (
+        "## CALLER IDENTIFICATION — NEW INSTALLATION\n"
+        "This caller does not yet have an active line — do not ask for an existing "
+        "Festnetznummer. Collect their name and address/location instead, then "
+        "continue naturally."
+    ),
+    "unresolved_continue": (
+        "## CALLER IDENTIFICATION — UNVERIFIED\n"
+        "The caller's identity could not be confirmed after being asked. Continue "
+        "helping on a best-effort basis without giving out or confirming any "
+        "account-specific details, and do not keep re-asking for identification."
+    ),
+}
+
+
+def build_identity_stage_instruction(
+    stage: Optional[str],
+    candidate_labels: Optional[list] = None,
+) -> Optional[str]:
+    """
+    Return a client-neutral (Layer 1) instruction fragment for the given
+    caller-identity stage, or None when no extra instruction is needed (e.g.
+    the caller is already resolved, the call hasn't started identification,
+    or a candidate-based stage has no candidates to show).
+
+    This never includes a raw phone number — only customer/location display
+    labels supplied by the deterministic resolver in
+    voice/caller_resolution_dialogue.py. The LLM phrases the question; it
+    never decides whether a match is good enough.
+    """
+    template = _IDENTITY_STAGE_INSTRUCTIONS.get(stage or "")
+    if not template:
+        return None
+    if "{candidates}" in template:
+        if not candidate_labels:
+            return None
+        return template.format(candidates="; ".join(candidate_labels))
+    return template
+
+
 def _build_headers() -> dict:
     return {
         "Authorization": f"Bearer {config.OPENROUTER_API_KEY}",
