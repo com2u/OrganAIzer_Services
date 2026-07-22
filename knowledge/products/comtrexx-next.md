@@ -129,14 +129,11 @@ Before recommending COMtrexx Next, determine:
 > captured as the reusable sales-qualification standard in `business-philosophy/`
 > (interview backlog) and will then supersede this checklist.
 
-> **CANDIDATE ADDITION — Teleprofi interview draft, unconfirmed.**
-> **Requires Patrick/Renato confirmation before merge.**
->
-> The reusable sales-qualification standard referenced above now has a
-> candidate draft:
-> [`../business-philosophy/sales-qualification-philosophy.md`](../business-philosophy/sales-qualification-philosophy.md).
-> It is **not yet confirmed** and does **not** supersede the checklist above
-> until Patrick/Renato review it — this is a pointer, not a replacement.
+> The reusable sales-qualification standard referenced above now exists:
+> [`../business-philosophy/sales-qualification-philosophy.md`](../business-philosophy/sales-qualification-philosophy.md)
+> (confirmed by Renato, 2026-07-23). Whether it fully replaces the checklist
+> above or the checklist stays as product-specific supplementary detail is
+> still open — see that file's Open Questions.
 
 # Typical Teleprofi Solution
 

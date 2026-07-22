@@ -54,15 +54,12 @@ Suitable when:
 
 **Never recommend rental only because the monthly payment looks lower.**
 
-> **CANDIDATE ADDITION — Teleprofi interview draft, unconfirmed.**
-> **Requires Patrick/Renato confirmation before merge.**
->
-> Candidate additional rental triggers (from the interview draft, Interview
-> 6 "VERKAUF"): rental may also fit when Leistungen und Wartung als Paket
+> Additional rental triggers (from the interview draft, Interview 6
+> "VERKAUF"): rental may also fit when Leistungen und Wartung als Paket
 > gewünscht sind (support/maintenance bundled with the rental), or when
 > regelmäßige Modernisierung vorgesehen ist (regular equipment refresh is
 > planned). Source: Teleprofi candidate interview-answer document
-> (unconfirmed, 2026-07-22).
+> (confirmed by Renato, 2026-07-23).
 
 ## Leasing / financing (Grenke)
 

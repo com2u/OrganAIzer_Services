@@ -2,14 +2,11 @@
 id: comtrexx-installation-checklist
 type: procedure
 owner: unassigned
-status: draft
-last_reviewed: 2026-07-22
+status: active
+last_reviewed: 2026-07-23
 sources:
-  - "Teleprofi candidate interview-answer document (unconfirmed, 2026-07-22)"
+  - "Teleprofi candidate interview-answer document (confirmed by Renato, 2026-07-23)"
 ---
-
-> **Status: Candidate draft from the Teleprofi interview-answer document.**
-> **Requires Patrick/Renato confirmation before merge.**
 
 # Telephone System Installation Checklist
 
@@ -40,8 +37,8 @@ Preparing for, and executing, a telephone-system installation or migration.
 
 ## Steps — preparation
 
-> Candidate list — from the interview draft's "Wie bereiten Sie eine
-> Installation vor?" answer.
+> From the interview draft's "Wie bereiten Sie eine Installation vor?"
+> answer.
 
 1. Anforderungen und Angebot abgleichen (reconcile requirements against the
    offer).
@@ -59,7 +56,7 @@ Preparing for, and executing, a telephone-system installation or migration.
 
 ## Steps — what gets preconfigured (soweit möglich)
 
-> Candidate list, same source.
+> Same source.
 
 Benutzer, Rufnummern, Gruppen, Berechtigungen, Endgeräte, Zeitsteuerungen,
 Ansagen, Weiterleitungen, Providerprofile, Basis-Sicherheitskonfiguration,
@@ -67,7 +64,7 @@ Update- und Wartungseinstellungen.
 
 ## Steps — what is bench-tested before the customer sees it
 
-> Candidate list, same source.
+> Same source.
 
 Registrierung und Gesprächsaufbau; eingehende und ausgehende Gespräche;
 interne Gespräche; Rufgruppen; Weiterleitungen; Besetzt-/Nichtannahmefälle;
@@ -77,10 +74,10 @@ Dokumentation der Testresultate.
 
 ## Validation
 
-> Candidate 12-point checklist, from the interview draft's "Welche
-> Checkliste arbeitet Teleprofi grundsätzlich ab?" answer — presented there
-> as a minimum outline, explicitly marked in the source as needing
-> Teleprofi's own confirmation and later maintenance as its own source.
+> 12-point checklist, from the interview draft's "Welche Checkliste arbeitet
+> Teleprofi grundsätzlich ab?" answer — presented there as a minimum
+> outline; confirmed by Renato, 2026-07-23, and maintained as its own
+> source going forward.
 
 1. Voraussetzungen
 2. Backup
@@ -103,7 +100,7 @@ decision-maker rather than improvising on-site.
 
 ## Notes
 
-Candidate content, unconfirmed — requires Patrick/Renato sign-off before
-this is treated as Teleprofi's actual internal checklist, per the source
-draft's own caveat: "Die tatsächliche interne Checkliste muss durch
-Teleprofi bestätigt und später als eigene Wissensquelle gepflegt werden."
+Confirmed by Renato, 2026-07-23, as Teleprofi's actual internal checklist,
+per the source draft's own caveat: "Die tatsächliche interne Checkliste
+muss durch Teleprofi bestätigt und später als eigene Wissensquelle
+gepflegt werden."

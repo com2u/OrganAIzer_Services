@@ -38,26 +38,22 @@ covers the full small-to-mid business range with one consistent feature set and 
 admin experience.
 
 > The explicit "COMtrexx vs. a non-Auerswald alternative" reasoning (what would make
-> Teleprofi *not* propose COMtrexx) is not yet captured — see Knowledge Needed Q1.
+> Teleprofi *not* propose COMtrexx) is answered below (confirmed by Renato,
+> 2026-07-23 — was Knowledge Needed Q1).
 
-> **CANDIDATE ADDITION — Teleprofi interview draft, unconfirmed.**
-> **Requires Patrick/Renato confirmation before merge. This is a candidate
-> answer to Knowledge Needed Q1 below — the question is not removed until
-> Patrick/Renato confirm this answer.**
->
-> ### Candidate answer to Q1 — when Teleprofi would not propose COMtrexx
->
-> Candidate criteria: eine einfache FRITZ!Box-Lösung erfüllt den Bedarf
-> vollständig und sauber; der Kunde bevorzugt eine vollständig cloudbasierte
-> Plattform; die vorhandene IT-Strategie basiert auf einem anderen
-> Ökosystem; nur einzelne Endgeräte müssen ersetzt werden (see
-> [`../ai-rules/endpoint-selection.md`](../ai-rules/endpoint-selection.md));
-> keine ausreichende Netzwerk- oder Internetqualität ist vorhanden; die
-> laufenden Lizenz- und Wartungsmodelle passen nicht zum Kunden; der Kunde
-> benötigt Funktionen, die ein anderes System besser abdeckt.
->
-> Source: Teleprofi candidate interview-answer document (unconfirmed,
-> 2026-07-22), Interview 3 "TELEFONANLAGEN".
+### When Teleprofi would not propose COMtrexx
+
+Criteria: eine einfache FRITZ!Box-Lösung erfüllt den Bedarf vollständig und
+sauber; der Kunde bevorzugt eine vollständig cloudbasierte Plattform; die
+vorhandene IT-Strategie basiert auf einem anderen Ökosystem; nur einzelne
+Endgeräte müssen ersetzt werden (see
+[`../ai-rules/endpoint-selection.md`](../ai-rules/endpoint-selection.md));
+keine ausreichende Netzwerk- oder Internetqualität ist vorhanden; die
+laufenden Lizenz- und Wartungsmodelle passen nicht zum Kunden; der Kunde
+benötigt Funktionen, die ein anderes System besser abdeckt.
+
+Source: Teleprofi candidate interview-answer document (confirmed by Renato,
+2026-07-23), Interview 3 "TELEFONANLAGEN".
 
 ## How do we choose Next vs. Flex?
 
@@ -180,15 +176,13 @@ These reusable rules apply across the whole COMtrexx family — captured once in
 > High-level, reusable interview questions (answers update this family entry and/or
 > `business-philosophy/`, benefiting all COMtrexx products).
 
-1. When would Teleprofi **not** propose COMtrexx at all — are there cases you choose
-   a different platform, and why?
-2. Is there a **user-count band where Next vs. Flex is genuinely a judgement call**
+1. Is there a **user-count band where Next vs. Flex is genuinely a judgement call**
    (e.g. 5–8 users), and what tips it either way?
-3. Are there **features or integrations** customers ask for that *only* Flex can do
+2. Are there **features or integrations** customers ask for that *only* Flex can do
    (a hard "must be Flex" list)?
-4. Across the family, which **COMfortel phone / DECT** combinations do you fit most
+3. Across the family, which **COMfortel phone / DECT** combinations do you fit most
    often, and any you avoid?
-5. Confirm whether the firmware versions in [[firmware-policy]] are **COMtrexx system
+4. Confirm whether the firmware versions in [[firmware-policy]] are **COMtrexx system
    firmware or COMfortel device firmware** (or both, tracked separately).
 
 ## Knowledge History
@@ -204,6 +198,6 @@ These reusable rules apply across the whole COMtrexx family — captured once in
 |---|---|---|
 | Next vs. Flex signals / upgrade triggers | high | captured from Teleprofi (2026-06-25) |
 | "Flex worth the price" reasoning | high | captured from Teleprofi (2026-06-25) |
-| When to choose COMtrexx at all (vs. alternatives) | needs-confirmation | not yet captured — Q1 |
+| When to choose COMtrexx at all (vs. alternatives) | high | confirmed by Renato, 2026-07-23 |
 | Shared endpoints / licensing model | medium | repo + official; per-model detail in product files |
-| Firmware version scope (system vs. device) | needs-confirmation | Q5 |
+| Firmware version scope (system vs. device) | needs-confirmation | Q4 |

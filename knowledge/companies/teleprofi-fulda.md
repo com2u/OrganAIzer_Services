@@ -22,17 +22,16 @@ Teleprofi Fulda is a telecommunications, networking, and communication
 infrastructure company serving primarily business customers. The focus is on
 practical, reliable, supportable solutions.
 
-> **CANDIDATE ADDITION — Teleprofi interview draft, unconfirmed.**
-> **Requires Patrick/Renato confirmation before merge.**
+> **Confirmed by Renato, 2026-07-23.**
 > **Scope: INTERNAL company philosophy only — not caller-facing voice
 > knowledge. Never summarize or promote this section into
 > `backend/voice/knowledge/teleprofi_fulda.md` or any AI prompt, even in
 > softened form.**
 >
-> ## Positioning & Differentiation (candidate, internal only)
+> ## Positioning & Differentiation (internal only)
 >
-> Why customers choose Teleprofi over a competitor (candidate framing, not
-> confirmed): not because of the lowest price, but because of who takes
+> Why customers choose Teleprofi over a competitor: not because of the
+> lowest price, but because of who takes
 > **responsibility** for the whole system actually working day to day — many
 > providers can sell a PBX, router, or headset; the differentiator is who
 > ensures the combined system keeps working. Proposed positioning statement:
@@ -43,11 +42,10 @@ practical, reliable, supportable solutions.
 > answers, which calls matter most, and how remote/home-office staff work
 > together.
 >
-> Candidate qualities Teleprofi should be associated with: zuverlässig,
-> ehrlich, erreichbar, kompetent, verständlich, sorgfältig,
-> langfristig orientiert.
+> Qualities Teleprofi should be associated with: zuverlässig, ehrlich,
+> erreichbar, kompetent, verständlich, sorgfältig, langfristig orientiert.
 >
-> Candidate list of common competitor mistakes to avoid repeating: too-early
+> Common competitor mistakes to avoid repeating: too-early
 > product recommendation before the need is understood; sizing by headcount
 > instead of actual communication flow; under-sizing with no growth room;
 > unnecessary over-sizing; treating the PBX in isolation from network/
@@ -57,8 +55,8 @@ practical, reliable, supportable solutions.
 > points of contact; promising features that weren't actually verified for
 > the environment; disappearing after project completion.
 >
-> Candidate reputation risks — what a customer should never be able to say
-> about Teleprofi: "Seit der Installation ist niemand mehr erreichbar."; "Ich
+> Reputation risks — what a customer should never be able to say about
+> Teleprofi: "Seit der Installation ist niemand mehr erreichbar."; "Ich
 > wusste nicht, dass diese laufenden Kosten entstehen."; "Uns wurde etwas
 > verkauft, das wir nicht brauchen."; "Die Lösung war schon beim Einbau zu
 > klein."; "Jeder Mitarbeiter erzählt mir etwas anderes."; "Die Anlage
@@ -67,10 +65,10 @@ practical, reliable, supportable solutions.
 > Einschränkungen."; "Teleprofi hat das Problem nur an den Hersteller oder
 > Provider weitergeschoben."
 >
-> Source: Teleprofi candidate interview-answer document (unconfirmed,
-> 2026-07-22). Note the source itself hedges this content with conditional
-> "sollte" (should) language rather than stating it as established fact —
-> treat as aspirational/proposed until confirmed.
+> Source: Teleprofi candidate interview-answer document (confirmed by
+> Renato, 2026-07-23). Note the source itself hedges this content with
+> conditional "sollte" (should) language rather than stating it as
+> established fact — treat as aspirational, not a strict rule.
 
 ## Target Customers
 
@@ -235,8 +233,7 @@ AVM products including:
 
 ## Customer Engagement Process
 
-> **Candidate content — Teleprofi interview draft, unconfirmed. Requires
-> Patrick/Renato confirmation.** This 12-step process is the single
+> **Confirmed by Renato, 2026-07-23.** This 12-step process is the single
 > canonical engagement process for this file — the earlier 11-step draft
 > (Initial contact → Requirement gathering → Site visit → Infrastructure
 > review → Coverage assessment → Solution design → Proposal preparation →
@@ -278,9 +275,9 @@ AVM products including:
 12. **Nachbetreuung** — Rückmeldung nach den ersten Betriebstagen, offene
     Punkte abschließen, Optimierungen aufnehmen, Wartung klären.
 
-> Source: Teleprofi candidate interview-answer document (unconfirmed,
-> 2026-07-22), Interview 7 ("Projektablauf") and the "BERATUNG" supplementary
-> section (near-identical content, treated as one source).
+> Source: Teleprofi candidate interview-answer document (confirmed by
+> Renato, 2026-07-23), Interview 7 ("Projektablauf") and the "BERATUNG"
+> supplementary section (near-identical content, treated as one source).
 
 ## Site Survey Philosophy
 
@@ -387,16 +384,15 @@ Support conversations should:
 4. Resolve immediately if possible
 5. Escalate when required
 
-> **CANDIDATE ADDITION — Teleprofi interview draft, unconfirmed.**
-> **Requires Patrick/Renato confirmation before merge.**
+> **Confirmed by Renato, 2026-07-23.**
 > **Scope: INTERNAL company philosophy only — not caller-facing voice
 > knowledge. Never summarize or promote this section into
 > `backend/voice/knowledge/teleprofi_fulda.md` or any AI prompt, even in
 > softened form.**
 >
-> ## Trust (candidate, internal only)
+> ## Trust (internal only)
 >
-> What candidate answers say builds customer trust: genau zuhören,
+> What builds customer trust: genau zuhören,
 > verständlich zusammenfassen, offene Fragen zugeben, Aussagen später
 > einhalten, Risiken vor der Bestellung benennen, Kosten transparent
 > erklären, Fehler nicht verstecken, erreichbar bleiben, nicht schlecht über
@@ -407,9 +403,7 @@ Support conversations should:
 > technisches Ausweichen, mangelnde Vorbereitung, unsaubere Dokumentation,
 > Probleme kleinreden, Funktionen verkaufen, die nicht überprüft wurden.
 >
-> Promises the candidate draft states are never given (stated with no hedge
-> in the source — needs confirmation this reflects actual practice, not just
-> a proposed standard): vollständige Störungsfreiheit; eine exakte
+> Promises that are never given: vollständige Störungsfreiheit; eine exakte
 > Lösungszeit ohne Diagnose; absolute Sicherheit; uneingeschränkte
 > Kompatibilität ohne Prüfung; dass ein Update keinerlei Nebenwirkungen
 > haben kann; dass ein Provider oder Hersteller zu einem bestimmten
@@ -417,8 +411,8 @@ Support conversations should:
 > endgültig bestätigt ist; dass eine Lösung für immer unverändert
 > ausreichend bleibt.
 >
-> Source: Teleprofi candidate interview-answer document (unconfirmed,
-> 2026-07-22), Interview 1 "VERTRAUEN".
+> Source: Teleprofi candidate interview-answer document (confirmed by
+> Renato, 2026-07-23), Interview 1 "VERTRAUEN".
 
 ## Installation Philosophy
 

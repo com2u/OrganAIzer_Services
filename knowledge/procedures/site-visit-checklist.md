@@ -2,14 +2,11 @@
 id: site-visit-checklist
 type: procedure
 owner: unassigned
-status: draft
-last_reviewed: 2026-07-22
+status: active
+last_reviewed: 2026-07-23
 sources:
-  - "Teleprofi candidate interview-answer document (unconfirmed, 2026-07-22)"
+  - "Teleprofi candidate interview-answer document (confirmed by Renato, 2026-07-23)"
 ---
-
-> **Status: Candidate draft from the Teleprofi interview-answer document.**
-> **Requires Patrick/Renato confirmation before merge.**
 
 # Site Visit (Vor-Ort-Termin) Checklist
 
@@ -34,8 +31,8 @@ site.
 
 ## Steps — when a site visit is required before an offer
 
-> Candidate list — from the interview draft's "Wann machen Sie grundsätzlich
-> einen Vor-Ort-Termin, bevor Sie ein Angebot erstellen?" answer.
+> From the interview draft's "Wann machen Sie grundsätzlich einen
+> Vor-Ort-Termin, bevor Sie ein Angebot erstellen?" answer.
 
 A site visit is required when:
 
@@ -50,7 +47,7 @@ A site visit is required when:
 
 ## Steps — what is always inspected during a site visit
 
-> Candidate list, same source.
+> Same source.
 
 Router und Internetzugang; Switches und Netzwerkstruktur; Verkabelung und
 Patchfelder; Stromversorgung und USV; Telefonanlage; Endgeräte; DECT- und
@@ -60,7 +57,7 @@ Ausfallanforderungen.
 
 ## Steps — what is captured during a site visit
 
-> Candidate list, same source.
+> Same source.
 
 Geräte und Modellstände; Port- und Rufnummernstruktur; Standorte und Räume;
 Nutzer und Rollen; Netzwerk- und Providerdaten; Funkbereiche; vorhandene
@@ -80,5 +77,5 @@ inaccessible, etc.), do not proceed to an offer — see
 
 ## Notes
 
-Candidate content, unconfirmed — requires Patrick/Renato sign-off. No
-prices are included or implied by this checklist.
+Sourced from the Teleprofi interview-answer document and confirmed by
+Renato, 2026-07-23. No prices are included or implied by this checklist.

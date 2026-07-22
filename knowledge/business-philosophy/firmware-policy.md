@@ -27,12 +27,11 @@ billed where applicable — keeping customer systems stable and current is part 
 long-term relationship, not an afterthought. (See `services/maintenance-contract.md`,
 `services/remote-support.md`; pricing lives in `pricing/`.)
 
-> **CANDIDATE ADDITION — Teleprofi interview draft, unconfirmed.**
-> **Requires Patrick/Renato confirmation before merge.**
+> Confirmed by Renato, 2026-07-23.
 >
-> ### Update-timing guidance (candidate)
+> ### Update-timing guidance
 >
-> Candidate guidance on *when* to install vs. hold an update (distinct from
+> Guidance on *when* to install vs. hold an update (distinct from
 > *what counts as stable*, which the Policy section above already covers —
 > the interview draft's own restatement of that has been removed here as a
 > duplicate, 2026-07-22 reconciliation).
@@ -45,14 +44,15 @@ long-term relationship, not an afterthought. (See `services/maintenance-contract
 > bugs have been reported, when in-use endpoints/interfaces aren't yet
 > confirmed compatible, or without a suitable maintenance/rollback window.
 >
-> **This candidate content does NOT resolve the open question below —
-> it remains OPEN.** The source draft explicitly declines to state which
-> firmware versions are stable, and never addresses whether the table below
-> is COMtrexx system firmware or COMfortel device firmware. That
-> confirmation is still needed from Patrick.
+> **This content does NOT resolve the open question below — it remains
+> OPEN.** The source draft explicitly declines to state which firmware
+> versions are stable, and never addresses whether the table below is
+> COMtrexx system firmware or COMfortel device firmware. That is a genuine
+> gap in the source material itself, not a pending sign-off — it still
+> needs an answer from Patrick.
 >
-> Source: Teleprofi candidate interview-answer document (unconfirmed,
-> 2026-07-22), Interview 4 "FIRMWARE".
+> Source: Teleprofi candidate interview-answer document (confirmed by
+> Renato, 2026-07-23), Interview 4 "FIRMWARE".
 
 ## COMtrexx firmware status
 

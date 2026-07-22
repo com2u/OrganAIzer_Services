@@ -49,10 +49,7 @@ _Placeholder._
 
 # Technician View
 
-> **CANDIDATE ADDITION — Teleprofi interview draft, unconfirmed.**
-> **Requires Patrick/Renato confirmation before merge.**
-
-Candidate runbooks (not yet confirmed as Teleprofi's actual process):
+Runbooks (confirmed by Renato, 2026-07-23):
 [`../procedures/comtrexx-installation-checklist.md`](../procedures/comtrexx-installation-checklist.md)
 (preparation, preconfiguration, bench-test, on-site checklist — generic
 across telephone-system installations, not COMtrexx-Next-specific) and

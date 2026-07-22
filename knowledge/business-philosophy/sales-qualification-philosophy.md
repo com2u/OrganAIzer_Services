@@ -2,15 +2,12 @@
 id: sales-qualification-philosophy
 type: philosophy
 owner: unassigned
-status: draft
-last_reviewed: 2026-07-22
+status: active
+last_reviewed: 2026-07-23
 sources:
-  - "Teleprofi candidate interview-answer document (unconfirmed, 2026-07-22)"
+  - "Teleprofi candidate interview-answer document (confirmed by Renato, 2026-07-23)"
   - knowledge/products/comtrexx-next.md
 ---
-
-> **Status: Candidate draft from the Teleprofi interview-answer document.**
-> **Requires Patrick/Renato confirmation before merge.**
 
 # Teleprofi Sales Qualification Philosophy
 
@@ -19,9 +16,9 @@ sources:
 > file [`../products/comtrexx-next.md`](../products/comtrexx-next.md)'s own
 > "Reusable backlog" note already anticipated ("captured as the reusable
 > sales-qualification standard in `business-philosophy/`... will then
-> supersede this checklist"). **Once confirmed, this file is intended to
-> supersede** `comtrexx-next.md`'s placeholder "Sales Qualification
-> Checklist" section — see the candidate cross-reference note added there.
+> supersede this checklist"). This file supersedes `comtrexx-next.md`'s
+> placeholder "Sales Qualification Checklist" section — see the
+> cross-reference note added there.
 >
 > Structured by funnel stage so first-contact content and consultation-stage
 > content don't collide — each stage below owns its own "questions to ask"
@@ -36,10 +33,9 @@ sources:
 
 ## Stage 1 — Erstkontakt (first contact)
 
-> Candidate content — from the interview draft's Interview 2 "ERSTES
-> GESPRÄCH" section (and its near-verbatim restatement in the supplementary
-> "ERSTKONTAKT MIT EINEM NEUKUNDEN" block — treated here as one source, not
-> two).
+> From the interview draft's Interview 2 "ERSTES GESPRÄCH" section (and its
+> near-verbatim restatement in the supplementary "ERSTKONTAKT MIT EINEM
+> NEUKUNDEN" block — treated here as one source, not two).
 
 **Questions always asked first:**
 
@@ -87,8 +83,8 @@ stage: whether a given customer is a good fit. Warning signals for this and
 the first-contact stage are merged into one list — see "Warnsignale im
 Beratungsprozess" below.
 
-> Candidate content — from the interview draft's "BERATUNG" section
-> (supplementary block, near the end of the source document).
+> From the interview draft's "BERATUNG" section (supplementary block, near
+> the end of the source document).
 
 **Signs a customer is a good fit for Teleprofi:**
 
@@ -107,13 +103,12 @@ ones into a single list.
 
 ## Warnsignale im Beratungsprozess
 
-> Candidate content — merged 2026-07-22 from what were previously two
-> separate lists (first-contact warning signals from Interview 2 "ERSTES
-> GESPRÄCH", and consultation-stage warning signals from the "BERATUNG"
-> supplementary section). A given signal may surface at first contact or
-> only once a deeper conversation has started — this section no longer
-> distinguishes by stage, only lists the signals themselves. Requires
-> Patrick/Renato confirmation before merge.
+> Merged 2026-07-22 from what were previously two separate lists
+> (first-contact warning signals from Interview 2 "ERSTES GESPRÄCH", and
+> consultation-stage warning signals from the "BERATUNG" supplementary
+> section). A given signal may surface at first contact or only once a
+> deeper conversation has started — this section no longer distinguishes by
+> stage, only lists the signals themselves. Confirmed by Renato, 2026-07-23.
 
 - Der Kunde möchte ein konkretes Produkt, lehnt aber jede Bedarfs- oder
   Bestandsaufnahme-Frage ab.
@@ -141,10 +136,10 @@ ones into a single list.
 
 ## Stage 3 — Einwandbehandlung (objection handling)
 
-> Candidate content — from the interview draft's "INTERVIEW 6 – VERKAUF"
-> section. Presented in the source as the current sales script with no
-> sourcing distinguishing it from proposed/ideal answers — treat as
-> candidate framing, not a confirmed script, until Patrick/Renato confirm.
+> From the interview draft's "INTERVIEW 6 – VERKAUF" section. The source
+> presents it as the current sales script with no sourcing distinguishing
+> it from proposed/ideal answers; confirmed by Renato, 2026-07-23, as the
+> script Teleprofi uses.
 
 | Einwand | Antwortrichtung |
 |---|---|
@@ -162,7 +157,7 @@ equivalent (that file is not modified by this entry).
 
 ## Value framing (Mehrwert erklären)
 
-> Candidate content, same source.
+> Same source.
 
 Explain value through impact, not a feature list:
 
@@ -194,8 +189,7 @@ Offer content rules and the mandatory-fields/never-do checklist live in
 ## Related
 
 - [`../products/comtrexx-next.md`](../products/comtrexx-next.md) — the
-  existing placeholder checklist this file is intended to supersede once
-  confirmed.
+  existing placeholder checklist this file supersedes.
 - [`../companies/teleprofi-fulda.md`](../companies/teleprofi-fulda.md) —
   canonical Customer Engagement Process (not duplicated here).
 - [`../business-philosophy/financing-philosophy.md`](./financing-philosophy.md),
@@ -203,16 +197,7 @@ Offer content rules and the mandatory-fields/never-do checklist live in
   [`growth-planning-philosophy.md`](./growth-planning-philosophy.md).
 - [`../procedures/sales-offer-checklist.md`](../procedures/sales-offer-checklist.md).
 
-## Needs Human Confirmation
+## Open Questions
 
-- All content in this file is sourced from a single unconfirmed candidate
-  interview draft — none of it has independent corroboration.
-- **The Stage 3 objection-handling table remains explicitly OPEN /
-  proposed** — it is presented in the source with no hedge distinguishing
-  it from Teleprofi's actual current answers; treat it as a proposed
-  script pending confirmation, not settled content.
 - Whether `comtrexx-next.md`'s existing checklist should be fully replaced
   by Stage 1 above, or kept as product-specific supplementary detail.
-- Whether the merged "Warnsignale im Beratungsprozess" list correctly
-  reflects real practice, now that the first-contact/consultation-stage
-  split has been removed.

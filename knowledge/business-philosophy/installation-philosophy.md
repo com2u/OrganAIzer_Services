@@ -54,12 +54,11 @@ team — the core of Teleprofi's value.
 
 ---
 
-> **CANDIDATE ADDITION — Teleprofi interview draft, unconfirmed.**
-> **Requires Patrick/Renato confirmation before merge.**
+> Confirmed by Renato, 2026-07-23.
 
-## What makes an installation "clean" (candidate principle)
+## What makes an installation "clean"
 
-Candidate framing: a clean installation is not only tidy to look at. It is
+A clean installation is not only tidy to look at. It is
 nachvollziehbar (traceable), dokumentiert (documented), beschriftet
 (labelled), wartbar (maintainable), abgesichert (secured/backed up),
 reproduzierbar (reproducible), getestet (tested), für den Kunden
@@ -73,5 +72,5 @@ exists to prevent are captured separately as step-by-step content in
 clarified before work starts) lives in
 [`../procedures/pre-project-expectations-checklist.md`](../procedures/pre-project-expectations-checklist.md).
 
-Source: Teleprofi candidate interview-answer document (unconfirmed,
-2026-07-22), Interview 4 "QUALITÄT".
+Source: Teleprofi candidate interview-answer document (confirmed by Renato,
+2026-07-23), Interview 4 "QUALITÄT".

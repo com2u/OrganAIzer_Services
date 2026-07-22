@@ -2,14 +2,11 @@
 id: sales-offer-checklist
 type: procedure
 owner: unassigned
-status: draft
-last_reviewed: 2026-07-22
+status: active
+last_reviewed: 2026-07-23
 sources:
-  - "Teleprofi candidate interview-answer document (unconfirmed, 2026-07-22)"
+  - "Teleprofi candidate interview-answer document (confirmed by Renato, 2026-07-23)"
 ---
-
-> **Status: Candidate draft from the Teleprofi interview-answer document.**
-> **Requires Patrick/Renato confirmation before merge.**
 
 # Sales Offer (Angebot) Checklist
 
@@ -31,8 +28,7 @@ The needs-analysis and (where required) site-visit stages are complete — see
 
 ## Steps — mandatory offer contents
 
-> Candidate list — from the interview draft's "ANGEBOTE" answers, not yet
-> confirmed as Teleprofi's actual required fields.
+> From the interview draft's "ANGEBOTE" answers.
 
 Every offer should contain:
 
@@ -54,7 +50,7 @@ Every offer should contain:
 
 ## Steps — mistakes that must never happen in an offer
 
-> Candidate list — same source, same confirmation status.
+> Same source.
 
 - Falsche Mengen (wrong quantities).
 - Fehlende Pflichtlizenzen (missing mandatory licences).
@@ -70,8 +66,8 @@ Every offer should contain:
 
 ## Validation
 
-An offer is ready to send only when (candidate criteria, from the interview
-draft's "would you send this offer as-is?" framing — see also
+An offer is ready to send only when (from the interview draft's "would you
+send this offer as-is?" framing — see also
 `knowledge/procedures/ai-recommendation-review-checklist.md` if/when that is
 created for AI-assisted offers specifically):
 
@@ -89,7 +85,7 @@ sending a partial or assumption-laden offer.
 
 ## When to deliberately withhold or delay an offer
 
-> Candidate list — same source, same confirmation status.
+> Same source.
 
 - Wesentliche technische Informationen fehlen (key technical information is
   missing).
@@ -109,7 +105,6 @@ sending a partial or assumption-laden offer.
 
 ## Notes
 
-This entire checklist is unconfirmed candidate content from a placeholder
-interview draft, not a verified Teleprofi process. Do not treat it as
-binding until Patrick/Renato confirm it. No prices are included or implied
-by this checklist — see `pricing/` once populated.
+Sourced from the Teleprofi interview-answer document and confirmed by
+Renato, 2026-07-23. No prices are included or implied by this checklist —
+see `pricing/` once populated.

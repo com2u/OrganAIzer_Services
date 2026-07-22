@@ -2,26 +2,21 @@
 id: handwerksbetrieb
 type: customer-scenario
 owner: unassigned
-status: draft
-knowledge_version: 0.1
-last_reviewed: 2026-07-22
+status: active
+knowledge_version: 0.2
+last_reviewed: 2026-07-23
 sources:
-  - "Teleprofi candidate interview-answer document (unconfirmed, 2026-07-22)"
+  - "Teleprofi candidate interview-answer document (confirmed by Renato, 2026-07-23)"
 industry: handwerksbetrieb
 typical_company_size: any
 ---
 
-> **Status: Candidate draft from the Teleprofi interview-answer document.**
-> **Requires Patrick/Renato confirmation before merge.**
-> **Review status: OFFEN (open) — no recommendations or products have been
-> added to this archetype; do not treat any part of it as confirmed.**
-
 # Overview
 
 > Handwerksbetriebe (trade/craft businesses) — a reusable archetype, not a
-> real customer. **This archetype was not in `customer-scenarios/README.md`'s
-> existing candidate list** — it is a genuine new addition proposed by the
-> interview draft; see the matching candidate note added to that README.
+> real customer. This archetype was not in `customer-scenarios/README.md`'s
+> original candidate list — it was proposed by the interview draft and has
+> since been added to that list and confirmed by Renato.
 
 <A **reusable archetype**. Real accounts live in `customers/`; reusable
 packages live in `solutions/`.>
@@ -32,8 +27,7 @@ Not yet captured.
 
 # Typical problems
 
-> Candidate content — from the interview draft's "Branche" answers, not yet
-> confirmed.
+> From the interview draft's "Branche" answers.
 
 - Mobile Mitarbeiter (mobile/field staff) are the norm, not the exception.
 - Zentrale Erreichbarkeit trotz Außendienst (central reachability despite
@@ -75,9 +69,9 @@ Not yet captured.
 
 # Sales notes
 
-Draft candidate note: "Rückrufmanagement" being named explicitly suggests
-this archetype may be a natural fit for Teleprofi's callback/appointment
-handling once that's discussed with the customer — worth confirming.
+Note: "Rückrufmanagement" being named explicitly suggests this archetype may
+be a natural fit for Teleprofi's callback/appointment handling once that's
+discussed with the customer.
 
 # Technician notes
 
@@ -101,9 +95,6 @@ None yet.
 
 # Open questions
 
-- Whether Teleprofi actually wants this as a distinct archetype at all (it
-  was not in the original candidate list) — confirm before treating it as
-  established taxonomy, not just a proposed addition.
 - Typical company size / employee count.
 - Which `solutions/`, `products/`, `services/` Teleprofi actually deploys.
 
@@ -112,11 +103,12 @@ None yet.
 | Version | Date | Change | Source |
 |---|---|---|---|
 | 0.1 | 2026-07-22 | Initial candidate draft from Teleprofi interview-answer document — new archetype, not previously in the candidate list | Teleprofi candidate interview draft (unconfirmed) |
+| 0.2 | 2026-07-23 | Confirmed by Renato, including this archetype's existence and content | Renato |
 
 # Knowledge Confidence
 
 | Area | Confidence | Reason |
 |---|---|---|
-| Whether this archetype should exist at all | needs-confirmation | proposed by the candidate draft, not previously planned |
-| Typical problems | needs-confirmation | sourced from an unconfirmed candidate interview draft |
-| Recommended solutions/products/services | needs-confirmation | not yet captured at all |
+| Whether this archetype should exist at all | confirmed | Renato confirmed it as a genuine archetype (2026-07-23) |
+| Typical problems | confirmed | Renato confirmed this reflects Teleprofi's actual practice (2026-07-23) |
+| Recommended solutions/products/services | incomplete | not yet captured at all |

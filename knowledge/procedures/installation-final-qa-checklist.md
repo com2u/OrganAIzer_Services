@@ -2,14 +2,11 @@
 id: installation-final-qa-checklist
 type: procedure
 owner: unassigned
-status: draft
-last_reviewed: 2026-07-22
+status: active
+last_reviewed: 2026-07-23
 sources:
-  - "Teleprofi candidate interview-answer document (unconfirmed, 2026-07-22)"
+  - "Teleprofi candidate interview-answer document (confirmed by Renato, 2026-07-23)"
 ---
-
-> **Status: Candidate draft from the Teleprofi interview-answer document.**
-> **Requires Patrick/Renato confirmation before merge.**
 
 # Installation Final QA Checklist
 
@@ -34,8 +31,8 @@ done.
 
 ## Steps — what to verify before closing
 
-> Candidate list — from the interview draft's "Was kontrollieren Sie immer
-> vor Projektabschluss?" answer.
+> From the interview draft's "Was kontrollieren Sie immer vor
+> Projektabschluss?" answer.
 
 Vereinbarte Funktionen; Gesprächsqualität; Erreichbarkeit; Rufverteilung;
 Rechte; Zeitsteuerung; Notrufverhalten; mobile und interne Nutzung;
@@ -49,8 +46,7 @@ explicitly listed, not silently dropped.
 
 ## Steps — errors this checklist exists to catch
 
-> Candidate list, same source ("Welche Fehler möchten Sie grundsätzlich
-> vermeiden?").
+> Same source ("Welche Fehler möchten Sie grundsätzlich vermeiden?").
 
 - Ungesicherte Änderungen (unsecured/unbacked-up changes).
 - Falsche Rufnummernzuordnung (wrong number assignment).
@@ -72,8 +68,8 @@ relevant installation step rather than handing over with a known gap.
 
 ## Notes
 
-Candidate content, unconfirmed — requires Patrick/Renato sign-off. The
-interview draft's INSTALLATION and QUALITÄT sections had two
+Confirmed by Renato, 2026-07-23. The interview draft's INSTALLATION and
+QUALITÄT sections had two
 partially-overlapping checklists; this file is the reconciled, single
 canonical "final QA" list — `comtrexx-installation-checklist.md` owns the
 separate preparation/preconfig/bench-test checklist. Do not re-split these

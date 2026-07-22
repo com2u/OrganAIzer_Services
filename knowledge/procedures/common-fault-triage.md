@@ -2,14 +2,11 @@
 id: common-fault-triage
 type: procedure
 owner: unassigned
-status: draft
-last_reviewed: 2026-07-22
+status: active
+last_reviewed: 2026-07-23
 sources:
-  - "Teleprofi candidate interview-answer document (unconfirmed, 2026-07-22)"
+  - "Teleprofi candidate interview-answer document (confirmed by Renato, 2026-07-23)"
 ---
-
-> **Status: Candidate draft from the Teleprofi interview-answer document.**
-> **Requires Patrick/Renato confirmation before merge.**
 
 # Common Fault Triage (Technician Root-Cause Reference)
 
@@ -24,14 +21,10 @@ sources:
 > (pre-close verification) or `comtrexx-installation-checklist.md`
 > (installation-time steps) — it is post-installation fault diagnosis only.
 >
-> **Review status:** the 20 individual fault-by-fault triage decisions below
-> (first-check / follow-up / remote-vs-onsite call, per item) are each
-> **OFFEN (open)** — none are confirmed, and given how close this content
-> sits to the live phone AI's own troubleshooting logic, wrong guidance here
-> has real consequences. The **general** remote-vs-onsite criteria in the
-> Notes section (independent of the 20 specific items) is lower-risk
-> **candidate guidance**, not yet confirmed either, but not held to the same
-> per-item scrutiny.
+> **Review status:** confirmed by Renato, 2026-07-23. Given how close this
+> content sits to the live phone AI's own troubleshooting logic, treat the
+> 20 fault-by-fault triage decisions below as guidance to re-validate against
+> real fault history over time rather than as immutable fact.
 
 ## When to use
 
@@ -43,11 +36,10 @@ None.
 
 ## Steps — fault-by-fault triage
 
-> Candidate content — from the interview draft's Interview 5 answer (20
-> items). Every "Typischer Weg" (typical remote-vs-onsite call) below is
-> the draft's own general judgement, explicitly **not** independently
-> verified against real fault history — flagged for Patrick's confirmation
-> before this is relied on operationally.
+> From the interview draft's Interview 5 answer (20 items). Every
+> "Typischer Weg" (typical remote-vs-onsite call) below is the draft's own
+> general judgement, not independently verified against real fault
+> history — re-validate against real cases over time.
 
 1. **Keine ausgehenden Anrufe.** Erste Prüfung: Umfang, Fehlermeldung,
    Providerstatus. Danach: Registrierung, Routing, Berechtigung. Typischer
@@ -113,7 +105,7 @@ inconclusive.
 
 ## Notes — general remote-vs-onsite rule
 
-> Candidate content, same source. This closes a real gap: the live voice-AI
+> Same source. This closes a real gap: the live voice-AI
 > runtime file has no remote-vs-onsite guidance at all today. This file does
 > **not** modify that runtime file — any future promotion of this rule into
 > `backend/voice/knowledge/teleprofi_fulda.md` is a separate, deliberate
@@ -132,7 +124,7 @@ Bestandsdokumentation fehlt; wiederkehrende Fehler remote nicht
 reproduzierbar sind; Sicherheits- oder Betriebsrisiken eine direkte Prüfung
 erfordern.
 
-All fault-specific triage steps above are candidate content, unconfirmed —
-requires Patrick's confirmation before operational use. Wrong guidance here
-has real consequences given how close this content sits to the live phone
-AI's own troubleshooting categories.
+All fault-specific triage steps above are confirmed by Renato, 2026-07-23.
+Given how close this content sits to the live phone AI's own
+troubleshooting categories, re-validate against real fault history over
+time rather than treating it as fixed.

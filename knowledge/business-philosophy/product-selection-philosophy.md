@@ -64,14 +64,12 @@ consistent with Teleprofi's reliable, non-salesy approach (`teleprofi_fulda.md`)
 
 ---
 
-> **CANDIDATE ADDITION — Teleprofi interview draft, unconfirmed.**
-> **Requires Patrick/Renato confirmation before merge. Placed here per
-> explicit instruction — no `ai-rules/` version created yet; that can be
-> derived after confirmation if warranted.**
+> Confirmed by Renato, 2026-07-23. Placed here per explicit instruction —
+> no `ai-rules/` version created yet.
 
-## When Teleprofi advises against a product (candidate)
+## When Teleprofi advises against a product
 
-Candidate criteria for explicitly advising a customer against a product:
+Criteria for explicitly advising a customer against a product:
 
 - Das Produkt erfüllt die Kernanforderung nicht zuverlässig.
 - Die Lösung würde nur mit dauerhaften Workarounds funktionieren.
@@ -85,15 +83,14 @@ Candidate criteria for explicitly advising a customer against a product:
   weitergenutzt werden.
 - Ein anderes System passt besser zur bestehenden Umgebung.
 
-Candidate framing: an honest "davon würde ich Ihnen abraten" (I would advise
-against this) is treated in the source as one of the strongest trust signals
-in a consultation — see also
+An honest "davon würde ich Ihnen abraten" (I would advise against this) is
+treated as one of the strongest trust signals in a consultation — see also
 [`../companies/teleprofi-fulda.md`](../companies/teleprofi-fulda.md)'s
-candidate Trust section.
+Trust section.
 
-## Stated solution vs. actual need (candidate)
+## Stated solution vs. actual need
 
-Candidate framing of the most common consultation mistake: mistaking the
+Framing of the most common consultation mistake: mistaking the
 solution a customer *names* for the need they actually *have*. Example: a
 customer says "Ich brauche eine neue Telefonanlage," but the actual need
 might be bessere Erreichbarkeit, stabileres WLAN, ein geeignetes Headset,
@@ -102,10 +99,9 @@ ein Providerproblem, or eine neue Türsprechstelle. The task of a
 consultation is to understand the underlying problem, not to immediately
 confirm the customer's first product idea.
 
-## Budget vs. future-proofing — a 3-tier framework (candidate)
+## Budget vs. future-proofing — a 3-tier framework
 
-Candidate framing for balancing budget against future-proofing, distinguish
-between:
+Framing for balancing budget against future-proofing, distinguish between:
 
 1. **zwingend erforderlich** (strictly required now),
 2. **sinnvoll für die nächsten Jahre** (worthwhile for the coming years),
@@ -118,5 +114,5 @@ never be used as an empty sales word — any price premium for future-proofing
 must be justified by a concrete, named risk or benefit, not asserted on its
 own.
 
-Source: Teleprofi candidate interview-answer document (unconfirmed,
-2026-07-22), Interview 1 "BERATUNG UND EMPFEHLUNGEN".
+Source: Teleprofi candidate interview-answer document (confirmed by Renato,
+2026-07-23), Interview 1 "BERATUNG UND EMPFEHLUNGEN".

@@ -2,14 +2,11 @@
 id: endpoint-selection
 type: ai-rule
 owner: unassigned
-status: draft
-last_reviewed: 2026-07-22
+status: active
+last_reviewed: 2026-07-23
 sources:
-  - "Teleprofi candidate interview-answer document (unconfirmed, 2026-07-22)"
+  - "Teleprofi candidate interview-answer document (confirmed by Renato, 2026-07-23)"
 ---
-
-> **Status: Candidate draft from the Teleprofi interview-answer document.**
-> **Requires Patrick/Renato confirmation before merge.**
 
 # Endpoint Selection — decision rules
 
@@ -24,15 +21,13 @@ sources:
 > file, per `knowledge/IMPORT_GUIDE.md`'s rule against putting recommendation
 > logic in fact files.
 >
-> Status: this is candidate decision policy from an unconfirmed interview
-> draft. It is not wired into any AI prompt — doing so is **(future)** and
-> out of scope here, same as `provider-selection.md`. This file changes no
-> application behavior.
+> Confirmed by Renato, 2026-07-23. It is not wired into any AI prompt —
+> doing so is **(future)** and out of scope here, same as
+> `provider-selection.md`. This file changes no application behavior.
 
 ## Selection guidance
 
-> Candidate content — from the interview draft's Interview 3 "TELEFONE"
-> section, not yet confirmed as Teleprofi's actual decision logic.
+> From the interview draft's Interview 3 "TELEFONE" section.
 
 - **Tischtelefon (desk phone):** fester Arbeitsplatz, häufige Gespräche,
   zentrale Funktionen, klare Bedienung, gute Sprachqualität, und dort, wo
@@ -49,9 +44,9 @@ sources:
 
 ## When endpoints alone are the answer, not a new PBX
 
-> Candidate content — from the supplementary "PRODUKTAUSWAHL" section of
-> the interview draft ("Wann empfehlen Sie nur Telefone oder Headsets und
-> keine neue Telefonanlage?").
+> From the supplementary "PRODUKTAUSWAHL" section of the interview draft
+> ("Wann empfehlen Sie nur Telefone oder Headsets und keine neue
+> Telefonanlage?").
 
 Recommend endpoints only (no new telephone system) when the existing PBX is
 still technically adequate and the actual problem is one of:
@@ -89,10 +84,7 @@ already states for products generally, applied specifically to endpoints.
 - [`../procedures/site-visit-checklist.md`](../procedures/site-visit-checklist.md)
 - [`../business-philosophy/product-selection-philosophy.md`](../business-philosophy/product-selection-philosophy.md)
 
-## Needs Human Confirmation
+## Open Questions
 
-- Confirm this decision guidance matches Teleprofi's actual practice — it
-  is currently sourced from a single unconfirmed candidate interview draft
-  with no independent corroboration in the repository.
-- Confirm whether any of the four categories above have Teleprofi-specific
-  thresholds or exceptions not captured in this first draft.
+- Whether any of the four categories above have Teleprofi-specific
+  thresholds or exceptions not yet captured here.

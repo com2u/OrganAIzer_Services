@@ -2,19 +2,14 @@
 id: law-office
 type: customer-scenario
 owner: unassigned
-status: draft
-knowledge_version: 0.1
-last_reviewed: 2026-07-22
+status: active
+knowledge_version: 0.2
+last_reviewed: 2026-07-23
 sources:
-  - "Teleprofi candidate interview-answer document (unconfirmed, 2026-07-22)"
+  - "Teleprofi candidate interview-answer document (confirmed by Renato, 2026-07-23)"
 industry: law-office
 typical_company_size: any
 ---
-
-> **Status: Candidate draft from the Teleprofi interview-answer document.**
-> **Requires Patrick/Renato confirmation before merge.**
-> **Review status: OFFEN (open) — no recommendations or products have been
-> added to this archetype; do not treat any part of it as confirmed.**
 
 # Overview
 
@@ -30,8 +25,7 @@ Not yet captured.
 
 # Typical problems
 
-> Candidate content — from the interview draft's "Branche" answers, not yet
-> confirmed.
+> From the interview draft's "Branche" answers.
 
 - Vertraulichkeit (confidentiality) is treated as a defining requirement.
 - Persönliche Zuordnung (calls/lines mapped to a specific person, not a pool).
@@ -73,7 +67,7 @@ Not yet captured.
 
 # Sales notes
 
-Draft candidate note: confidentiality and professional appearance are named
+Note: confidentiality and professional appearance are named
 as the two dominant concerns for this archetype — worth confirming whether
 that should shape a specific sales-qualification angle (e.g. asking about
 confidentiality requirements early) once the needs-analysis standard exists
@@ -111,10 +105,11 @@ None yet.
 | Version | Date | Change | Source |
 |---|---|---|---|
 | 0.1 | 2026-07-22 | Initial candidate draft from Teleprofi interview-answer document | Teleprofi candidate interview draft (unconfirmed) |
+| 0.2 | 2026-07-23 | Confirmed by Renato as reflecting Teleprofi's actual practice | Renato |
 
 # Knowledge Confidence
 
 | Area | Confidence | Reason |
 |---|---|---|
-| Typical problems | needs-confirmation | sourced from an unconfirmed candidate interview draft |
-| Recommended solutions/products/services | needs-confirmation | not yet captured at all |
+| Typical problems | confirmed | Renato confirmed this reflects Teleprofi's actual practice (2026-07-23) |
+| Recommended solutions/products/services | incomplete | not yet captured at all |

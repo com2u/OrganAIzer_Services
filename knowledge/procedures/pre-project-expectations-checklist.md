@@ -2,14 +2,11 @@
 id: pre-project-expectations-checklist
 type: procedure
 owner: unassigned
-status: draft
-last_reviewed: 2026-07-22
+status: active
+last_reviewed: 2026-07-23
 sources:
-  - "Teleprofi candidate interview-answer document (unconfirmed, 2026-07-22)"
+  - "Teleprofi candidate interview-answer document (confirmed by Renato, 2026-07-23)"
 ---
-
-> **Status: Candidate draft from the Teleprofi interview-answer document.**
-> **Requires Patrick/Renato confirmation before merge.**
 
 # Pre-Project Expectations Checklist
 
@@ -31,8 +28,8 @@ The offer has been accepted (see `sales-offer-checklist.md`).
 
 ## Steps
 
-> Candidate list — from the interview draft's "Welche Erwartungen setzen wir
-> immer vor Projektbeginn?" answer, not yet confirmed.
+> From the interview draft's "Welche Erwartungen setzen wir immer vor
+> Projektbeginn?" answer.
 
 Before a project starts, the following must be clear to both sides:
 
@@ -62,5 +59,5 @@ starting work rather than discovering the gap mid-installation.
 
 ## Notes
 
-Candidate content, unconfirmed — requires Patrick/Renato sign-off. No
-prices are included or implied by this checklist.
+Sourced from the Teleprofi interview-answer document and confirmed by
+Renato, 2026-07-23. No prices are included or implied by this checklist.

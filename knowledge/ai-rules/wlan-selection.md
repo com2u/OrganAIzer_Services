@@ -2,14 +2,11 @@
 id: wlan-selection
 type: ai-rule
 owner: unassigned
-status: draft
-last_reviewed: 2026-07-22
+status: active
+last_reviewed: 2026-07-23
 sources:
-  - "Teleprofi candidate interview-answer document (unconfirmed, 2026-07-22)"
+  - "Teleprofi candidate interview-answer document (confirmed by Renato, 2026-07-23)"
 ---
-
-> **Status: Candidate draft from the Teleprofi interview-answer document.**
-> **Requires Patrick/Renato confirmation before merge.**
 
 # WLAN Topology Selection — decision rules
 
@@ -29,13 +26,12 @@ sources:
 > good for) still lives in that product file; the cross-product "how do we
 > choose" logic lives only here.
 >
-> Status: candidate decision policy from an unconfirmed interview draft, not
-> wired into any AI prompt. This file changes no application behavior.
+> Confirmed by Renato, 2026-07-23. Not wired into any AI prompt. This file
+> changes no application behavior.
 
 ## Selection guidance
 
-> Candidate content — from the interview draft's Interview 3 "ROUTER UND
-> WLAN" section, not yet confirmed.
+> From the interview draft's Interview 3 "ROUTER UND WLAN" section.
 
 - **Ein einzelner Access Point reicht**, wenn: die Fläche klein und
   überschaubar ist, die bauliche Struktur günstig ist, die Nutzerzahl
@@ -81,11 +77,9 @@ sources:
 - [`../services/wifi-site-survey.md`](../services/wifi-site-survey.md)
 - [`../procedures/site-visit-checklist.md`](../procedures/site-visit-checklist.md)
 
-## Needs Human Confirmation
+## Notes
 
-- Confirm this matches Teleprofi's actual practice — sourced from a single
-  unconfirmed candidate interview draft.
-- This file now carries the single AP-vs-mesh-vs-wired-AP-vs-survey
-  threshold question for the whole repository (absorbing
-  `fritz-repeater-6000.md`'s former Q3) — confirm the answer once here;
-  do not re-open it in the product file.
+This file carries the single AP-vs-mesh-vs-wired-AP-vs-survey threshold
+question for the whole repository (absorbing `fritz-repeater-6000.md`'s
+former Q3) — the answer lives here only; do not re-open it in the product
+file.

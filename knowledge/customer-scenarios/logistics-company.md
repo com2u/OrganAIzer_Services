@@ -2,19 +2,14 @@
 id: logistics-company
 type: customer-scenario
 owner: unassigned
-status: draft
-knowledge_version: 0.1
-last_reviewed: 2026-07-22
+status: active
+knowledge_version: 0.2
+last_reviewed: 2026-07-23
 sources:
-  - "Teleprofi candidate interview-answer document (unconfirmed, 2026-07-22)"
+  - "Teleprofi candidate interview-answer document (confirmed by Renato, 2026-07-23)"
 industry: logistics-company
 typical_company_size: any
 ---
-
-> **Status: Candidate draft from the Teleprofi interview-answer document.**
-> **Requires Patrick/Renato confirmation before merge.**
-> **Review status: OFFEN (open) — no recommendations or products have been
-> added to this archetype; do not treat any part of it as confirmed.**
 
 # Overview
 
@@ -32,8 +27,7 @@ Not yet captured.
 
 # Typical problems
 
-> Candidate content — from the interview draft's "Branche" answers, not yet
-> confirmed.
+> From the interview draft's "Branche" answers.
 
 - Hohe Verfügbarkeit (high availability) is a named requirement.
 - Mehrere Standorte (multiple sites) common.
@@ -83,7 +77,7 @@ Not yet captured beyond the problem list above.
 
 # Technician notes
 
-Draft candidate note: difficult RF/building structures are called out
+Note: difficult RF/building structures are called out
 explicitly — worth flagging to a technician early that a site survey may be
 warranted more often for this archetype than for a typical small office.
 
@@ -116,10 +110,11 @@ None yet.
 | Version | Date | Change | Source |
 |---|---|---|---|
 | 0.1 | 2026-07-22 | Initial candidate draft from Teleprofi interview-answer document | Teleprofi candidate interview draft (unconfirmed) |
+| 0.2 | 2026-07-23 | Confirmed by Renato as reflecting Teleprofi's actual practice | Renato |
 
 # Knowledge Confidence
 
 | Area | Confidence | Reason |
 |---|---|---|
-| Typical problems | needs-confirmation | sourced from an unconfirmed candidate interview draft |
-| Recommended solutions/products/services | needs-confirmation | not yet captured at all |
+| Typical problems | confirmed | Renato confirmed this reflects Teleprofi's actual practice (2026-07-23) |
+| Recommended solutions/products/services | incomplete | not yet captured at all |

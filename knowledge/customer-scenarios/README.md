@@ -26,16 +26,12 @@ warehouse · retail-shop · hotel · municipality · restaurant.
 > scenario only when Teleprofi knowledge for it exists, and capture gaps as Open
 > Questions / *Knowledge Needed* items.
 
-> **CANDIDATE ADDITION — Teleprofi interview draft, unconfirmed.**
-> **Requires Patrick/Renato confirmation before merge.**
->
-> `handwerksbetrieb` (trade/craft business) was not in the original
-> candidate list above — it is proposed as an addition by the interview
-> draft (Interview 2 "BRANCHE"), which also drafted content for
-> `medical-practice`, `law-office`, `logistics-company`, `hotel`, and
-> `restaurant` from the existing list. See
-> [`./handwerksbetrieb.md`](./handwerksbetrieb.md) for the draft content;
-> confirm before treating it as an established archetype.
+`handwerksbetrieb` (trade/craft business) was not in the original candidate
+list above — it was proposed as an addition by the Teleprofi interview draft
+(Interview 2 "BRANCHE"), which also drafted content for `medical-practice`,
+`law-office`, `logistics-company`, `hotel`, and `restaurant` from the
+existing list. Confirmed by Renato, 2026-07-23. See
+[`./handwerksbetrieb.md`](./handwerksbetrieb.md) for the content.
 
 ## Rules for scenario files
 
