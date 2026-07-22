@@ -38,6 +38,7 @@ from utils.lang_tracking import (
     update_conversation_language as _update_conversation_language,
 )
 from voice import call_log, caller_resolution_dialogue, contacts as _contacts, config
+from voice import human_handoff_dialogue
 from voice.audio_bridge import transcribe_file, speak_to_file
 from voice.llm_bridge import get_response, new_history, OUTBOUND_SYSTEM_PROMPT
 
@@ -422,6 +423,7 @@ def _conversation_loop(
     initial_lang: str = "de",
     dialogue_state: Optional[dict] = None,
     identity_state: Optional[dict] = None,
+    handoff_state: Optional[dict] = None,
 ) -> bool:
     """
     Core record → transcribe → LLM → speak loop.
@@ -545,6 +547,34 @@ def _conversation_loop(
                     logger.error("Utterance sanitization error: %s", exc, exc_info=True)
                     sanitized_t = t
 
+            # ── human handoff (deterministic; "caller wants a person" flow) ──────
+            # voice/human_handoff_dialogue.py tracks whether the caller has asked
+            # for a person, whether the reason is known, and offers AI help at
+            # most once before a deterministic escalation. Runs on the RAW
+            # utterance `t` (not sanitized_t) so it can capture any callback
+            # number the caller states into STATE ONLY — never into text/history
+            # — via the same redact_phone_like() caller_resolution_dialogue uses.
+            # Checked BEFORE the scheduler block: if the caller insists on a
+            # person mid-flow, handoff takes priority over appointment booking.
+            if handoff_state is not None:
+                try:
+                    human_handoff_dialogue.observe_turn(handoff_state, t)
+                except Exception as exc:  # never let handoff tracking break a live call
+                    logger.error("Human handoff dialogue error: %s", exc, exc_info=True)
+                if human_handoff_dialogue.should_escalate_now(handoff_state):
+                    # Deterministic handoff — never depends on the LLM choosing to
+                    # emit ESCALATE: itself once the caller has insisted or an
+                    # urgent/emergency signal was seen.
+                    human_handoff_dialogue.mark_handoff_confirmed(handoff_state)
+                    reason = human_handoff_dialogue.escalation_reason_text(handoff_state)
+                    _proc["text"] = sanitized_t
+                    _proc["reply"] = f"ESCALATE: {reason}"
+                    _proc["lang"] = conv_lang
+                    history.append({"role": "user", "content": sanitized_t})
+                    history.append({"role": "assistant", "content": _proc["reply"]})
+                    _proc_done.set()
+                    return
+
             # ── appointment scheduling (deterministic; slots come from Scheduler) ──
             # A per-call state machine handles appointment intent WITHOUT the LLM
             # inventing availability. It returns None when the turn is not part of
@@ -590,7 +620,16 @@ def _conversation_loop(
                     identity_extra = caller_resolution_dialogue.build_prompt_extra(identity_state)
                 except Exception as exc:  # never let identification break a live call
                     logger.error("Caller resolution error: %s", exc, exc_info=True)
-            combined_extra_parts = [p for p in (extra, identity_extra) if p]
+            # ── human handoff stage-1 wording (ASK_REASON / OFFER_HELP only —
+            # ESCALATE_NOW already returned early above and is never phrased
+            # by the LLM). State was already updated by observe_turn() above.
+            handoff_extra = None
+            if handoff_state is not None:
+                try:
+                    handoff_extra = human_handoff_dialogue.build_prompt_extra(handoff_state)
+                except Exception as exc:  # never let handoff tracking break a live call
+                    logger.error("Human handoff dialogue error: %s", exc, exc_info=True)
+            combined_extra_parts = [p for p in (extra, identity_extra, handoff_extra) if p]
             combined_extra = "\n".join(combined_extra_parts) if combined_extra_parts else None
             try:
                 r = asyncio.run(
@@ -608,6 +647,28 @@ def _conversation_loop(
                     if _proc["lang"] == "de"
                     else "I'm sorry, there was a technical issue. Please try again."
                 )
+            # ── guard: ASK_REASON/OFFER_HELP are mandatory (stage 1, rules
+            # #2-#3) — the LLM can still ignore the instruction above and
+            # reply with ESCALATE anyway (e.g. via an unrelated "annoyed
+            # caller" trigger it decides on its own). Override with a
+            # deterministic fallback rather than letting that premature
+            # escalation through, and fix up history to match what is
+            # actually said (get_response() already appended the raw reply).
+            if handoff_state is not None:
+                try:
+                    fallback = human_handoff_dialogue.fallback_reply_if_llm_escalated_prematurely(handoff_state, r)
+                except Exception as exc:
+                    logger.error("Human handoff dialogue error: %s", exc, exc_info=True)
+                    fallback = None
+                if fallback:
+                    logger.warning(
+                        "LLM emitted ESCALATE during mandatory handoff step (action=%s) — "
+                        "overriding with deterministic fallback reply.",
+                        handoff_state.get("action"),
+                    )
+                    r = fallback
+                    if history and history[-1].get("role") == "assistant":
+                        history[-1]["content"] = r
             _proc["reply"] = r
             # Pre-generate TTS in the caller's conversation language, unless the
             # LLM triggered a special action (ESCALATE replies are never spoken
@@ -747,6 +808,13 @@ def _conversation_loop(
             reason = reply[9:].strip()
             logger.info("Escalation triggered: %s", reason)
 
+            # Idempotent — already True when this ESCALATE: line came from the
+            # deterministic human-handoff short-circuit above; sets it for the
+            # LLM-triggered path too, so should_ask_final_note() etc. below see
+            # a confirmed handoff either way.
+            if handoff_state is not None:
+                human_handoff_dialogue.mark_handoff_confirmed(handoff_state)
+
             # ── recording consent ─────────────────────────────────────────────
             # IMPORTANT: Escalation consent is always German (legal/compliance requirement).
             # Do not condition on conv_lang — consent wording must be stable and professional.
@@ -779,6 +847,33 @@ def _conversation_loop(
 
             logger.info("Recording consent: %s", recording_consent)
 
+            # ── Stage 2 — final pre-transfer note (human_handoff_dialogue) ─────
+            # Deliberately AFTER the recording-consent step above — consent must
+            # be captured before we record the caller's final pre-transfer
+            # answer. should_ask_final_note() skips this for an emergency,
+            # already-collected information, an already-asked note, or an
+            # explicit "no more questions" from the caller. Silence, refusal, or
+            # a failed transcription must never block the transfer —
+            # record_final_note_response() always marks the note collected.
+            if handoff_state is not None and human_handoff_dialogue.should_ask_final_note(handoff_state):
+                human_handoff_dialogue.mark_final_note_asked(handoff_state)
+                _speak_and_play(handler, human_handoff_dialogue.final_note_question(), lang="de")
+                final_note_text = None
+                if not handler.is_hung_up:
+                    note_path = _audio_dir() / f"{uuid}_final_note.wav"
+                    note_arg = (
+                        f"{_fs_path(note_path)} "
+                        f"12 "          # a short note, not a new conversation
+                        f"{_RECORD_SILENCE_THRESH} "
+                        f"25"           # 500 ms silence to stop
+                    )
+                    handler.execute("record", note_arg, timeout=18.0)
+                    if note_path.exists():
+                        final_note_text, _ = transcribe_file(str(note_path), lang=conv_lang)
+                        _cleanup(str(note_path))
+                        logger.info("Final pre-transfer note: %r", final_note_text)
+                human_handoff_dialogue.record_final_note_response(handoff_state, final_note_text)
+
             # IMPORTANT: Escalation transfer message is always German (Teleprofi requirement).
             # Do not condition on conv_lang — professional consistency during handoff.
             hold_msg = "Einen Moment bitte, ich leite Sie an einen Mitarbeiter weiter."
@@ -793,11 +888,19 @@ def _conversation_loop(
             # the transfer below (outbound socket, "ext XML default") is the
             # single authoritative handoff.
             rec_file = str(call_rec_path) if call_rec_path and call_rec_path.exists() else None
+            # Single structured handoff_context dict (never several loose kwargs)
+            # — see voice/human_handoff_dialogue.build_handoff_context(). None
+            # for calls that never had a handoff_state (outbound calls today).
+            handoff_context = (
+                human_handoff_dialogue.build_handoff_context(handoff_state)
+                if handoff_state is not None else None
+            )
             esc_result = handle_escalation(
                 caller, caller_name, history, reason, started_at,
                 call_uuid=uuid, esl_handler=handler,
                 recording_consent=recording_consent,
                 recording_path=rec_file,
+                handoff_context=handoff_context,
             )
 
             # Notify the operator via phone_state so the frontend shows an alert.
@@ -1051,6 +1154,10 @@ def handle_esl_call(handler, phone_state: dict) -> None:
     # Populated below for inbound calls only — outbound calls already know who
     # they dialled via outbound_ctx. See voice/caller_resolution_dialogue.py.
     identity_state: Optional[dict] = None
+    # Per-call human-handoff dialogue state (in-memory, never persisted).
+    # Populated below for inbound calls only, same scope as identity_state —
+    # see voice/human_handoff_dialogue.py.
+    handoff_state: Optional[dict] = None
 
     # ── check if this is an outbound call we originated ───────────────────────
     outbound_ctx = pop_outbound_context(uuid)
@@ -1086,6 +1193,7 @@ def handle_esl_call(handler, phone_state: dict) -> None:
         # customer/location record). See voice/caller_resolution_dialogue.py.
         identity_state = caller_resolution_dialogue.new_state()
         caller_resolution_dialogue.init_from_call(identity_state, caller)
+        handoff_state = human_handoff_dialogue.new_state()
 
     display = caller_name or caller
 
@@ -1218,6 +1326,7 @@ def handle_esl_call(handler, phone_state: dict) -> None:
             initial_lang=config.AI_LANGUAGE,
             dialogue_state=appointment_state,
             identity_state=identity_state,
+            handoff_state=handoff_state,
         )
         turn_count = turn_ref[0]
 

@@ -187,13 +187,19 @@ briefly and offer what you can.
 ## ESCALATION
 Do not offer a handoff casually — for routine questions you can answer, handle them yourself.
 Do escalate proactively — without waiting to be asked — whenever one of the defined \
-escalation triggers is met: the caller explicitly asks for a person; total outage of the \
+escalation triggers is met: total outage of the \
 phone system or internet during business hours; a medical practice, care facility, or other \
 time-critical organisation is unreachable; an emergency (personal safety, fire, water near \
 equipment); passwords, credentials, or physical access are required; a quote, pricing, or \
 contract negotiation beyond plain information; a complex technical issue you cannot triage \
 after 2–3 sensible questions; your confidence is low; an annoyed or complaining caller who \
 expects a human; or an urgent after-hours callback request.
+
+When a caller explicitly asks to speak with a person, a separate deterministic step decides \
+whether to ask what it concerns, offer to help yourself once, or hand off — follow ONLY the \
+instruction given in this turn's additional context for that case, and do not reply with \
+ESCALATE for that trigger on your own judgement.
+
 When a trigger is met, reply with EXACTLY this line and nothing else: ESCALATE: <reason> — <key detail>
 
 ## FORMAT — LIVE CALL (spoken aloud)
@@ -476,6 +482,82 @@ def build_identity_stage_instruction(
         if not candidate_labels:
             return None
         return template.format(candidates="; ".join(candidate_labels))
+    return template
+
+
+# ── Human-handoff dialogue instructions (Layer 1, client-neutral) ────────────
+# Deterministic code (voice/human_handoff_dialogue.py) decides WHICH action
+# applies (ask the reason, offer help once, or nothing) — this module only
+# owns the wording, exactly like build_identity_stage_instruction above.
+# ESCALATE_NOW is deliberately absent here: that action is handled entirely
+# deterministically by the call handler and is never phrased by the LLM.
+_HUMAN_HANDOFF_INSTRUCTIONS: dict[str, str] = {
+    "ASK_REASON": (
+        "## HUMAN HANDOFF — REASON UNKNOWN\n"
+        "The caller has asked to speak with a person and the reason is not yet "
+        "known. Ask naturally, in one short question, what the matter concerns. "
+        "Do not offer to help yourself yet. Do NOT reply with ESCALATE this "
+        "turn under any circumstance, even if the caller sounds insistent, "
+        "impatient, or frustrated — deciding when to hand off for this "
+        "trigger is not your call; you will be told explicitly when it's time."
+    ),
+    "OFFER_HELP": (
+        "## HUMAN HANDOFF — OFFER TO HELP ONCE\n"
+        "The caller has asked to speak with a person and the reason is known "
+        "({reason}). You may genuinely be able to help with this yourself — "
+        "offer to do so in one short sentence, ONE time only. Do NOT reply "
+        "with ESCALATE this turn under any circumstance, even if the caller "
+        "sounds insistent, impatient, or frustrated — make the offer instead. "
+        "If the caller still wants a person (now or on a later turn), do not "
+        "repeat the offer or argue — you will be told explicitly when it's "
+        "time to hand off."
+    ),
+    "CONTINUE_HELPING": (
+        "## HUMAN HANDOFF — CONTINUE HELPING, DO NOT RE-ESCALATE\n"
+        "Earlier the caller asked for a person; you already offered to help "
+        "directly and they accepted (or did not object). Their earlier "
+        "request is being handled by you helping them now — do NOT reply "
+        "with ESCALATE for that earlier request. Continue the conversation "
+        "normally. If the caller explicitly asks for a person again, you "
+        "will be told to hand off then."
+    ),
+}
+
+# Deterministic fallback wording — used ONLY when the LLM ignores the
+# ASK_REASON/OFFER_HELP instruction above and replies with ESCALATE anyway
+# (e.g. because it independently judged the caller "annoyed/expects a
+# human", a DIFFERENT trigger this module doesn't control). Those two steps
+# are mandatory (stage 1, rules #2-#3) — prompt wording alone cannot
+# guarantee compliance, so the call handler falls back to this fixed line
+# rather than letting a premature escalation through. Never used on a
+# compliant turn — those keep the LLM's own natural phrasing.
+_HUMAN_HANDOFF_FALLBACK_REPLIES: dict[str, str] = {
+    "ASK_REASON": "Bevor ich Sie weiterleite — worum geht es denn genau?",
+    "OFFER_HELP": "Das kann ich eventuell auch direkt für Sie klären — soll ich es versuchen?",
+}
+
+
+def human_handoff_fallback_reply(action: Optional[str]) -> Optional[str]:
+    """Deterministic canned reply for ASK_REASON/OFFER_HELP when the LLM
+    ignores the instruction and emits ESCALATE anyway. See module note above."""
+    return _HUMAN_HANDOFF_FALLBACK_REPLIES.get(action or "")
+
+
+def build_human_handoff_instruction(
+    action: Optional[str],
+    reason_text: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Return a client-neutral (Layer 1) instruction fragment for the given
+    human-handoff dialogue action, or None when no extra instruction applies
+    (nothing to ask/offer, or the action is ESCALATE_NOW, which the call
+    handler acts on directly without any LLM phrasing).
+    """
+    template = _HUMAN_HANDOFF_INSTRUCTIONS.get(action or "")
+    if not template:
+        return None
+    if "{reason}" in template:
+        return template.format(reason=reason_text or "siehe Kontext")
     return template
 
 

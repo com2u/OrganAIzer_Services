@@ -375,6 +375,7 @@ def handle_escalation(
     esl_handler: Optional[ESLOutboundHandler] = None,
     recording_consent: bool = False,
     recording_path: Optional[str] = None,
+    handoff_context: Optional[dict] = None,
 ) -> dict:
     """
     Full escalation flow called after the AI decides to escalate.
@@ -383,6 +384,15 @@ def handle_escalation(
       1. Generate LLM call summary
       2. Send escalation email
       3. Attempt transfer (stub — always False until FreeSWITCH)
+
+    Args:
+        handoff_context: Optional structured summary from
+            voice.human_handoff_dialogue.build_handoff_context() — category,
+            reason_text, final_note_text, and callback_number_current_call
+            (current-call-only). Folded into the email body as deterministic
+            metadata AFTER the LLM summary is generated; NEVER passed into
+            the LLM summary prompt itself (transcript already carries only
+            sanitized text — see _llm_summary below).
 
     Returns:
         {
@@ -427,6 +437,25 @@ def handle_escalation(
     secondary_room = config.AI_WAITING_ROOM_SECONDARY
     waiting_room = primary_room + (f" (Fallback {secondary_room})" if secondary_room else "")
 
+    # Deterministic human-handoff metadata (voice/human_handoff_dialogue.py),
+    # if this escalation went through that dialogue. Built here, entirely
+    # AFTER the LLM summary call above — none of this (including the raw
+    # callback number) is ever part of the LLM prompt, only this plain-text
+    # email body. Never written to customers.jsonl or callback_numbers.jsonl.
+    handoff_context = handoff_context or {}
+    handoff_lines = []
+    if handoff_context.get("category"):
+        handoff_lines.append(f"Kategorie:            {handoff_context['category']}")
+    if handoff_context.get("reason_text"):
+        handoff_lines.append(f"Anliegen (Anrufer):   {handoff_context['reason_text']}")
+    if handoff_context.get("final_note_text"):
+        handoff_lines.append(f"Zusatzinfo (Übergabe): {handoff_context['final_note_text']}")
+    if handoff_context.get("callback_number_current_call"):
+        handoff_lines.append(
+            f"Rückrufnummer (nur dieser Anruf): {handoff_context['callback_number_current_call']}"
+        )
+    handoff_block = ("\n".join(handoff_lines) + "\n") if handoff_lines else ""
+
     body = (
         f"Teleprofi-Fulda KI-Telefonassistent — Eskalation\n"
         f"{'=' * 50}\n\n"
@@ -441,7 +470,8 @@ def handle_escalation(
         f"Dauer:                {duration_s}s\n"
         f"Call-ID:              {call_uuid or 'unbekannt'}\n"
         f"Grund:                {escalation_reason or 'nicht angegeben'}\n"
-        f"Aufzeichnung erlaubt: {consent_line}\n\n"
+        f"Aufzeichnung erlaubt: {consent_line}\n"
+        f"{handoff_block}\n"
         f"Zusammenfassung:\n{summary}\n\n"
         f"Gesprächsverlauf:\n{transcript_block}\n"
     )
