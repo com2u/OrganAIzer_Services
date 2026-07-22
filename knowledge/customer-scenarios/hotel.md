@@ -13,6 +13,8 @@ typical_company_size: any
 
 > **Status: Candidate draft from the Teleprofi interview-answer document.**
 > **Requires Patrick/Renato confirmation before merge.**
+> **Review status: OFFEN (open) — no recommendations or products have been
+> added to this archetype; do not treat any part of it as confirmed.**
 
 # Overview
 

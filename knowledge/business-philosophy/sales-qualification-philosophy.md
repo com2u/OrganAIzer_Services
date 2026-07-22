@@ -24,8 +24,10 @@ sources:
 > Checklist" section — see the candidate cross-reference note added there.
 >
 > Structured by funnel stage so first-contact content and consultation-stage
-> content don't collide — each stage below owns exactly one "questions to
-> ask" list and one "warning signals" list; they are not interchangeable.
+> content don't collide — each stage below owns its own "questions to ask"
+> content. Warning signals from both stages are merged into one shared
+> section ("Warnsignale im Beratungsprozess") rather than kept as two
+> separate lists.
 >
 > Step-by-step checklists live in
 > [`../procedures/sales-offer-checklist.md`](../procedures/sales-offer-checklist.md)
@@ -67,22 +69,11 @@ analoge Sondergeräte; bestehende Glasfaser- oder Providerabhängigkeiten;
 gewünschte CRM-Integration; fehlende Netzwerkqualität;
 Selbstadministration oder Wunsch nach vollständigem Managed Service.
 
-**First-contact warning signals** (be more careful, not necessarily
-decline):
-
-- Der Kunde möchte ein konkretes Produkt, lehnt aber jede Bedarfsfrage ab.
-- Der Preis ist das einzige Entscheidungskriterium.
-- Wichtige technische Voraussetzungen sollen bewusst ungeprüft bleiben.
-- Mehrere Entscheider verfolgen widersprüchliche Ziele.
-- Unrealistische Fristen werden als unverhandelbar dargestellt.
-- Der Kunde erwartet garantierte Fehlerfreiheit.
-- Verantwortlichkeiten zwischen Kunde, Provider und Dienstleister sind
-  ungeklärt.
-- Es wird erwartet, dass nicht dokumentierte Alttechnik "einfach
-  weiterläuft".
-- Zugangsdaten und Dokumentation der bestehenden Anlage fehlen vollständig.
-- Der Kunde möchte kritische Funktionen ohne Wartung, Updates oder Support
-  betreiben.
+Warning signals that can surface at first contact are tracked together with
+the consultation-stage ones in the single
+["Warnsignale im Beratungsprozess"](#warnsignale-im-beratungsprozess)
+section below (merged 2026-07-22 — previously two separate lists here and
+in Stage 2).
 
 ## Stage 2 — Beratung (consultation)
 
@@ -92,8 +83,9 @@ process in
 [`../companies/teleprofi-fulda.md`](../companies/teleprofi-fulda.md)'s
 "Customer Engagement Process" section — **not duplicated here**. This
 section holds only the qualification-specific content for the consultation
-stage: whether a given customer is a good fit, and behavioral warning
-signals distinct from the first-contact ones above.
+stage: whether a given customer is a good fit. Warning signals for this and
+the first-contact stage are merged into one list — see "Warnsignale im
+Beratungsprozess" below.
 
 > Candidate content — from the interview draft's "BERATUNG" section
 > (supplementary block, near the end of the source document).
@@ -109,15 +101,38 @@ signals distinct from the first-contact ones above.
 - Er respektiert Fachberatung, auch wenn sie von seiner ersten Idee
   abweicht.
 
-**Consultation-stage warning signals** (distinct from the first-contact
-list above — these surface once a deeper conversation has started):
+See ["Warnsignale im Beratungsprozess"](#warnsignale-im-beratungsprozess)
+below for consultation-stage warning signals, merged with the first-contact
+ones into a single list.
 
-- Ausschließlich niedrigster Preis.
-- Keinerlei Bereitschaft zur Bestandsaufnahme.
-- Unrealistische Garantieforderungen.
-- Extreme Zeitvorgaben ohne Mitwirkung.
-- Unklare oder wechselnde Entscheider.
-- Fehlende Zugangsdaten und Dokumentation.
+## Warnsignale im Beratungsprozess
+
+> Candidate content — merged 2026-07-22 from what were previously two
+> separate lists (first-contact warning signals from Interview 2 "ERSTES
+> GESPRÄCH", and consultation-stage warning signals from the "BERATUNG"
+> supplementary section). A given signal may surface at first contact or
+> only once a deeper conversation has started — this section no longer
+> distinguishes by stage, only lists the signals themselves. Requires
+> Patrick/Renato confirmation before merge.
+
+- Der Kunde möchte ein konkretes Produkt, lehnt aber jede Bedarfs- oder
+  Bestandsaufnahme-Frage ab.
+- Der Preis ist das einzige Entscheidungskriterium (ausschließlich
+  niedrigster Preis).
+- Wichtige technische Voraussetzungen sollen bewusst ungeprüft bleiben.
+- Mehrere Entscheider verfolgen widersprüchliche Ziele, oder die
+  Entscheider sind unklar bzw. wechseln.
+- Unrealistische Fristen/Zeitvorgaben werden als unverhandelbar
+  dargestellt, ohne Mitwirkung des Kunden.
+- Der Kunde erwartet garantierte Fehlerfreiheit oder stellt unrealistische
+  Garantieforderungen.
+- Verantwortlichkeiten zwischen Kunde, Provider und Dienstleister sind
+  ungeklärt.
+- Es wird erwartet, dass nicht dokumentierte Alttechnik "einfach
+  weiterläuft".
+- Zugangsdaten und Dokumentation der bestehenden Anlage fehlen vollständig.
+- Der Kunde möchte kritische Funktionen ohne Wartung, Updates oder Support
+  betreiben.
 - Erwartung kostenloser Zusatzleistungen.
 - Gewünschte Umgehung von Sicherheits- oder Lizenzvorgaben.
 - Wiederholte schlechte Erfahrungen mit vielen Dienstleistern ohne
@@ -160,21 +175,15 @@ Explain value through impact, not a feature list:
 - klarere Verantwortlichkeiten,
 - planbare Betreuung.
 
-## Financing objection answers
+## Financing objections
 
-These three overlap with, and should stay consistent with, the existing
-canonical [`financing-philosophy.md`](./financing-philosophy.md) — captured
-here only as the objection-handling framing, not as a second source of
-truth for financing policy:
-
-- **Leasing**, wenn: größere Investitionen, gewünschte Liquiditätsschonung,
-  planbare Raten, sofern Vertragslaufzeit und Gesamtkosten passen.
-- **Miete**, wenn: Flexibilität wichtig ist; Leistungen und Wartung als
-  Paket gewünscht sind; Nutzerzahlen schwanken; Investitionskosten vermieden
-  werden sollen; regelmäßige Modernisierung vorgesehen ist.
-- **Kauf**, wenn: die Nutzung langfristig stabil ist; der Kunde Eigentum
-  bevorzugt; Finanzierung vorhanden ist; Gesamtkosten über die Nutzungsdauer
-  günstiger sind; keine hohe Flexibilität benötigt wird.
+When a customer objects on financing grounds (cost, ownership preference,
+flexibility), the leasing/rental/purchase decision criteria are owned
+entirely by
+[`financing-philosophy.md`](./financing-philosophy.md) — **not restated
+here** (reconciled 2026-07-22; this section previously duplicated that
+file's Leasing/Rental/Purchase criteria in objection-response form). Use
+that file's criteria directly when handling a financing-related objection.
 
 ## Offer principles
 
@@ -198,7 +207,12 @@ Offer content rules and the mandatory-fields/never-do checklist live in
 
 - All content in this file is sourced from a single unconfirmed candidate
   interview draft — none of it has independent corroboration.
-- Whether the objection-handling table reflects Teleprofi's actual current
-  answers, or is a proposed standard.
+- **The Stage 3 objection-handling table remains explicitly OPEN /
+  proposed** — it is presented in the source with no hedge distinguishing
+  it from Teleprofi's actual current answers; treat it as a proposed
+  script pending confirmation, not settled content.
 - Whether `comtrexx-next.md`'s existing checklist should be fully replaced
   by Stage 1 above, or kept as product-specific supplementary detail.
+- Whether the merged "Warnsignale im Beratungsprozess" list correctly
+  reflects real practice, now that the first-contact/consultation-stage
+  split has been removed.

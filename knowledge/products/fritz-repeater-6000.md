@@ -131,12 +131,19 @@ customer benefits from staying in the AVM ecosystem — ideally after a quick su
 
 # When another solution would be more appropriate
 
-- **Large / dense / multi-floor coverage** → **structured cabling + access points**
-  may be better than wireless mesh (Teleprofi does Ethernet/fibre cabling, switches,
-  PoE, VLAN — `teleprofi_fulda.md`). The repeater suits gap-filling, not whole-site
-  enterprise Wi-Fi.
-- **Wired backhaul available everywhere** → cabling to APs can beat wireless repeating.
-- (Teleprofi's actual threshold for "repeater vs. cabling + APs" — Knowledge Needed Q3.)
+> **Reconciliation note (2026-07-22, pending candidate review):** the general
+> single-AP-vs-mesh-vs-wired-AP-vs-survey decision logic is now consolidated
+> in
+> [`../ai-rules/wlan-selection.md`](../ai-rules/wlan-selection.md) — see
+> that file rather than duplicating the reasoning here. This entry keeps
+> only the Repeater-6000-specific characterization.
+
+The repeater suits **gap-filling** an existing/planned FRITZ!Box network, not
+whole-site enterprise Wi-Fi — for large/dense/multi-floor coverage or where
+wired backhaul is available everywhere, structured cabling + access points
+may be the better fit. See
+[`../ai-rules/wlan-selection.md`](../ai-rules/wlan-selection.md) for the
+full decision logic and its own open confirmation status.
 
 # Common customer questions
 
@@ -222,7 +229,10 @@ support path (Mesh philosophy). If the building were large/multi-floor, propose
 **Renato (commercial / selection):**
 1. Typical **repeater count per site**, and when one Repeater 6000 isn't enough.
 3. Teleprofi's **threshold** for recommending **repeater(s) vs. structured cabling +
-   access points** (site size, density, floors).
+   access points** (site size, density, floors) — tracked in
+   [`../ai-rules/wlan-selection.md`](../ai-rules/wlan-selection.md)'s "Needs
+   Human Confirmation" section as of 2026-07-22; do not re-ask independently
+   here once that file is confirmed.
 5. Is the Repeater 6000 usually sold **with a survey**, or added reactively to fix
    complaints?
 

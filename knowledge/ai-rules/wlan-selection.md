@@ -14,11 +14,20 @@ sources:
 # WLAN Topology Selection — decision rules
 
 > This file defines **how** OrganAIzer chooses between a single access
-> point, a mesh system, and a paid WLAN survey. It is decision policy, not
-> product facts — device facts live in
+> point, a mesh system, a wired access-point deployment, and a paid WLAN
+> survey. It is decision policy, not product facts — device facts live in
 > [`../products/fritz-repeater-6000.md`](../products/fritz-repeater-6000.md)
 > and [`fritzbox-family.md`](../products/fritzbox-family.md). Mirrors the
 > `provider-selection.md`/`endpoint-selection.md` pattern.
+>
+> **This file is the single canonical home for the single-AP vs. mesh vs.
+> wired-AP vs. WLAN-survey decision (reconciliation decision, 2026-07-22).**
+> `fritz-repeater-6000.md` previously carried an overlapping, independently
+> unresolved version of this same question (its own Knowledge Needed Q3) —
+> that file now links here instead of restating the decision logic. Any
+> product-specific characterization (e.g. what the Repeater 6000 itself is
+> good for) still lives in that product file; the cross-product "how do we
+> choose" logic lives only here.
 >
 > Status: candidate decision policy from an unconfirmed interview draft, not
 > wired into any AI prompt. This file changes no application behavior.
@@ -34,15 +43,16 @@ sources:
 - **Mesh** ist sinnvoll, wenn: mehrere Bereiche versorgt werden müssen, die
   Verkabelung teilweise eingeschränkt ist, und eine einfache zentrale
   Funkversorgung wichtiger ist als maximale Planbarkeit.
-  **Wichtige Einschränkung aus dem Entwurf:** für gewerbliche,
-  zeitkritische Umgebungen sollte Mesh **nicht automatisch** die erste
-  Lösung sein — kabelgebundene Access Points mit professioneller Planung
-  sind häufig verlässlicher. This is directionally consistent with the
-  existing (already `high`-confidence)
+- **Kabelgebundene Access Points (wired AP)** sind vorzuziehen, wenn:
+  gewerbliche, zeitkritische Umgebungen professionelle Planbarkeit
+  benötigen; die Fläche groß, dicht oder mehrgeschossig ist; oder
+  Verkabelung ohnehin überall verfügbar ist. Mesh sollte in solchen Fällen
+  **nicht automatisch** die erste Lösung sein — this is directionally
+  consistent with the pre-existing (already `high`-confidence)
+  characterization in
   [`../products/fritz-repeater-6000.md`](../products/fritz-repeater-6000.md)
-  "Limitations" / "When another solution would be more appropriate"
-  content — treat that file's existing guidance as the primary source and
-  this note as corroborating, not overriding it.
+  ("Limitations" / gap-filling vs. whole-site coverage), which this file's
+  guidance now supersedes as the canonical decision logic (see note above).
 - **Eine WLAN-Ausleuchtung** wird durchgeführt, wenn: die Fläche groß oder
   verwinkelt ist; Stahl, Beton, Glas oder Regalsysteme den Funk
   beeinflussen; DECT/WLAN-Telefonie oder Echtzeitanwendungen genutzt
@@ -64,9 +74,9 @@ sources:
 ## Related
 
 - [`../products/fritz-repeater-6000.md`](../products/fritz-repeater-6000.md)
-  (already has an existing, higher-confidence open question — Q3 — on this
-  exact AP-vs-mesh-vs-cabling threshold; this file's guidance should be
-  reconciled with that open question, not treated as a separate answer)
+  — device facts and product-specific characterization; its former Q3
+  ("repeater vs. cabling + APs threshold") is now tracked here instead of
+  independently in that file.
 - [`../products/fritzbox-family.md`](../products/fritzbox-family.md)
 - [`../services/wifi-site-survey.md`](../services/wifi-site-survey.md)
 - [`../procedures/site-visit-checklist.md`](../procedures/site-visit-checklist.md)
@@ -75,5 +85,7 @@ sources:
 
 - Confirm this matches Teleprofi's actual practice — sourced from a single
   unconfirmed candidate interview draft.
-- Reconcile with `fritz-repeater-6000.md`'s existing open Q3 rather than
-  leaving two separate unresolved answers to the same question.
+- This file now carries the single AP-vs-mesh-vs-wired-AP-vs-survey
+  threshold question for the whole repository (absorbing
+  `fritz-repeater-6000.md`'s former Q3) — confirm the answer once here;
+  do not re-open it in the product file.

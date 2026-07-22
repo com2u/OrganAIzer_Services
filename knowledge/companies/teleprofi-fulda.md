@@ -24,8 +24,12 @@ practical, reliable, supportable solutions.
 
 > **CANDIDATE ADDITION — Teleprofi interview draft, unconfirmed.**
 > **Requires Patrick/Renato confirmation before merge.**
+> **Scope: INTERNAL company philosophy only — not caller-facing voice
+> knowledge. Never summarize or promote this section into
+> `backend/voice/knowledge/teleprofi_fulda.md` or any AI prompt, even in
+> softened form.**
 >
-> ## Positioning & Differentiation (candidate)
+> ## Positioning & Differentiation (candidate, internal only)
 >
 > Why customers choose Teleprofi over a competitor (candidate framing, not
 > confirmed): not because of the lowest price, but because of who takes
@@ -231,60 +235,49 @@ AVM products including:
 
 ## Customer Engagement Process
 
-1. Initial contact
-2. Requirement gathering
-3. Site visit
-4. Infrastructure review
-5. Coverage assessment
-6. Solution design
-7. Proposal preparation
-8. Customer approval
-9. Installation
-10. Validation
-11. Handover
+> **Candidate content — Teleprofi interview draft, unconfirmed. Requires
+> Patrick/Renato confirmation.** This 12-step process is the single
+> canonical engagement process for this file — the earlier 11-step draft
+> (Initial contact → Requirement gathering → Site visit → Infrastructure
+> review → Coverage assessment → Solution design → Proposal preparation →
+> Customer approval → Installation → Validation → Handover) has been
+> retired in favor of this more detailed version (2026-07-22 reconciliation
+> decision) rather than kept as a second, competing list.
 
-> **CANDIDATE ADDITION — Teleprofi interview draft, unconfirmed.**
-> **Requires Patrick/Renato confirmation before merge. This is a more
-> detailed candidate version of the 11-step process above — it is proposed
-> to supersede/reconcile with it once confirmed, not a second, competing
-> process. Do not treat both as independently authoritative.**
->
-> ### Candidate detailed process (interview draft)
->
-> 1. **Erstkontakt** — Anliegen verstehen, Dringlichkeit bewerten,
->    Ansprechpartner identifizieren, klären ob Fernberatung oder
->    Vor-Ort-Aufnahme nötig ist.
-> 2. **Beratung** — Ziele, Probleme, bestehende Systeme, Budget und
->    Entwicklung verstehen; noch keine voreilige Produktempfehlung. See
->    [`../business-philosophy/sales-qualification-philosophy.md`](../business-philosophy/sales-qualification-philosophy.md).
-> 3. **Vor-Ort-Termin** — Räume, Netzwerk, Verkabelung, Funk, Geräte,
->    Anschlüsse, Standorte, Arbeitsabläufe aufnehmen. See
->    [`../procedures/site-visit-checklist.md`](../procedures/site-visit-checklist.md).
-> 4. **Bedarfsermittlung** — Anforderungen in zwingend/sinnvoll/optional
->    gliedern; Nutzer, Gesprächsvolumen, Mobilität, Integrationen, Wachstum
->    dokumentieren.
-> 5. **Angebot** — Leistungsumfang, Produkte, Lizenzen, Dienstleistungen,
->    Voraussetzungen, laufende Kosten, Ausschlüsse, Optionen. See
->    [`../procedures/sales-offer-checklist.md`](../procedures/sales-offer-checklist.md).
-> 6. **Bestellung** — Freigaben, Lieferfähigkeit, Lizenzen, Rufnummern,
->    Providertermine, Verantwortlichkeiten bestätigen.
-> 7. **Vorbereitung** — Vorkonfiguration, Backup, Testplanung,
->    Materialkontrolle, Terminabstimmung, Rückfallplan. See
->    [`../procedures/comtrexx-installation-checklist.md`](../procedures/comtrexx-installation-checklist.md)
->    and
->    [`../procedures/pre-project-expectations-checklist.md`](../procedures/pre-project-expectations-checklist.md).
-> 8. **Installation** — nach Checkliste installieren, Änderungen
->    dokumentieren, laufenden Betrieb so wenig wie möglich beeinträchtigen.
-> 9. **Test** — technische und organisatorische Tests anhand realer
->    Kundenszenarien.
-> 10. **Einweisung** — nicht nur Funktionen zeigen, sondern alltägliche
->     Abläufe üben: Annehmen, Weiterleiten, Abwesenheit, Gruppen, mobile
->     Nutzung, Störungen.
-> 11. **Dokumentation** — Konfiguration, Rufnummern, Geräte,
->     Netzwerkbezug, Lizenzen, Backups, Ansprechpartner, offene Punkte.
-> 12. **Nachbetreuung** — Rückmeldung nach den ersten Betriebstagen, offene
->     Punkte abschließen, Optimierungen aufnehmen, Wartung klären.
->
+1. **Erstkontakt** — Anliegen verstehen, Dringlichkeit bewerten,
+   Ansprechpartner identifizieren, klären ob Fernberatung oder
+   Vor-Ort-Aufnahme nötig ist.
+2. **Beratung** — Ziele, Probleme, bestehende Systeme, Budget und
+   Entwicklung verstehen; noch keine voreilige Produktempfehlung. See
+   [`../business-philosophy/sales-qualification-philosophy.md`](../business-philosophy/sales-qualification-philosophy.md).
+3. **Vor-Ort-Termin** — Räume, Netzwerk, Verkabelung, Funk, Geräte,
+   Anschlüsse, Standorte, Arbeitsabläufe aufnehmen. See
+   [`../procedures/site-visit-checklist.md`](../procedures/site-visit-checklist.md).
+4. **Bedarfsermittlung** — Anforderungen in zwingend/sinnvoll/optional
+   gliedern; Nutzer, Gesprächsvolumen, Mobilität, Integrationen, Wachstum
+   dokumentieren.
+5. **Angebot** — Leistungsumfang, Produkte, Lizenzen, Dienstleistungen,
+   Voraussetzungen, laufende Kosten, Ausschlüsse, Optionen. See
+   [`../procedures/sales-offer-checklist.md`](../procedures/sales-offer-checklist.md).
+6. **Bestellung** — Freigaben, Lieferfähigkeit, Lizenzen, Rufnummern,
+   Providertermine, Verantwortlichkeiten bestätigen.
+7. **Vorbereitung** — Vorkonfiguration, Backup, Testplanung,
+   Materialkontrolle, Terminabstimmung, Rückfallplan. See
+   [`../procedures/comtrexx-installation-checklist.md`](../procedures/comtrexx-installation-checklist.md)
+   and
+   [`../procedures/pre-project-expectations-checklist.md`](../procedures/pre-project-expectations-checklist.md).
+8. **Installation** — nach Checkliste installieren, Änderungen
+   dokumentieren, laufenden Betrieb so wenig wie möglich beeinträchtigen.
+9. **Test** — technische und organisatorische Tests anhand realer
+   Kundenszenarien.
+10. **Einweisung** — nicht nur Funktionen zeigen, sondern alltägliche
+    Abläufe üben: Annehmen, Weiterleiten, Abwesenheit, Gruppen, mobile
+    Nutzung, Störungen.
+11. **Dokumentation** — Konfiguration, Rufnummern, Geräte,
+    Netzwerkbezug, Lizenzen, Backups, Ansprechpartner, offene Punkte.
+12. **Nachbetreuung** — Rückmeldung nach den ersten Betriebstagen, offene
+    Punkte abschließen, Optimierungen aufnehmen, Wartung klären.
+
 > Source: Teleprofi candidate interview-answer document (unconfirmed,
 > 2026-07-22), Interview 7 ("Projektablauf") and the "BERATUNG" supplementary
 > section (near-identical content, treated as one source).
@@ -396,8 +389,12 @@ Support conversations should:
 
 > **CANDIDATE ADDITION — Teleprofi interview draft, unconfirmed.**
 > **Requires Patrick/Renato confirmation before merge.**
+> **Scope: INTERNAL company philosophy only — not caller-facing voice
+> knowledge. Never summarize or promote this section into
+> `backend/voice/knowledge/teleprofi_fulda.md` or any AI prompt, even in
+> softened form.**
 >
-> ## Trust (candidate)
+> ## Trust (candidate, internal only)
 >
 > What candidate answers say builds customer trust: genau zuhören,
 > verständlich zusammenfassen, offene Fragen zugeben, Aussagen später

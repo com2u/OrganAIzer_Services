@@ -23,6 +23,15 @@ sources:
 > This file also does not duplicate `installation-final-qa-checklist.md`
 > (pre-close verification) or `comtrexx-installation-checklist.md`
 > (installation-time steps) — it is post-installation fault diagnosis only.
+>
+> **Review status:** the 20 individual fault-by-fault triage decisions below
+> (first-check / follow-up / remote-vs-onsite call, per item) are each
+> **OFFEN (open)** — none are confirmed, and given how close this content
+> sits to the live phone AI's own troubleshooting logic, wrong guidance here
+> has real consequences. The **general** remote-vs-onsite criteria in the
+> Notes section (independent of the 20 specific items) is lower-risk
+> **candidate guidance**, not yet confirmed either, but not held to the same
+> per-item scrutiny.
 
 ## When to use
 

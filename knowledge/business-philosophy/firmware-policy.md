@@ -30,26 +30,26 @@ long-term relationship, not an afterthought. (See `services/maintenance-contract
 > **CANDIDATE ADDITION — Teleprofi interview draft, unconfirmed.**
 > **Requires Patrick/Renato confirmation before merge.**
 >
-> ### What "stable" means (candidate refinement)
+> ### Update-timing guidance (candidate)
 >
-> Candidate framing: a firmware is not approved simply because it is the
-> newest. "Stable" should mean: Herstellerhinweise wurden geprüft; bekannte
-> Fehler sind akzeptabel; relevante Funktionen wurden intern oder bei
-> geeigneten Referenzsystemen getestet; Backup und Rückfall sind möglich;
-> die Version ist für die jeweilige Kundenumgebung freigegeben. Candidate
-> update-timing guidance: install when there's a security fix, a known bug
-> affecting the customer, a needed function only available in the update, or
-> vendor support/compatibility requires it — within a planned maintenance
-> window after checking release notes, backup and rollback. Hold off right
-> after a major release, on critical systems without a confirmed need, when
-> known bugs have been reported, when in-use endpoints/interfaces aren't yet
+> Candidate guidance on *when* to install vs. hold an update (distinct from
+> *what counts as stable*, which the Policy section above already covers —
+> the interview draft's own restatement of that has been removed here as a
+> duplicate, 2026-07-22 reconciliation).
+>
+> Install when there's a security fix, a known bug affecting the customer,
+> a needed function only available in the update, or vendor
+> support/compatibility requires it — within a planned maintenance window
+> after checking release notes, backup and rollback. Hold off right after a
+> major release, on critical systems without a confirmed need, when known
+> bugs have been reported, when in-use endpoints/interfaces aren't yet
 > confirmed compatible, or without a suitable maintenance/rollback window.
 >
-> **This candidate content does NOT resolve the open question below** — the
-> source draft explicitly declines to state which firmware versions are
-> stable, and never addresses whether the table below is COMtrexx system
-> firmware or COMfortel device firmware. That confirmation is still needed
-> from Patrick.
+> **This candidate content does NOT resolve the open question below —
+> it remains OPEN.** The source draft explicitly declines to state which
+> firmware versions are stable, and never addresses whether the table below
+> is COMtrexx system firmware or COMfortel device firmware. That
+> confirmation is still needed from Patrick.
 >
 > Source: Teleprofi candidate interview-answer document (unconfirmed,
 > 2026-07-22), Interview 4 "FIRMWARE".
