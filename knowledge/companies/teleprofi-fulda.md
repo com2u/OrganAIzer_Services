@@ -22,6 +22,52 @@ Teleprofi Fulda is a telecommunications, networking, and communication
 infrastructure company serving primarily business customers. The focus is on
 practical, reliable, supportable solutions.
 
+> **CANDIDATE ADDITION — Teleprofi interview draft, unconfirmed.**
+> **Requires Patrick/Renato confirmation before merge.**
+>
+> ## Positioning & Differentiation (candidate)
+>
+> Why customers choose Teleprofi over a competitor (candidate framing, not
+> confirmed): not because of the lowest price, but because of who takes
+> **responsibility** for the whole system actually working day to day — many
+> providers can sell a PBX, router, or headset; the differentiator is who
+> ensures the combined system keeps working. Proposed positioning statement:
+> "Wir verkaufen nicht einfach Technik. Wir bringen Technik, Menschen und
+> betriebliche Abläufe so zusammen, dass Kommunikation zuverlässig
+> funktioniert." A good consultation asks not only "how many phones do you
+> need" but also who must be reachable when, what happens when nobody
+> answers, which calls matter most, and how remote/home-office staff work
+> together.
+>
+> Candidate qualities Teleprofi should be associated with: zuverlässig,
+> ehrlich, erreichbar, kompetent, verständlich, sorgfältig,
+> langfristig orientiert.
+>
+> Candidate list of common competitor mistakes to avoid repeating: too-early
+> product recommendation before the need is understood; sizing by headcount
+> instead of actual communication flow; under-sizing with no growth room;
+> unnecessary over-sizing; treating the PBX in isolation from network/
+> router/WLAN; unclear statements about licences, running costs and
+> maintenance; installation without full documentation; updates without a
+> rollback plan; handover without adequate training; too many different
+> points of contact; promising features that weren't actually verified for
+> the environment; disappearing after project completion.
+>
+> Candidate reputation risks — what a customer should never be able to say
+> about Teleprofi: "Seit der Installation ist niemand mehr erreichbar."; "Ich
+> wusste nicht, dass diese laufenden Kosten entstehen."; "Uns wurde etwas
+> verkauft, das wir nicht brauchen."; "Die Lösung war schon beim Einbau zu
+> klein."; "Jeder Mitarbeiter erzählt mir etwas anderes."; "Die Anlage
+> funktioniert, aber niemand hat unsere Arbeitsabläufe verstanden."; "Beim
+> Angebot klang alles einfach; nach der Bestellung kamen die
+> Einschränkungen."; "Teleprofi hat das Problem nur an den Hersteller oder
+> Provider weitergeschoben."
+>
+> Source: Teleprofi candidate interview-answer document (unconfirmed,
+> 2026-07-22). Note the source itself hedges this content with conditional
+> "sollte" (should) language rather than stating it as established fact —
+> treat as aspirational/proposed until confirmed.
+
 ## Target Customers
 
 Primary target:
@@ -197,6 +243,52 @@ AVM products including:
 10. Validation
 11. Handover
 
+> **CANDIDATE ADDITION — Teleprofi interview draft, unconfirmed.**
+> **Requires Patrick/Renato confirmation before merge. This is a more
+> detailed candidate version of the 11-step process above — it is proposed
+> to supersede/reconcile with it once confirmed, not a second, competing
+> process. Do not treat both as independently authoritative.**
+>
+> ### Candidate detailed process (interview draft)
+>
+> 1. **Erstkontakt** — Anliegen verstehen, Dringlichkeit bewerten,
+>    Ansprechpartner identifizieren, klären ob Fernberatung oder
+>    Vor-Ort-Aufnahme nötig ist.
+> 2. **Beratung** — Ziele, Probleme, bestehende Systeme, Budget und
+>    Entwicklung verstehen; noch keine voreilige Produktempfehlung. See
+>    [`../business-philosophy/sales-qualification-philosophy.md`](../business-philosophy/sales-qualification-philosophy.md).
+> 3. **Vor-Ort-Termin** — Räume, Netzwerk, Verkabelung, Funk, Geräte,
+>    Anschlüsse, Standorte, Arbeitsabläufe aufnehmen. See
+>    [`../procedures/site-visit-checklist.md`](../procedures/site-visit-checklist.md).
+> 4. **Bedarfsermittlung** — Anforderungen in zwingend/sinnvoll/optional
+>    gliedern; Nutzer, Gesprächsvolumen, Mobilität, Integrationen, Wachstum
+>    dokumentieren.
+> 5. **Angebot** — Leistungsumfang, Produkte, Lizenzen, Dienstleistungen,
+>    Voraussetzungen, laufende Kosten, Ausschlüsse, Optionen. See
+>    [`../procedures/sales-offer-checklist.md`](../procedures/sales-offer-checklist.md).
+> 6. **Bestellung** — Freigaben, Lieferfähigkeit, Lizenzen, Rufnummern,
+>    Providertermine, Verantwortlichkeiten bestätigen.
+> 7. **Vorbereitung** — Vorkonfiguration, Backup, Testplanung,
+>    Materialkontrolle, Terminabstimmung, Rückfallplan. See
+>    [`../procedures/comtrexx-installation-checklist.md`](../procedures/comtrexx-installation-checklist.md)
+>    and
+>    [`../procedures/pre-project-expectations-checklist.md`](../procedures/pre-project-expectations-checklist.md).
+> 8. **Installation** — nach Checkliste installieren, Änderungen
+>    dokumentieren, laufenden Betrieb so wenig wie möglich beeinträchtigen.
+> 9. **Test** — technische und organisatorische Tests anhand realer
+>    Kundenszenarien.
+> 10. **Einweisung** — nicht nur Funktionen zeigen, sondern alltägliche
+>     Abläufe üben: Annehmen, Weiterleiten, Abwesenheit, Gruppen, mobile
+>     Nutzung, Störungen.
+> 11. **Dokumentation** — Konfiguration, Rufnummern, Geräte,
+>     Netzwerkbezug, Lizenzen, Backups, Ansprechpartner, offene Punkte.
+> 12. **Nachbetreuung** — Rückmeldung nach den ersten Betriebstagen, offene
+>     Punkte abschließen, Optimierungen aufnehmen, Wartung klären.
+>
+> Source: Teleprofi candidate interview-answer document (unconfirmed,
+> 2026-07-22), Interview 7 ("Projektablauf") and the "BERATUNG" supplementary
+> section (near-identical content, treated as one source).
+
 ## Site Survey Philosophy
 
 Before major projects Teleprofi may perform:
@@ -301,6 +393,35 @@ Support conversations should:
 3. Gather technical information
 4. Resolve immediately if possible
 5. Escalate when required
+
+> **CANDIDATE ADDITION — Teleprofi interview draft, unconfirmed.**
+> **Requires Patrick/Renato confirmation before merge.**
+>
+> ## Trust (candidate)
+>
+> What candidate answers say builds customer trust: genau zuhören,
+> verständlich zusammenfassen, offene Fragen zugeben, Aussagen später
+> einhalten, Risiken vor der Bestellung benennen, Kosten transparent
+> erklären, Fehler nicht verstecken, erreichbar bleiben, nicht schlecht über
+> Mitbewerber sprechen, den Kunden auch von einem unnötigen Kauf abhalten.
+>
+> What destroys it: übertriebene Versprechen, überraschende Zusatzkosten,
+> widersprüchliche Aussagen, fehlende Rückmeldungen, Schuldzuweisungen,
+> technisches Ausweichen, mangelnde Vorbereitung, unsaubere Dokumentation,
+> Probleme kleinreden, Funktionen verkaufen, die nicht überprüft wurden.
+>
+> Promises the candidate draft states are never given (stated with no hedge
+> in the source — needs confirmation this reflects actual practice, not just
+> a proposed standard): vollständige Störungsfreiheit; eine exakte
+> Lösungszeit ohne Diagnose; absolute Sicherheit; uneingeschränkte
+> Kompatibilität ohne Prüfung; dass ein Update keinerlei Nebenwirkungen
+> haben kann; dass ein Provider oder Hersteller zu einem bestimmten
+> Zeitpunkt reagiert; dass eine vorgemerkte Leistung oder ein Termin bereits
+> endgültig bestätigt ist; dass eine Lösung für immer unverändert
+> ausreichend bleibt.
+>
+> Source: Teleprofi candidate interview-answer document (unconfirmed,
+> 2026-07-22), Interview 1 "VERTRAUEN".
 
 ## Installation Philosophy
 

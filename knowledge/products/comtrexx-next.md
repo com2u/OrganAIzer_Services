@@ -129,6 +129,15 @@ Before recommending COMtrexx Next, determine:
 > captured as the reusable sales-qualification standard in `business-philosophy/`
 > (interview backlog) and will then supersede this checklist.
 
+> **CANDIDATE ADDITION — Teleprofi interview draft, unconfirmed.**
+> **Requires Patrick/Renato confirmation before merge.**
+>
+> The reusable sales-qualification standard referenced above now has a
+> candidate draft:
+> [`../business-philosophy/sales-qualification-philosophy.md`](../business-philosophy/sales-qualification-philosophy.md).
+> It is **not yet confirmed** and does **not** supersede the checklist above
+> until Patrick/Renato review it — this is a pointer, not a replacement.
+
 # Typical Teleprofi Solution
 
 Teleprofi rarely sells the PBX alone. A typical small-office COMtrexx Next solution

@@ -61,3 +61,62 @@ consistent with Teleprofi's reliable, non-salesy approach (`teleprofi_fulda.md`)
 > Source: Teleprofi operational knowledge. Concrete per-product thresholds (e.g.
 > the user count at which to move from one model to another) live in the product
 > entry, which references this philosophy.
+
+---
+
+> **CANDIDATE ADDITION — Teleprofi interview draft, unconfirmed.**
+> **Requires Patrick/Renato confirmation before merge. Placed here per
+> explicit instruction — no `ai-rules/` version created yet; that can be
+> derived after confirmation if warranted.**
+
+## When Teleprofi advises against a product (candidate)
+
+Candidate criteria for explicitly advising a customer against a product:
+
+- Das Produkt erfüllt die Kernanforderung nicht zuverlässig.
+- Die Lösung würde nur mit dauerhaften Workarounds funktionieren.
+- Die Infrastruktur des Kunden ist ungeeignet.
+- Notwendige Sicherheitsupdates oder Herstellerunterstützung fehlen.
+- Folgekosten stehen in keinem vernünftigen Verhältnis zum Nutzen.
+- Die Lösung ist nicht sinnvoll erweiterbar.
+- Der Kunde erwartet eine Funktion, die das Produkt in der Praxis nicht
+  stabil leistet.
+- Ein vorhandenes Gerät kann durch Konfiguration statt Austausch
+  weitergenutzt werden.
+- Ein anderes System passt besser zur bestehenden Umgebung.
+
+Candidate framing: an honest "davon würde ich Ihnen abraten" (I would advise
+against this) is treated in the source as one of the strongest trust signals
+in a consultation — see also
+[`../companies/teleprofi-fulda.md`](../companies/teleprofi-fulda.md)'s
+candidate Trust section.
+
+## Stated solution vs. actual need (candidate)
+
+Candidate framing of the most common consultation mistake: mistaking the
+solution a customer *names* for the need they actually *have*. Example: a
+customer says "Ich brauche eine neue Telefonanlage," but the actual need
+might be bessere Erreichbarkeit, stabileres WLAN, ein geeignetes Headset,
+eine andere Rufverteilung, mobile Nutzung, Ersatz eines einzelnen Telefons,
+ein Providerproblem, or eine neue Türsprechstelle. The task of a
+consultation is to understand the underlying problem, not to immediately
+confirm the customer's first product idea.
+
+## Budget vs. future-proofing — a 3-tier framework (candidate)
+
+Candidate framing for balancing budget against future-proofing, distinguish
+between:
+
+1. **zwingend erforderlich** (strictly required now),
+2. **sinnvoll für die nächsten Jahre** (worthwhile for the coming years),
+3. **optional oder später nachrüstbar** (optional, or addable later).
+
+The goal: a solution that is reliable at its core and allows growth at the
+right points — avoiding both the cheapest dead end and expensive
+"just in case" over-provisioning. "Zukunftssicher" (future-proof) should
+never be used as an empty sales word — any price premium for future-proofing
+must be justified by a concrete, named risk or benefit, not asserted on its
+own.
+
+Source: Teleprofi candidate interview-answer document (unconfirmed,
+2026-07-22), Interview 1 "BERATUNG UND EMPFEHLUNGEN".

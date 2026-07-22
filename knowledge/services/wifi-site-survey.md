@@ -28,7 +28,21 @@ _Placeholder._
 # Sales View
 
 ## When to recommend
-_Placeholder._
+
+> **CANDIDATE ADDITION — Teleprofi interview draft, unconfirmed.**
+> **Requires Patrick/Renato confirmation before merge.**
+
+Candidate triggers, from the interview draft (Interview 3 "ROUTER UND
+WLAN"): die Fläche ist groß oder verwinkelt; Stahl, Beton, Glas oder
+Regalsysteme beeinflussen den Funk; DECT/WLAN-Telefonie oder
+Echtzeitanwendungen werden genutzt; viele Nutzer arbeiten gleichzeitig;
+zuverlässiges Roaming ist erforderlich; bestehende WLAN-Probleme sind nicht
+eindeutig lokalisierbar; ein Ausfall wäre geschäftskritisch. See also
+[`../ai-rules/wlan-selection.md`](../ai-rules/wlan-selection.md) for the
+broader AP-vs-mesh-vs-survey decision logic this fits into.
+
+Source: Teleprofi candidate interview-answer document (unconfirmed,
+2026-07-22).
 
 ## When NOT to recommend
 _Placeholder._

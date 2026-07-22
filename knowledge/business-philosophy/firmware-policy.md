@@ -27,6 +27,33 @@ billed where applicable — keeping customer systems stable and current is part 
 long-term relationship, not an afterthought. (See `services/maintenance-contract.md`,
 `services/remote-support.md`; pricing lives in `pricing/`.)
 
+> **CANDIDATE ADDITION — Teleprofi interview draft, unconfirmed.**
+> **Requires Patrick/Renato confirmation before merge.**
+>
+> ### What "stable" means (candidate refinement)
+>
+> Candidate framing: a firmware is not approved simply because it is the
+> newest. "Stable" should mean: Herstellerhinweise wurden geprüft; bekannte
+> Fehler sind akzeptabel; relevante Funktionen wurden intern oder bei
+> geeigneten Referenzsystemen getestet; Backup und Rückfall sind möglich;
+> die Version ist für die jeweilige Kundenumgebung freigegeben. Candidate
+> update-timing guidance: install when there's a security fix, a known bug
+> affecting the customer, a needed function only available in the update, or
+> vendor support/compatibility requires it — within a planned maintenance
+> window after checking release notes, backup and rollback. Hold off right
+> after a major release, on critical systems without a confirmed need, when
+> known bugs have been reported, when in-use endpoints/interfaces aren't yet
+> confirmed compatible, or without a suitable maintenance/rollback window.
+>
+> **This candidate content does NOT resolve the open question below** — the
+> source draft explicitly declines to state which firmware versions are
+> stable, and never addresses whether the table below is COMtrexx system
+> firmware or COMfortel device firmware. That confirmation is still needed
+> from Patrick.
+>
+> Source: Teleprofi candidate interview-answer document (unconfirmed,
+> 2026-07-22), Interview 4 "FIRMWARE".
+
 ## COMtrexx firmware status
 
 > **Teleprofi operational experience — NOT an official Auerswald recommendation.**

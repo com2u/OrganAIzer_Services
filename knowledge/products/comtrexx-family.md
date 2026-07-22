@@ -40,6 +40,25 @@ admin experience.
 > The explicit "COMtrexx vs. a non-Auerswald alternative" reasoning (what would make
 > Teleprofi *not* propose COMtrexx) is not yet captured — see Knowledge Needed Q1.
 
+> **CANDIDATE ADDITION — Teleprofi interview draft, unconfirmed.**
+> **Requires Patrick/Renato confirmation before merge. This is a candidate
+> answer to Knowledge Needed Q1 below — the question is not removed until
+> Patrick/Renato confirm this answer.**
+>
+> ### Candidate answer to Q1 — when Teleprofi would not propose COMtrexx
+>
+> Candidate criteria: eine einfache FRITZ!Box-Lösung erfüllt den Bedarf
+> vollständig und sauber; der Kunde bevorzugt eine vollständig cloudbasierte
+> Plattform; die vorhandene IT-Strategie basiert auf einem anderen
+> Ökosystem; nur einzelne Endgeräte müssen ersetzt werden (see
+> [`../ai-rules/endpoint-selection.md`](../ai-rules/endpoint-selection.md));
+> keine ausreichende Netzwerk- oder Internetqualität ist vorhanden; die
+> laufenden Lizenz- und Wartungsmodelle passen nicht zum Kunden; der Kunde
+> benötigt Funktionen, die ein anderes System besser abdeckt.
+>
+> Source: Teleprofi candidate interview-answer document (unconfirmed,
+> 2026-07-22), Interview 3 "TELEFONANLAGEN".
+
 ## How do we choose Next vs. Flex?
 
 The decision is driven by **future business needs, not just today's headcount**

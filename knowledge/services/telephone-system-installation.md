@@ -49,7 +49,15 @@ _Placeholder._
 
 # Technician View
 
-_Placeholder — link the `procedures/` runbook(s) that perform the work._
+> **CANDIDATE ADDITION — Teleprofi interview draft, unconfirmed.**
+> **Requires Patrick/Renato confirmation before merge.**
+
+Candidate runbooks (not yet confirmed as Teleprofi's actual process):
+[`../procedures/comtrexx-installation-checklist.md`](../procedures/comtrexx-installation-checklist.md)
+(preparation, preconfiguration, bench-test, on-site checklist — generic
+across telephone-system installations, not COMtrexx-Next-specific) and
+[`../procedures/installation-final-qa-checklist.md`](../procedures/installation-final-qa-checklist.md)
+(what is verified before project close-out).
 
 # Business Rules
 
