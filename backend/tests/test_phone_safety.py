@@ -1857,3 +1857,129 @@ class TestUnfinishedStreakCapBridging:
             assert idx < bridge_idx, (
                 f"Continuation prompt {prompt!r} must precede the bridge message"
             )
+
+
+# =============================================================================
+# Escalation consent matching — widened yes-word set (Subagent 4: conversation
+# design audit). Real German callers answer "Ja oder Nein" with more than the
+# original narrow set ("ja", "yes", "jo", "jep", "klar", "natürlich",
+# "einverstanden", "ok", "okay", "gerne", "sure") — a genuine "yes" like
+# "passt" or "kein Problem" used to fall through to a silent DECLINE with no
+# repair question asked.
+# =============================================================================
+
+class TestConsentYesMatching:
+    """`_is_consent_yes` is the deterministic keyword gate for the recording
+    consent question before an escalation transfer. Widened, still a plain
+    keyword set — no LLM judgement call — and still conservative: words that
+    could plausibly mean something else in a full sentence ("ordnung") are
+    deliberately left out.
+    """
+
+    @pytest.mark.parametrize("text", [
+        "ja",
+        "ja klar",
+        "passt",
+        "passt schon",
+        "kein problem",
+        "meinetwegen",
+        "geht klar",
+        "alles klar",
+        "jawohl",
+        "jup",
+        "yep",
+        "yeah",
+        "sure thing",
+        "fine",
+        "alright",
+        "ok, passt",
+        "natürlich",
+        "einverstanden",
+    ])
+    def test_new_and_existing_affirmatives_accepted(self, text):
+        assert _esl._is_consent_yes(text) is True, f"{text!r} should register as consent"
+
+    @pytest.mark.parametrize("text", [
+        "nein",
+        "nö",
+        "auf keinen fall",
+        "lieber nicht",
+        "",
+        "äh",
+        # Deliberately NOT added: "ordnung" alone is ambiguous — "nicht in
+        # Ordnung" is a common way to DECLINE, and a bare phrase match can't
+        # tell the two apart, so "in ordnung" is not treated as an idiom.
+        "nicht in ordnung",
+        "in ordnung",
+    ])
+    def test_declines_and_unrecognized_replies_rejected(self, text):
+        assert _esl._is_consent_yes(text) is False, f"{text!r} should NOT register as consent"
+
+    def test_consent_call_site_uses_shared_matcher(self):
+        # Regression guard: the inline duplicate word-set in _conversation_loop
+        # must be gone — the call site must delegate to _is_consent_yes so the
+        # two can never drift apart again.
+        import inspect
+        src = inspect.getsource(_esl._conversation_loop)
+        assert "_is_consent_yes(consent_text)" in src
+        assert 'yes_words = {"ja"' not in src
+
+
+# =============================================================================
+# Personalized greeting — must not double the salutation (Subagent 4: sounds
+# more human). The default AI_GREETING starts with "Guten Tag, ...", and the
+# previous `.lstrip("Hallo, ")` stripped a character set, not the literal
+# prefix, so every known caller heard "Hallo <Name>, Guten Tag, Sie
+# sprechen..." — a doubled, robotic-sounding salutation.
+# =============================================================================
+
+class TestPersonalizedGreeting:
+    def test_default_greeting_not_doubled(self):
+        from voice.config import AI_GREETING
+        result = _esl._personalize_greeting(AI_GREETING, "Renato")
+        assert result.count("Hallo") == 1
+        assert "Guten Tag, Guten Tag" not in result
+        assert result.startswith("Hallo Renato, ")
+        assert "Sie sprechen mit dem digitalen Assistenten von Teleprofi Fulda" in result
+
+    def test_strips_leading_hallo_salutation(self):
+        result = _esl._personalize_greeting("Hallo, wie kann ich helfen?", "Anna")
+        assert result == "Hallo Anna, wie kann ich helfen?"
+
+    def test_strips_leading_guten_morgen_salutation(self):
+        result = _esl._personalize_greeting("Guten Morgen, schön dass Sie anrufen.", "Tom")
+        assert result == "Hallo Tom, schön dass Sie anrufen."
+
+    def test_no_leading_salutation_still_personalized_once(self):
+        result = _esl._personalize_greeting("Wie kann ich Ihnen helfen?", "Lea")
+        assert result == "Hallo Lea, Wie kann ich Ihnen helfen?"
+
+
+# =============================================================================
+# Farewell wording — matches the real situation, speaks the caller's language
+# (Subagent 4: sounds more human).
+# =============================================================================
+
+class TestFarewellWording:
+    def test_max_call_duration_farewell_does_not_name_internal_limit(self):
+        # No human receptionist announces "the maximum call duration was
+        # reached" — that exposes an internal system constant to the caller.
+        import inspect
+        src = inspect.getsource(_esl._conversation_loop)
+        assert "maximale Gesprächsdauer" not in src
+
+    def test_max_call_duration_farewell_respects_caller_language(self):
+        # Was hardcoded to German regardless of conv_lang — must now vary
+        # like every other farewell message in the loop.
+        import inspect
+        src = inspect.getsource(_esl._conversation_loop)
+        assert 'if conv_lang == "en"' in src
+        assert "wrap up the call now" in src
+
+    def test_silent_turns_german_farewell_does_not_claim_misunderstanding(self):
+        # The silence path (nothing captured at all) must not say "Ich konnte
+        # Sie leider nicht verstehen" — that claims the caller said something
+        # unclear, when in fact nothing was heard.
+        import inspect
+        src = inspect.getsource(_esl._conversation_loop)
+        assert "Ich habe leider länger nichts von Ihnen gehört" in src

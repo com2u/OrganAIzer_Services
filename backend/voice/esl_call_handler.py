@@ -192,6 +192,32 @@ _FINAL_NOTE_TIMEOUT         = _FINAL_NOTE_MAX_SECS + float(config.AI_RECORD_INIT
 _GARBAGE_TRANSCRIPTION_RE = re.compile(r"^[\s\.,;:!\?\-_'\"\(\)\[\]…·]+$")
 
 
+# ── personalized greeting ─────────────────────────────────────────────────────
+# Matches a leading generic salutation ("Hallo," / "Guten Tag," / "Guten
+# Morgen," / "Guten Abend,") so it can be swapped for a personal one when the
+# caller is a known contact.
+_GREETING_SALUTATION_RE = re.compile(
+    r"^(Hallo|Guten Tag|Guten Morgen|Guten Abend)[,]?\s*", re.IGNORECASE
+)
+
+
+def _personalize_greeting(greeting: str, caller_name: str) -> str:
+    """Return *greeting* prefixed with a personal "Hallo <name>," salutation.
+
+    Strips any leading generic salutation from *greeting* first so a known
+    caller name never produces a doubled greeting. The previous
+    implementation used `greeting.lstrip("Hallo, ")`, which strips a
+    CHARACTER SET (H/a/l/o/,/space) from the left, not the literal prefix
+    "Hallo, " — so the default AI_GREETING ("Guten Tag, Sie sprechen mit dem
+    digitalen Assistenten von Teleprofi Fulda. ...") starts with "G", was
+    left completely untouched, and every recognised caller heard
+    "Hallo <Name>, Guten Tag, Sie sprechen mit ..." — a robotic double
+    salutation no human receptionist would say.
+    """
+    rest = _GREETING_SALUTATION_RE.sub("", greeting, count=1)
+    return f"Hallo {caller_name}, {rest}"
+
+
 def _is_garbage_transcription(text: str) -> bool:
     """True if a transcription is too short or noisy to be a real utterance."""
     if not text:
@@ -202,6 +228,38 @@ def _is_garbage_transcription(text: str) -> bool:
     if _GARBAGE_TRANSCRIPTION_RE.match(stripped):
         return True
     return False
+
+
+# ── escalation consent matching ───────────────────────────────────────────────
+# Deterministic keyword match for the "Ja oder Nein" consent question asked
+# before an escalation transfer. Deliberately conservative: only clearly
+# unambiguous affirmatives are added as standalone words. "ordnung" is
+# intentionally NOT a standalone yes-word — "nicht in Ordnung" is a common way
+# to DECLINE, and a bare word-set match has no reliable way to tell that apart
+# from an affirmative "in Ordnung", so that phrase is deliberately left out
+# rather than risking a false positive on a consent gate.
+_CONSENT_YES_WORDS = frozenset({
+    "ja", "yes", "jo", "jep", "jup", "klar", "natürlich",
+    "einverstanden", "ok", "okay", "gerne", "sure",
+    "passt", "meinetwegen", "jawohl", "yep", "yeah", "fine", "alright",
+})
+
+
+def _is_consent_yes(consent_text: str) -> bool:
+    """True when *consent_text* (already lower-cased) reads as an affirmative
+    answer to the recording-consent question.
+
+    Matches individual words against _CONSENT_YES_WORDS — so "Ja klar",
+    "Alles klar", "Geht klar", "Passt schon", and "Sure thing" all match via
+    the single shared word ("klar"/"passt"/"sure") already in the set — plus
+    the fixed idiom "kein problem" ("kein" alone means "no"/"none" and must
+    never be a standalone yes-word, but the idiom itself is unambiguously
+    affirmative, unlike "ordnung" — see module note above).
+    """
+    words = set(w.strip(".,!?;:") for w in consent_text.split())
+    if words & _CONSENT_YES_WORDS:
+        return True
+    return "kein problem" in consent_text
 
 
 # ── unfinished-utterance detection ────────────────────────────────────────────
@@ -514,11 +572,17 @@ def _conversation_loop(
         elapsed = (datetime.now(timezone.utc) - started_at).total_seconds()
         if elapsed >= config.AI_MAX_CALL_SECONDS:
             logger.info("Max call duration reached (%ds), hanging up.", config.AI_MAX_CALL_SECONDS)
-            _speak_and_play(
-                handler,
-                "Die maximale Gesprächsdauer wurde erreicht. Auf Wiederhören!",
-                lang="de",
+            # The old wording literally named the internal call-duration limit
+            # to the caller — no human receptionist would say that out loud.
+            # Close the way a person naturally would, and (like every other
+            # farewell in this loop) speak it in the caller's own conversation
+            # language instead of always German.
+            max_duration_farewell = (
+                "I need to wrap up the call now — thank you for calling. Goodbye!"
+                if conv_lang == "en"
+                else "Ich muss das Gespräch jetzt leider beenden — vielen Dank für Ihren Anruf. Auf Wiederhören!"
             )
+            _speak_and_play(handler, max_duration_farewell, lang=conv_lang)
             break
 
         # ── record caller speech ──────────────────────────────────────────────
@@ -842,10 +906,18 @@ def _conversation_loop(
                     break
             if _empty_turns >= _MAX_EMPTY_TURNS:
                 logger.info("Too many consecutive silent turns (%d), ending call.", _empty_turns)
+                # This is the SILENCE path (no speech captured at all), not the
+                # unclear-transcription path below — the German wording used to
+                # say "Ich konnte Sie leider nicht verstehen" ("I couldn't
+                # understand you"), which claims the caller said something
+                # unclear when in fact nothing was heard at all. The English
+                # variant already said the honest thing ("I haven't heard
+                # anything for a while"); align the German wording with it so
+                # both languages describe the same real situation.
                 farewell = (
                     "I haven't heard anything for a while. I'll end the call now. Goodbye!"
                     if conv_lang == "en"
-                    else "Ich konnte Sie leider nicht verstehen. Ich beende das Gespräch. Auf Wiederhören!"
+                    else "Ich habe leider länger nichts von Ihnen gehört. Ich beende das Gespräch. Auf Wiederhören!"
                 )
                 _speak_and_play(handler, farewell, lang=conv_lang)
                 break
@@ -982,10 +1054,7 @@ def _conversation_loop(
                     consent_text = consent_text.lower()
                     _cleanup(str(consent_path))
                     logger.info("Consent response: %r", consent_text)
-                    yes_words = {"ja", "yes", "jo", "jep", "klar", "natürlich",
-                                 "einverstanden", "ok", "okay", "gerne", "sure"}
-                    words = set(w.strip(".,!?;:") for w in consent_text.split())
-                    recording_consent = bool(words & yes_words)
+                    recording_consent = _is_consent_yes(consent_text)
 
             logger.info("Recording consent: %s", recording_consent)
 
@@ -1483,7 +1552,7 @@ def handle_esl_call(handler, phone_state: dict) -> None:
         # ── greet ─────────────────────────────────────────────────────────────
         greeting = config.AI_GREETING
         if caller_name:
-            greeting = f"Hallo {caller_name}, " + greeting.lstrip("Hallo, ")
+            greeting = _personalize_greeting(greeting, caller_name)
         _speak_and_play(handler, greeting, lang=config.AI_LANGUAGE)
 
         if handler.is_hung_up:
