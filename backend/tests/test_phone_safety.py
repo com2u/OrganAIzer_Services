@@ -1366,6 +1366,15 @@ class TestUnfinishedUtteranceDetection:
         "Ich möchte",
         "Ja, und",
         "Das ist, weil",
+        # "ob"/"wenn" cannot grammatically end a complete German sentence —
+        # a caller cut off right after either is always mid-clause.
+        "Ich wollte fragen, ob",
+        "Falls Sie Zeit haben, wenn",
+        # "und zwar" ("...namely") always precedes more detail.
+        "Ich brauche das, und zwar",
+        "Es geht um die Rechnung, und zwar",
+        # "if" cannot grammatically end a complete English sentence either.
+        "I wanted to know if",
     ])
     def test_unfinished_examples_detected(self, text):
         assert _esl._is_likely_unfinished_utterance(text) is True
@@ -1379,6 +1388,11 @@ class TestUnfinishedUtteranceDetection:
         "Ich wollte einen Rückruf bei Herrn Meyer",
         "Und dann hat er aufgelegt",
         "Vielen Dank für Ihre Hilfe",
+        # Regression guard for the new "ob"/"wenn"/"if" tokens: these complete
+        # sentences merely CONTAIN the words, they don't trail on them.
+        "Ob das geht, weiß ich noch nicht genau",
+        "Wenn Sie Zeit haben, rufen Sie mich zurück",
+        "If you have time, please call me back",
     ])
     def test_complete_utterances_not_flagged(self, text):
         assert _esl._is_likely_unfinished_utterance(text) is False
@@ -1535,3 +1549,112 @@ class TestContinuationRotation:
     def test_attempt_zero_or_negative_is_safe(self):
         # Defensive: never index out of range on a 0/negative attempt.
         assert _esl._rotating_continuation("de", 0) == _esl._rotating_continuation("de", 1)
+
+
+class TestHesitationStreakBridge:
+    """The one-time bridge message played when the unfinished-utterance streak
+    cap is exceeded. It must differ from both the rotating continuation
+    prompts and the generic unclear/garbage-transcription wording — it should
+    acknowledge that the caller has been mid-thought, not imply the AI failed
+    to understand them.
+    """
+
+    def test_bridge_de_differs_from_continuations_and_unclear_wording(self):
+        bridge = _esl._hesitation_streak_bridge("de")
+        assert bridge not in _esl._CONTINUATION_PROMPTS["de"]
+        assert "nicht ganz verstanden" not in bridge
+        assert "wiederholen" not in bridge
+
+    def test_bridge_en_differs_from_continuations_and_unclear_wording(self):
+        bridge = _esl._hesitation_streak_bridge("en")
+        assert bridge not in _esl._CONTINUATION_PROMPTS["en"]
+        assert "didn't catch" not in bridge.lower()
+
+    def test_unknown_lang_falls_back_to_german(self):
+        assert _esl._hesitation_streak_bridge("fr") == _esl._hesitation_streak_bridge("de")
+
+
+class TestUnfinishedStreakCapBridging:
+    """
+    Integration: once the caller has hesitated for more consecutive turns than
+    `_MAX_UNFINISHED_STREAK`, the loop must play the one-time bridging message
+    (not the generic "I didn't catch that" wording) exactly once, and must not
+    replay it on further hesitant turns.
+    """
+
+    def _run_loop_all_unfinished(self, max_turns: int = 9) -> list[str]:
+        from datetime import datetime, timezone
+        from pathlib import Path
+        from voice.esl_call_handler import _conversation_loop
+
+        mock_handler = MagicMock()
+        mock_handler.execute.return_value = True
+        record_calls = [0]
+
+        def _is_hung_up(self):
+            # Bail out after max_turns record calls regardless of the loop's
+            # own termination logic, so a bug can never hang the test suite.
+            return record_calls[0] >= max_turns
+
+        type(mock_handler).is_hung_up = property(_is_hung_up)
+
+        def _count_execute(*args, **kwargs):
+            if args and args[0] == "record":
+                record_calls[0] += 1
+                Path(args[1].split()[0]).touch()
+            return True
+
+        mock_handler.execute.side_effect = _count_execute
+
+        spoken: list[str] = []
+
+        with patch("voice.esl_call_handler._audio_dir", return_value=Path("/tmp")), \
+             patch("voice.esl_call_handler._speak_and_play",
+                   side_effect=lambda h, t, lang=None: spoken.append(t)), \
+             patch("voice.esl_call_handler._get_filler_wav", return_value=""), \
+             patch("voice.esl_call_handler.transcribe_file",
+                   return_value=("und", "de")), \
+             patch("voice.esl_call_handler.speak_to_file", return_value=""):
+            _conversation_loop(
+                handler=mock_handler,
+                history=[],
+                caller="+4930123456789",
+                caller_name=None,
+                started_at=datetime.now(timezone.utc),
+                system_prompt="test",
+                turn_count_ref=[0],
+                uuid="uuid-hesitation-streak",
+                initial_lang="de",
+            )
+
+        return spoken
+
+    def test_bridge_message_spoken_once_after_streak_cap(self):
+        spoken = self._run_loop_all_unfinished()
+        bridge = _esl._hesitation_streak_bridge("de")
+        assert spoken.count(bridge) == 1, (
+            f"Bridge message should be spoken exactly once; spoken={spoken}"
+        )
+
+    def test_bridge_message_precedes_generic_unclear_wording(self):
+        spoken = self._run_loop_all_unfinished()
+        bridge = _esl._hesitation_streak_bridge("de")
+        bridge_idx = spoken.index(bridge)
+        repeat_idx = next(
+            (i for i, s in enumerate(spoken) if "nicht ganz verstanden" in s), None
+        )
+        assert repeat_idx is not None, f"Generic unclear wording never spoken; spoken={spoken}"
+        assert bridge_idx < repeat_idx, (
+            "Bridge message must be spoken before the generic unclear wording, "
+            f"not after; spoken={spoken}"
+        )
+
+    def test_all_three_continuation_prompts_precede_bridge(self):
+        spoken = self._run_loop_all_unfinished()
+        bridge = _esl._hesitation_streak_bridge("de")
+        bridge_idx = spoken.index(bridge)
+        for prompt in _esl._CONTINUATION_PROMPTS["de"]:
+            idx = spoken.index(prompt)
+            assert idx < bridge_idx, (
+                f"Continuation prompt {prompt!r} must precede the bridge message"
+            )

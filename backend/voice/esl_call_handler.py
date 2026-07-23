@@ -218,12 +218,20 @@ _UNFINISHED_TRAILING_TOKENS = frozenset({
     # German trailing conjunctions / mid-thought words
     "und", "oder", "weil", "also", "aber", "dass", "denn", "doch",
     "warte", "moment", "dann",
+    # German trailing subordinating conjunctions — "ob"/"wenn" cannot
+    # grammatically end a complete German sentence/answer, so they are safe:
+    # a caller cut off right after either is always still mid-clause
+    # ("Ich wollte fragen, ob…", "Falls Sie Zeit haben, wenn…").
+    "ob", "wenn",
     # German trailing modal/aux verbs — a caller cut off after these is almost
     # always still forming the request ("Ich wollte…", "Ich möchte…").
     "wollte", "möchte", "hätte", "würde", "könnte", "sollte", "müsste",
     # English hesitation / conjunctions
     "uh", "uhm", "um", "er", "erm",
     "and", "or", "because", "but", "so", "well",
+    # "if" cannot grammatically end a complete English sentence/answer either
+    # — same reasoning as German "ob"/"wenn" above.
+    "if",
 })
 
 _UNFINISHED_TRAILING_PHRASES = (
@@ -232,6 +240,10 @@ _UNFINISHED_TRAILING_PHRASES = (
     "ich wollte",
     "ich möchte",
     "und dann",
+    # "und zwar" ("...namely / specifically") is a very common German
+    # incomplete-clause bridge — a caller is always about to add detail after
+    # it, never ends a thought there.
+    "und zwar",
     "let me",
     "i mean",
     "you know",
@@ -319,6 +331,33 @@ def _rotating_continuation(lang: str, attempt: int) -> str:
     """
     pool = _CONTINUATION_PROMPTS.get(lang, _CONTINUATION_PROMPTS["de"])
     return pool[(max(1, attempt) - 1) % len(pool)]
+
+
+# ── hesitation-streak → unclear-path bridge (one-time) ────────────────────────
+# Fired exactly once, the moment `_unfinished_streak` first exceeds
+# `_MAX_UNFINISHED_STREAK` and the loop falls through into the shared
+# garbage/unclear-transcription handling. Without this, that fall-through's
+# first message ("Ich höre Ihnen zu…") and second message ("...ich habe Sie
+# nicht ganz verstanden, könnten Sie das wiederholen?") read as the AI having
+# suddenly stopped following a caller who has, in fact, been coherently mid-
+# explanation the entire time — just slowly. This bridges the transition by
+# naming what is actually happening (still gathering their thoughts) and
+# asking for a short summary, instead of implying the audio was unclear.
+_HESITATION_STREAK_BRIDGE: dict[str, str] = {
+    "de": (
+        "Lassen Sie sich Zeit — sagen Sie mir am besten kurz in ein, zwei "
+        "Sätzen, worum es geht."
+    ),
+    "en": (
+        "Take your time — if it's easier, just tell me in a sentence or two "
+        "what this is about."
+    ),
+}
+
+
+def _hesitation_streak_bridge(lang: str) -> str:
+    """Return the one-time bridging message for *lang* (falls back to German)."""
+    return _HESITATION_STREAK_BRIDGE.get(lang, _HESITATION_STREAK_BRIDGE["de"])
 
 
 # ── natural call ending after a spoken goodbye ────────────────────────────────
@@ -773,7 +812,19 @@ def _conversation_loop(
                 _proc["text"], conv_lang, _unclear_count + 1,
             )
             _unclear_count += 1
-            if _unclear_count == 1:
+            # The turn where the unfinished-streak cap was JUST exceeded
+            # (_unfinished_streak == _MAX_UNFINISHED_STREAK + 1, i.e. the first
+            # time this hesitation run falls through without a `continue`
+            # above) is not the same situation as noisy/unintelligible audio —
+            # the caller has been coherently trying to say something the whole
+            # time, just slowly. Dropping straight into "I didn't catch that"
+            # here would wrongly read as the AI suddenly giving up on
+            # understanding them. Bridge once with wording that acknowledges
+            # the hesitation instead, then merge into the shared unclear-turn
+            # counter/farewell bookkeeping below as normal.
+            if _proc.get("unfinished") and _unfinished_streak == _MAX_UNFINISHED_STREAK + 1:
+                _speak_and_play(handler, _hesitation_streak_bridge(conv_lang), lang=conv_lang)
+            elif _unclear_count == 1:
                 soft_msg = (
                     "I'm listening — please go ahead."
                     if conv_lang == "en"
