@@ -859,6 +859,205 @@ class TestEmptyTurnLogic:
 
 
 # =============================================================================
+# STT / TTS failure recovery — _process_turn (background thread)
+# =============================================================================
+
+class TestSTTTTSFailureRecovery:
+    """
+    transcribe_file()/speak_to_file() raising (Whisper OOM/model load failure,
+    edge-tts network hiccup, missing ffmpeg, etc.) must never leave the call
+    hanging for the full 20 s `_proc_done.wait(timeout=20.0)` in the main loop,
+    and must never crash the background `_process_turn` daemon thread silently
+    (that thread has no caller-side exception handler — see esl_call_handler.py).
+    """
+
+    def _handler_touching_wav_on_record(self, hang_up_after: int = 0):
+        """MagicMock ESL handler whose 'record' calls touch the WAV file (so
+        _process_turn's Path.exists() check succeeds and the patched
+        transcribe_file/speak_to_file are actually invoked), and optionally
+        hangs up after N record calls so tests don't run all 8 empty-turn
+        retries."""
+        from pathlib import Path as _Path
+
+        handler = MagicMock()
+        record_calls = [0]
+
+        def _is_hung_up(self):
+            return hang_up_after > 0 and record_calls[0] >= hang_up_after
+
+        type(handler).is_hung_up = property(_is_hung_up)
+
+        def _exec(app, arg=None, **kw):
+            if app == "record":
+                record_calls[0] += 1
+                _Path(arg.split()[0]).touch()
+            return True
+
+        handler.execute.side_effect = _exec
+        return handler, record_calls
+
+    def test_stt_failure_sets_proc_done_promptly_not_after_20s(self, tmp_path):
+        """A whole call of repeatedly-failing transcriptions (8 turns, ending in
+        the farewell) must finish in well under 20 s. If the except-block ever
+        stopped calling _proc_done.set(), each turn would stall for the full
+        20 s timeout instead (160 s total for 8 turns)."""
+        import time
+        from datetime import datetime, timezone
+        from voice.esl_call_handler import _conversation_loop
+
+        handler, _ = self._handler_touching_wav_on_record()
+        spoken: list[str] = []
+
+        def _raise_transcribe(path, lang=None):
+            raise RuntimeError("faster-whisper model load failed")
+
+        start = time.monotonic()
+        with patch("voice.esl_call_handler._audio_dir", return_value=tmp_path), \
+             patch("voice.esl_call_handler._speak_and_play",
+                   side_effect=lambda h, t, lang=None: spoken.append(t)), \
+             patch("voice.esl_call_handler._get_filler_wav", return_value=""), \
+             patch("voice.esl_call_handler.transcribe_file", side_effect=_raise_transcribe):
+            _conversation_loop(
+                handler=handler,
+                history=[],
+                caller="+4930123456789",
+                caller_name=None,
+                started_at=datetime.now(timezone.utc),
+                system_prompt="test",
+                turn_count_ref=[0],
+                uuid="uuid-stt-crash",
+                initial_lang="de",
+            )
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 15.0, (
+            f"Loop took {elapsed:.1f}s for 8 failing turns — STT failures appear "
+            f"to be stalling on the 20s _proc_done timeout instead of setting it "
+            f"promptly in the except branch."
+        )
+        # The call must still terminate honestly via the existing farewell path.
+        assert any("Auf Wiederhören" in s or "Goodbye" in s for s in spoken), (
+            f"Farewell never spoken after repeated STT failures; got: {spoken}"
+        )
+
+    def test_stt_failure_speaks_honest_apology_not_only_silence(self, tmp_path):
+        """The caller must hear something explaining the problem, not just the
+        generic 'are you still there?' silence-handling prompt used for genuine
+        caller silence."""
+        from datetime import datetime, timezone
+        from voice.esl_call_handler import _conversation_loop
+
+        handler, _ = self._handler_touching_wav_on_record(hang_up_after=2)
+        spoken: list[str] = []
+
+        def _raise_transcribe(path, lang=None):
+            raise RuntimeError("faster-whisper model load failed")
+
+        with patch("voice.esl_call_handler._audio_dir", return_value=tmp_path), \
+             patch("voice.esl_call_handler._speak_and_play",
+                   side_effect=lambda h, t, lang=None: spoken.append(t)), \
+             patch("voice.esl_call_handler._get_filler_wav", return_value=""), \
+             patch("voice.esl_call_handler.transcribe_file", side_effect=_raise_transcribe):
+            _conversation_loop(
+                handler=handler,
+                history=[],
+                caller="+4930123456789",
+                caller_name=None,
+                started_at=datetime.now(timezone.utc),
+                system_prompt="test",
+                turn_count_ref=[0],
+                uuid="uuid-stt-crash-apology",
+                initial_lang="de",
+            )
+
+        assert any("technisches Problem" in s for s in spoken), (
+            f"Expected a spoken apology mentioning the technical problem; got: {spoken}"
+        )
+
+    def test_tts_failure_speaks_apology_not_silence(self, tmp_path):
+        """speak_to_file() raising must not leave the caller in total silence —
+        the main loop must attempt a spoken apology, and must not hang."""
+        import time
+        from datetime import datetime, timezone
+        from voice.esl_call_handler import _conversation_loop
+
+        handler, _ = self._handler_touching_wav_on_record(hang_up_after=2)
+        spoken: list[str] = []
+
+        async def _fake_get_response(*a, **kw):
+            return "Guten Tag, wie kann ich Ihnen helfen?"
+
+        start = time.monotonic()
+        with patch("voice.esl_call_handler._audio_dir", return_value=tmp_path), \
+             patch("voice.esl_call_handler._speak_and_play",
+                   side_effect=lambda h, t, lang=None: spoken.append(t)), \
+             patch("voice.esl_call_handler._get_filler_wav", return_value=""), \
+             patch("voice.esl_call_handler.transcribe_file", return_value=("Hallo", "de")), \
+             patch("voice.esl_call_handler.get_response", side_effect=_fake_get_response), \
+             patch("voice.esl_call_handler.speak_to_file",
+                   side_effect=RuntimeError("edge-tts network error")):
+            _conversation_loop(
+                handler=handler,
+                history=[],
+                caller="+4930123456789",
+                caller_name=None,
+                started_at=datetime.now(timezone.utc),
+                system_prompt="test",
+                turn_count_ref=[0],
+                uuid="uuid-tts-crash",
+                initial_lang="de",
+            )
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 15.0, (
+            f"Loop took {elapsed:.1f}s — TTS failure appears to be stalling on "
+            f"the 20s _proc_done timeout instead of setting it promptly."
+        )
+        assert any("technisches Problem" in s for s in spoken), (
+            f"Expected a spoken apology after TTS failure; got: {spoken}"
+        )
+
+    def test_tts_failure_does_not_end_call_as_false_farewell(self, tmp_path):
+        """If the (unspoken, failed-TTS) reply happened to be a farewell, the
+        call must not silently hang up — the caller never actually heard the
+        goodbye, only the apology, so ending the call there would look like an
+        abrupt disconnect rather than a natural goodbye."""
+        from datetime import datetime, timezone
+        from voice.esl_call_handler import _conversation_loop
+
+        handler, record_calls = self._handler_touching_wav_on_record(hang_up_after=3)
+
+        async def _fake_get_response(*a, **kw):
+            return "Auf Wiederhören!"
+
+        with patch("voice.esl_call_handler._audio_dir", return_value=tmp_path), \
+             patch("voice.esl_call_handler._speak_and_play"), \
+             patch("voice.esl_call_handler._get_filler_wav", return_value=""), \
+             patch("voice.esl_call_handler.transcribe_file", return_value=("Hallo", "de")), \
+             patch("voice.esl_call_handler.get_response", side_effect=_fake_get_response), \
+             patch("voice.esl_call_handler.speak_to_file",
+                   side_effect=RuntimeError("edge-tts network error")):
+            _conversation_loop(
+                handler=handler,
+                history=[],
+                caller="+4930123456789",
+                caller_name=None,
+                started_at=datetime.now(timezone.utc),
+                system_prompt="test",
+                turn_count_ref=[0],
+                uuid="uuid-tts-crash-farewell",
+                initial_lang="de",
+            )
+
+        # Loop must have kept recording (i.e. not broken out on the first
+        # never-heard "farewell") until the mock handler actually hung up.
+        assert record_calls[0] >= 3, (
+            f"Expected the loop to keep going past the unheard farewell reply "
+            f"until real hangup; only {record_calls[0]} record attempts made."
+        )
+
+
+# =============================================================================
 # Missed-call voicemail fallback
 # =============================================================================
 

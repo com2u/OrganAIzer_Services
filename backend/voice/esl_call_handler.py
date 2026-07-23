@@ -546,7 +546,7 @@ def _conversation_loop(
         # eliminating most of the silence gap the caller would otherwise hear.
         _proc: dict = {
             "text": "", "reply": "", "wav": "", "lang": conv_lang,
-            "unfinished": False,
+            "unfinished": False, "stt_failed": False, "tts_failed": False,
         }
         _proc_done = threading.Event()
 
@@ -559,7 +559,23 @@ def _conversation_loop(
             if Path(_rec).exists():
                 # Pass the current conversation language so Whisper doesn't
                 # misidentify German phone audio as English (common on noisy lines).
-                t, _ = transcribe_file(_rec, lang=conv_lang)
+                try:
+                    t, _ = transcribe_file(_rec, lang=conv_lang)
+                except Exception as exc:
+                    # faster-whisper OOM / model load failure / corrupt WAV, etc.
+                    # Must not propagate: this runs on a background daemon
+                    # thread with no caller-side exception handler, so an
+                    # unhandled error here would be printed only via Python's
+                    # default threading.excepthook (never through `logger`,
+                    # never in structured logs) and — critically — would skip
+                    # _proc_done.set() below, stalling the main loop for the
+                    # full 20 s wait(timeout=20.0) before it even notices.
+                    logger.error(
+                        "STT failure on upcoming turn %d (file=%s): %s: %s",
+                        turn_count_ref[0] + 1, _rec, type(exc).__name__, exc,
+                        exc_info=True,
+                    )
+                    _proc["stt_failed"] = True
             _cleanup(_rec)
             if not t:
                 _proc_done.set()
@@ -651,7 +667,19 @@ def _conversation_loop(
                     history.append({"role": "user", "content": sanitized_t})
                     history.append({"role": "assistant", "content": _sched.reply})
                     if not _sched.reply.upper().startswith("ESCALATE:"):
-                        _proc["wav"] = speak_to_file(_sched.reply, lang="de")
+                        try:
+                            _proc["wav"] = speak_to_file(_sched.reply, lang="de")
+                        except Exception as exc:
+                            # edge-tts network hiccup / ffmpeg missing, etc. The
+                            # scheduler reply text is already in history — only
+                            # the audio failed. Must still set _proc_done below.
+                            logger.error(
+                                "TTS failure on upcoming turn %d (scheduler reply, lang=de): %s: %s",
+                                turn_count_ref[0] + 1, type(exc).__name__, exc,
+                                exc_info=True,
+                            )
+                            _proc["wav"] = ""
+                            _proc["tts_failed"] = True
                     _proc_done.set()
                     return
             _proc["text"] = sanitized_t
@@ -729,8 +757,21 @@ def _conversation_loop(
             # LLM triggered a special action (ESCALATE replies are never spoken
             # directly to the caller).
             if not r.upper().startswith("ESCALATE:"):
-                wav = speak_to_file(r, lang=_proc["lang"])
-                _proc["wav"] = wav
+                try:
+                    _proc["wav"] = speak_to_file(r, lang=_proc["lang"])
+                except Exception as exc:
+                    # edge-tts network hiccup / ffmpeg missing or broken, etc.
+                    # `r` (the LLM reply text) already exists and is already in
+                    # history via get_response() — only the audio failed. The
+                    # main loop below recovers with a spoken apology instead of
+                    # leaving the caller in silence. Must still set _proc_done.
+                    logger.error(
+                        "TTS failure on upcoming turn %d (lang=%s, reply_len=%d): %s: %s",
+                        turn_count_ref[0] + 1, _proc["lang"], len(r),
+                        type(exc).__name__, exc, exc_info=True,
+                    )
+                    _proc["wav"] = ""
+                    _proc["tts_failed"] = True
             _proc_done.set()
 
         threading.Thread(
@@ -753,6 +794,40 @@ def _conversation_loop(
             break
 
         if not _proc["text"]:
+            if _proc.get("stt_failed"):
+                # transcribe_file() raised — this is an infrastructure failure
+                # (Whisper OOM/model load, corrupt WAV, etc.), not caller
+                # silence. Saying nothing here would leave the caller wondering
+                # why the AI suddenly went quiet, only to be told "still there?"
+                # two turns later for a reason unrelated to them. Speak an
+                # honest, short apology immediately, then fall through to the
+                # existing empty-turn counter/farewell logic below so repeated
+                # failures still end the call gracefully instead of looping
+                # forever. This _speak_and_play() call runs on the MAIN thread
+                # (unlike the background _process_turn thread, which never
+                # touches `handler` itself), so it cannot race with any other
+                # handler.execute() call; wrapped defensively in case TTS is
+                # also broken, so an apology failure can't crash the call loop.
+                logger.warning(
+                    "STT failure surfaced to caller (turn %d, empty_turns=%d) — "
+                    "speaking apology instead of silent retry.",
+                    turn_count_ref[0] + 1, _empty_turns + 1,
+                )
+                stt_apology = (
+                    "Sorry, I had a brief technical problem. Could you please repeat that?"
+                    if conv_lang == "en"
+                    else "Entschuldigung, ich hatte kurz ein technisches Problem. "
+                         "Könnten Sie das bitte wiederholen?"
+                )
+                try:
+                    _speak_and_play(handler, stt_apology, lang=conv_lang)
+                except Exception as exc:
+                    logger.error(
+                        "Apology playback after STT failure also failed (turn %d): %s: %s",
+                        turn_count_ref[0] + 1, type(exc).__name__, exc, exc_info=True,
+                    )
+                if handler.is_hung_up:
+                    break
             # Silent / empty recording — record again, but bail after too many
             _empty_turns += 1
             if _empty_turns == 2:
@@ -1032,11 +1107,42 @@ def _conversation_loop(
                 )
             finally:
                 _cleanup(_proc["wav"])
+        elif _proc.get("tts_failed"):
+            # speak_to_file() raised in the background thread — the LLM reply
+            # text exists (and is already in `history`) but could never be
+            # synthesised to audio. Leaving `_proc["wav"]` empty is already
+            # safe (the block above just does nothing), but silently skipping
+            # straight to the next recording leaves the caller in the same
+            # confusing dead-air situation the STT-failure path above avoids.
+            # Attempt one apology playback for symmetry with the STT recovery;
+            # if TTS is broken globally this may fail too, so it is wrapped —
+            # a second failure here must degrade to a graceful continue, not
+            # a crash of the whole call loop.
+            logger.warning(
+                "TTS failure surfaced to caller (turn %d) — attempting apology playback.",
+                turn_count_ref[0],
+            )
+            tts_apology = (
+                "Sorry, I had a brief technical problem there. Could you say that again?"
+                if conv_lang == "en"
+                else "Entschuldigung, ich hatte kurz ein technisches Problem. "
+                     "Könnten Sie das bitte noch einmal sagen?"
+            )
+            try:
+                _speak_and_play(handler, tts_apology, lang=conv_lang)
+            except Exception as exc:
+                logger.error(
+                    "Apology playback after TTS failure also failed (turn %d): %s: %s",
+                    turn_count_ref[0], type(exc).__name__, exc, exc_info=True,
+                )
 
         # ── natural end after goodbye ─────────────────────────────────────────
         # The AI just said its farewell — end the call instead of recording on
-        # and asking "Sind Sie noch da?" after having said goodbye.
-        if _is_farewell_reply(reply):
+        # and asking "Sind Sie noch da?" after having said goodbye. Skipped
+        # when TTS just failed for this turn: the caller never actually heard
+        # the farewell (only the apology above), so ending the call now would
+        # look like an abrupt hangup rather than a natural goodbye.
+        if _is_farewell_reply(reply) and not _proc.get("tts_failed"):
             logger.info("Farewell spoken — ending call naturally.")
             break
 
