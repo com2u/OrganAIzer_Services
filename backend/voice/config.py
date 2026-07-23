@@ -127,9 +127,17 @@ AI_RECORD_SILENCE_THRESHOLD_MS: int = int(os.environ.get("AI_RECORD_SILENCE_THRE
 # ── Per-turn recording behaviour ─────────────────────────────────────────────
 # Upper bound on a single user-utterance recording (seconds). Lowered from the
 # old hard-coded 20 so short utterances no longer wait for the full window
-# before the AI starts processing. Silence detection still ends most turns
-# earlier than this cap.
-AI_RECORD_MAX_SECONDS: int = int(os.environ.get("AI_RECORD_MAX_SECONDS", "8"))
+# before the AI starts processing. Silence detection (AI_RECORD_SILENCE_SECONDS)
+# still ends most turns earlier than this cap — this is only the hard ceiling
+# for callers who keep talking the whole time.
+# Raised 8 -> 14: at natural German speaking pace a caller describing a real
+# problem ("Also bei uns ist seit heute Morgen das Internet und auch die
+# Telefonanlage ausgefallen, wir sind eine Arztpraxis und das ist wirklich
+# dringend...") easily runs 8-12+ seconds and was getting hard-cut mid-sentence
+# at the old 8 s cap regardless of whether they were still speaking. 14 s gives
+# room for a two-sentence explanation without meaningfully increasing dead-air
+# latency for short answers, since silence detection (not this cap) ends those.
+AI_RECORD_MAX_SECONDS: int = int(os.environ.get("AI_RECORD_MAX_SECONDS", "14"))
 
 # Trailing-silence duration that ends the recording (seconds). Converted to
 # FreeSWITCH "silence hits" (consecutive 20 ms frames) internally. Larger

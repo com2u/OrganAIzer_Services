@@ -1276,22 +1276,26 @@ class TestEndOfSpeechTiming:
         # Legacy 1.8 s == 90 frames; the new window must be strictly longer.
         assert _esl._RECORD_SILENCE_TIMEOUT > 90
 
-    def test_threshold_and_max_seconds_defaults_unchanged(self):
+    def test_threshold_default_unchanged(self):
         # Turn-taking change must touch ONLY the trailing-silence window. The
-        # energy threshold and per-utterance cap are env-driven at runtime, so
-        # pin their source defaults instead of runtime values (scope guard).
+        # energy threshold is env-driven at runtime, so pin its source default
+        # instead of the runtime value (scope guard).
         import inspect
         src = inspect.getsource(_vcfg)
         assert '"AI_RECORD_SILENCE_THRESHOLD_MS", "500"' in src
-        assert '"AI_RECORD_MAX_SECONDS", "8"' in src
 
     def test_main_conversation_silence_seconds_default_unchanged(self):
         # Adding the consent / final-note knobs below must NOT touch the main
         # conversation loop's trailing-silence window.
         assert _vcfg.AI_RECORD_SILENCE_SECONDS == 2.6
 
-    def test_main_conversation_max_seconds_default_unchanged(self):
-        assert _vcfg.AI_RECORD_MAX_SECONDS == 8
+    def test_main_conversation_max_seconds_in_sane_range(self):
+        # Per-utterance hard cap. Raised from the old 8 s (which could hard-cut
+        # a caller mid-sentence while explaining a real problem) to a value
+        # long enough for a two-sentence explanation but bounded so a runaway
+        # value can't stall the call loop. Silence detection, not this cap,
+        # ends most turns.
+        assert 10 <= _vcfg.AI_RECORD_MAX_SECONDS <= 20
 
 
 class TestConsentAndFinalNoteTiming:
