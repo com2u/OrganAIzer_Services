@@ -15,7 +15,6 @@ aiohttp is mocked for all client HTTP tests.
 openclaw.json is checked with raw string reads — it is JSON5, not strict JSON.
 """
 
-import asyncio
 import os
 import sys
 import pytest
@@ -26,6 +25,7 @@ yaml = pytest.importorskip("yaml")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from services.openclaw_client import OpenClawClient
+from tests.conftest import run_isolated
 
 # ── File paths (derived from __file__ so they work regardless of cwd) ─────────
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -47,8 +47,13 @@ with open(_OPENCLAW_JSON_PATH) as _f:
 
 
 # ── Async helper ──────────────────────────────────────────────────────────────
+# See tests/conftest.py::run_isolated for why this doesn't use
+# asyncio.get_event_loop().run_until_complete(...) — that pattern depends on
+# thread-local event-loop state left over from whatever ran before it in the
+# same pytest process, and breaks whenever something earlier (in this file
+# or another) calls asyncio.run() and clears that state first.
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return run_isolated(coro)
 
 
 # ── aiohttp mock factory ──────────────────────────────────────────────────────

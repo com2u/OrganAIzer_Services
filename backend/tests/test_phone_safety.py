@@ -13,7 +13,6 @@ No FreeSWITCH, no ESL, no real calls, no real contacts file.
 originate_call is patched for every test that reaches the dial path.
 """
 
-import asyncio
 import sys
 import os
 import threading
@@ -30,6 +29,7 @@ from voice.call_trigger import (
     _pending,
     _pending_lock,
 )
+from tests.conftest import run_isolated
 
 # ── Shared session IDs so tests never collide ─────────────────────────────────
 _SID = "test_session_phone_safety"
@@ -435,7 +435,12 @@ class TestActiveCallBlocking:
         _clear_pending()
 
     def _run(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        # See tests/conftest.py::run_isolated — plain
+        # asyncio.get_event_loop().run_until_complete(...) depends on
+        # thread-local event-loop state left over from whatever ran before
+        # it in this pytest process, and breaks once something earlier
+        # (e.g. production code calling asyncio.run() internally) clears it.
+        return run_isolated(coro)
 
     def test_active_call_blocks_affirmative(self):
         from fastapi import HTTPException
