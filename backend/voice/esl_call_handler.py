@@ -167,6 +167,22 @@ _RECORD_TIMEOUT         = (
     _RECORD_MAX_SECS + float(config.AI_RECORD_INITIAL_TIMEOUT_SECONDS)
 )   # s — execute() timeout (max_seconds + slack for FS flush)
 
+# Consent recording (escalation yes/no) and human-handoff final-note recording
+# each get their own silence window — same 20 ms-frame conversion as the main
+# loop above, but config-driven instead of hardcoded, so a short breath-pause
+# no longer truncates either recording.
+_CONSENT_MAX_SECS        = config.AI_RECORD_CONSENT_MAX_SECONDS
+_CONSENT_SILENCE_TIMEOUT = max(
+    1, int(round(config.AI_RECORD_CONSENT_SILENCE_SECONDS * 1000 / 20))
+)
+_CONSENT_TIMEOUT         = _CONSENT_MAX_SECS + float(config.AI_RECORD_INITIAL_TIMEOUT_SECONDS)
+
+_FINAL_NOTE_MAX_SECS        = config.AI_RECORD_FINAL_NOTE_MAX_SECONDS
+_FINAL_NOTE_SILENCE_TIMEOUT = max(
+    1, int(round(config.AI_RECORD_FINAL_NOTE_SILENCE_SECONDS * 1000 / 20))
+)
+_FINAL_NOTE_TIMEOUT         = _FINAL_NOTE_MAX_SECS + float(config.AI_RECORD_INITIAL_TIMEOUT_SECONDS)
+
 
 # ── garbage transcription detection ───────────────────────────────────────────
 # Whisper occasionally returns single-character artefacts ("."), pure
@@ -830,11 +846,11 @@ def _conversation_loop(
                 consent_path = _audio_dir() / f"{uuid}_consent.wav"
                 consent_arg = (
                     f"{_fs_path(consent_path)} "
-                    f"8 "           # max 8 seconds — just yes/no
+                    f"{_CONSENT_MAX_SECS} "
                     f"{_RECORD_SILENCE_THRESH} "
-                    f"25"           # 500 ms silence to stop
+                    f"{_CONSENT_SILENCE_TIMEOUT}"
                 )
-                handler.execute("record", consent_arg, timeout=15.0)
+                handler.execute("record", consent_arg, timeout=_CONSENT_TIMEOUT)
                 if consent_path.exists():
                     consent_text, _ = transcribe_file(str(consent_path), lang=conv_lang)
                     consent_text = consent_text.lower()
@@ -863,11 +879,11 @@ def _conversation_loop(
                     note_path = _audio_dir() / f"{uuid}_final_note.wav"
                     note_arg = (
                         f"{_fs_path(note_path)} "
-                        f"12 "          # a short note, not a new conversation
+                        f"{_FINAL_NOTE_MAX_SECS} "
                         f"{_RECORD_SILENCE_THRESH} "
-                        f"25"           # 500 ms silence to stop
+                        f"{_FINAL_NOTE_SILENCE_TIMEOUT}"
                     )
-                    handler.execute("record", note_arg, timeout=18.0)
+                    handler.execute("record", note_arg, timeout=_FINAL_NOTE_TIMEOUT)
                     if note_path.exists():
                         final_note_text, _ = transcribe_file(str(note_path), lang=conv_lang)
                         _cleanup(str(note_path))

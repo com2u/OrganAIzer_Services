@@ -1285,6 +1285,65 @@ class TestEndOfSpeechTiming:
         assert '"AI_RECORD_SILENCE_THRESHOLD_MS", "500"' in src
         assert '"AI_RECORD_MAX_SECONDS", "8"' in src
 
+    def test_main_conversation_silence_seconds_default_unchanged(self):
+        # Adding the consent / final-note knobs below must NOT touch the main
+        # conversation loop's trailing-silence window.
+        assert _vcfg.AI_RECORD_SILENCE_SECONDS == 2.6
+
+    def test_main_conversation_max_seconds_default_unchanged(self):
+        assert _vcfg.AI_RECORD_MAX_SECONDS == 8
+
+
+class TestConsentAndFinalNoteTiming:
+    """Escalation consent ("Ja/Nein?") and the human-handoff final note used to
+    hardcode 25 silence-hits (0.5 s) directly in esl_call_handler.py, unrelated
+    to and much shorter than the main loop's 2.6 s window — an ordinary
+    breath-pause was enough to truncate either recording. Both are now
+    config-driven and wired through the same 20 ms-frame conversion as the
+    main recording path.
+    """
+
+    def test_consent_silence_seconds_configurable_and_floor(self):
+        assert _vcfg.AI_RECORD_CONSENT_SILENCE_SECONDS >= 1.0
+
+    def test_consent_silence_seconds_default(self):
+        assert _vcfg.AI_RECORD_CONSENT_SILENCE_SECONDS == 1.4
+
+    def test_final_note_silence_seconds_configurable_and_floor(self):
+        assert _vcfg.AI_RECORD_FINAL_NOTE_SILENCE_SECONDS >= 2.0
+
+    def test_final_note_silence_seconds_default(self):
+        assert _vcfg.AI_RECORD_FINAL_NOTE_SILENCE_SECONDS == 2.6
+
+    def test_consent_silence_hits_wired_same_as_main_loop_formula(self):
+        expected_hits = max(
+            1, int(round(_vcfg.AI_RECORD_CONSENT_SILENCE_SECONDS * 1000 / 20))
+        )
+        assert _esl._CONSENT_SILENCE_TIMEOUT == expected_hits
+
+    def test_final_note_silence_hits_wired_same_as_main_loop_formula(self):
+        expected_hits = max(
+            1, int(round(_vcfg.AI_RECORD_FINAL_NOTE_SILENCE_SECONDS * 1000 / 20))
+        )
+        assert _esl._FINAL_NOTE_SILENCE_TIMEOUT == expected_hits
+
+    def test_consent_max_seconds_from_config(self):
+        assert _esl._CONSENT_MAX_SECS == _vcfg.AI_RECORD_CONSENT_MAX_SECONDS == 8
+
+    def test_final_note_max_seconds_from_config(self):
+        assert _esl._FINAL_NOTE_MAX_SECS == _vcfg.AI_RECORD_FINAL_NOTE_MAX_SECONDS == 20
+
+    def test_no_hardcoded_25_frame_literal_in_conversation_loop_source(self):
+        # Regression guard: the consent/final-note record() calls must build
+        # their silence-hits argument from the wired constants above, not a
+        # bare "25" literal (which was 0.5 s — the original cutoff bug).
+        import inspect
+        src = inspect.getsource(_esl._conversation_loop)
+        assert '"25"' not in src
+        assert "f\"25\"" not in src
+        assert "_CONSENT_SILENCE_TIMEOUT" in src
+        assert "_FINAL_NOTE_SILENCE_TIMEOUT" in src
+
 
 class TestUnfinishedUtteranceDetection:
     """Mid-sentence pauses / hesitations must NOT trigger the LLM. The caller is

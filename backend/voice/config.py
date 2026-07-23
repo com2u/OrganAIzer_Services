@@ -118,7 +118,10 @@ FREESWITCH_ESL_HOST: str     = os.environ.get("FREESWITCH_ESL_HOST", "127.0.0.1"
 FREESWITCH_ESL_PORT: int     = int(os.environ.get("FREESWITCH_ESL_PORT", "8021"))
 FREESWITCH_ESL_PASSWORD: str = os.environ.get("FREESWITCH_ESL_PASSWORD", "ClueCon")
 
-# Silence threshold for recording (raised to 500+ for noisy VoIP lines)
+# Silence threshold for recording (raised to 500+ for noisy VoIP lines).
+# NOTE: despite the "_MS" suffix this is an ENERGY threshold passed straight
+# to FreeSWITCH's record app, not a duration in milliseconds. The duration
+# knobs are AI_RECORD_SILENCE_SECONDS and the *_SILENCE_SECONDS below.
 AI_RECORD_SILENCE_THRESHOLD_MS: int = int(os.environ.get("AI_RECORD_SILENCE_THRESHOLD_MS", "500"))
 
 # ── Per-turn recording behaviour ─────────────────────────────────────────────
@@ -137,6 +140,28 @@ AI_RECORD_MAX_SECONDS: int = int(os.environ.get("AI_RECORD_MAX_SECONDS", "8"))
 # further mainly adds latency after the caller genuinely stops talking.
 AI_RECORD_SILENCE_SECONDS: float = float(
     os.environ.get("AI_RECORD_SILENCE_SECONDS", "2.6")
+)
+
+# ── Consent recording (escalation "sind Sie einverstanden…" yes/no) ──────────
+# Previously hardcoded to 8 s / 25 frames (0.5 s) directly in esl_call_handler.py.
+# Kept short since this is a yes/no answer, but long enough that an ordinary
+# breath-pause mid-answer ("Ja, das ist... okay") does not cut the caller off.
+AI_RECORD_CONSENT_MAX_SECONDS: int = int(
+    os.environ.get("AI_RECORD_CONSENT_MAX_SECONDS", "8")
+)
+AI_RECORD_CONSENT_SILENCE_SECONDS: float = float(
+    os.environ.get("AI_RECORD_CONSENT_SILENCE_SECONDS", "1.4")
+)
+
+# ── Human-handoff final pre-transfer note ────────────────────────────────────
+# Previously hardcoded to 12 s / 25 frames (0.5 s) directly in esl_call_handler.py.
+# This is free-form speech (not a single word), so it needs a silence window
+# close to the main conversation loop's, not the short consent window above.
+AI_RECORD_FINAL_NOTE_MAX_SECONDS: int = int(
+    os.environ.get("AI_RECORD_FINAL_NOTE_MAX_SECONDS", "20")
+)
+AI_RECORD_FINAL_NOTE_SILENCE_SECONDS: float = float(
+    os.environ.get("AI_RECORD_FINAL_NOTE_SILENCE_SECONDS", "2.6")
 )
 
 # Extra slack added to the ESL execute() timeout on top of AI_RECORD_MAX_SECONDS,
