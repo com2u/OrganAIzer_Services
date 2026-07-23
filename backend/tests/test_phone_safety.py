@@ -1531,10 +1531,39 @@ class TestConsentAndFinalNoteTiming:
         assert _esl._FINAL_NOTE_SILENCE_TIMEOUT == expected_hits
 
     def test_consent_max_seconds_from_config(self):
-        assert _esl._CONSENT_MAX_SECS == _vcfg.AI_RECORD_CONSENT_MAX_SECONDS == 8
+        # Wiring, not a fixed number: esl_call_handler must read whatever
+        # AI_RECORD_CONSENT_MAX_SECONDS currently resolves to (env override
+        # or the voice/config.py default) — asserting a literal like "== 8"
+        # makes this test fail the moment an operator tunes the value in
+        # .env, even though the wiring is still correct. See voice/config.py:
+        # "Kept short since this is a yes/no answer, but long enough that an
+        # ordinary breath-pause mid-answer does not cut the caller off."
+        assert _esl._CONSENT_MAX_SECS == _vcfg.AI_RECORD_CONSENT_MAX_SECONDS
+        # Safe range: long enough for a real yes/no answer with a breath
+        # pause, short enough to stay a deliberately short consent window
+        # (not a full free-form recording).
+        assert 3 <= _vcfg.AI_RECORD_CONSENT_MAX_SECONDS <= 30, (
+            f"AI_RECORD_CONSENT_MAX_SECONDS={_vcfg.AI_RECORD_CONSENT_MAX_SECONDS} "
+            f"is outside the sane 3-30s range for a yes/no consent answer"
+        )
 
     def test_final_note_max_seconds_from_config(self):
-        assert _esl._FINAL_NOTE_MAX_SECS == _vcfg.AI_RECORD_FINAL_NOTE_MAX_SECONDS == 20
+        # Same wiring check as above, no fixed number.
+        assert _esl._FINAL_NOTE_MAX_SECS == _vcfg.AI_RECORD_FINAL_NOTE_MAX_SECONDS
+        # Safe range: this captures free-form speech (not a single word), so
+        # per voice/config.py it needs a window "close to the main
+        # conversation loop's" — i.e. generous enough for a real sentence.
+        assert 10 <= _vcfg.AI_RECORD_FINAL_NOTE_MAX_SECONDS <= 60, (
+            f"AI_RECORD_FINAL_NOTE_MAX_SECONDS={_vcfg.AI_RECORD_FINAL_NOTE_MAX_SECONDS} "
+            f"is outside the sane 10-60s range for a free-form final note"
+        )
+        # Design invariant from voice/config.py: the final note is free-form
+        # speech and must not be capped shorter than the short yes/no
+        # consent window.
+        assert (
+            _vcfg.AI_RECORD_FINAL_NOTE_MAX_SECONDS
+            >= _vcfg.AI_RECORD_CONSENT_MAX_SECONDS
+        )
 
     def test_no_hardcoded_25_frame_literal_in_conversation_loop_source(self):
         # Regression guard: the consent/final-note record() calls must build

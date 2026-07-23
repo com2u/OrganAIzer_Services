@@ -20,17 +20,22 @@ import os
 import re
 import pytest
 from datetime import datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
 
 # ── Allow running without installing as a package ─────────────────────────────
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-# Stub heavy optional deps
-sys.modules.setdefault("pytz", __import__("pytz") if "pytz" not in sys.modules else sys.modules["pytz"])
-sys.modules.setdefault("langdetect", MagicMock())
-sys.modules.setdefault("gtts", MagicMock())
-sys.modules.setdefault("httpx", MagicMock())
-
+# utils.slot_extraction imports only re/logging/datetime/typing — no pytz/
+# langdetect/gtts/httpx dependency. Several tests below `import pytz`
+# directly in their own bodies and need the REAL package (they call
+# pytz.timezone(...).localize(...) and assert on real UTC-offset strings).
+# The previous module-level stub for pytz here was a no-op "guard" that
+# didn't actually work (sys.modules.setdefault is a no-op once another file
+# already inserted a MagicMock for "pytz" — exactly what test_calendar_
+# event_creation.py / test_calendar_intent.py used to do at module scope)
+# and the langdetect/gtts/httpx stubs served no purpose for this file at
+# all. Now that those other files no longer leave permanent stubs behind
+# (see conftest.py / test_no_cross_file_pollution.py), a plain `import pytz`
+# anywhere in this file gets the real module regardless of collection order.
 from utils.slot_extraction import SlotExtractor
 
 

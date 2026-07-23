@@ -25,20 +25,19 @@ Run with:
 import sys
 import os
 from datetime import datetime, timedelta
-from unittest.mock import MagicMock
 
 import pytest
 
 # ── Allow importing backend modules without a package install ─────────────────
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-# Stub heavy optional deps before any import
-sys.modules.setdefault("pytz", MagicMock())
-sys.modules.setdefault("langdetect", MagicMock())
-sys.modules.setdefault("gtts", MagicMock())
-sys.modules.setdefault("httpx", MagicMock())
-sys.modules.setdefault("msal", MagicMock())
-
+# utils.intent_router and utils.slot_extraction import only re/logging/
+# datetime/typing — no pytz/langdetect/gtts/httpx/msal dependency, so no
+# stubbing is needed (or was ever needed) for this file's own imports. The
+# previous module-level sys.modules.setdefault(...) stubs here were dead
+# defensive scaffolding that had no purpose for this file but permanently
+# polluted sys.modules for every test file collected afterward in the same
+# run (see test_no_cross_file_pollution.py).
 from utils.intent_router import IntentRouter, IntentType
 from utils.slot_extraction import SlotExtractor
 

@@ -27,34 +27,40 @@ from unittest.mock import AsyncMock, MagicMock, patch
 # ── Allow importing backend modules without installing as a package ──────────
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-# Stub heavy optional deps before import
-sys.modules.setdefault("pytz", MagicMock())
-sys.modules.setdefault("langdetect", MagicMock())
-sys.modules.setdefault("gtts", MagicMock())
-sys.modules.setdefault("httpx", MagicMock())
+from tests.conftest import stub_missing_modules
 
-from services.executive_agent_service import (
-    ExecutiveAgent,
-    ConversationMemory,
-    _CALENDAR_IDEMPOTENCY_STORE,
-    _compute_calendar_request_id,
-)
+# services.executive_agent_service hard-imports httpx and pytz at module
+# level; stub only if genuinely absent, and never leave the stub behind for
+# later-collected test files (see test_no_cross_file_pollution.py).
+with stub_missing_modules("pytz", "httpx"):
+    from services.executive_agent_service import (
+        ExecutiveAgent,
+        ConversationMemory,
+        _CALENDAR_IDEMPOTENCY_STORE,
+        _compute_calendar_request_id,
+    )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _make_action_data(
     title="Sprint Planning",
-    date="2026-03-15",
-    time="14:00",
+    start="2026-03-15T14:00:00",
+    end="2026-03-15T15:00:00",
     provider="google",
 ):
+    """Build args for ExecutiveAgent._exec_create_calendar.
+
+    The real method reads args["start"]/args["end"] (combined ISO datetime
+    strings) via _parse_and_localize — not separate "date"/"time" fields.
+    user_id is not read from args; it is passed as _exec_create_calendar's
+    second positional parameter.
+    """
     return {
         "title": title,
-        "date": date,
-        "time": time,
+        "start": start,
+        "end": end,
         "provider": provider,
-        "user_id": "test_user",
     }
 
 
@@ -68,7 +74,14 @@ def _mock_http_response(status_code: int, body: dict) -> MagicMock:
 
 
 def _make_agent(session_id="test-session") -> ExecutiveAgent:
-    """Create agent with mocked chat_service to avoid LLM calls."""
+    """Create agent with mocked chat_service to avoid LLM calls.
+
+    _exec_create_calendar calls _parse_and_localize(..., self.timezone,
+    self.tz_name) and folds self.tz_name into the idempotency hash, so both
+    must be real (a MagicMock timezone would make start_dt/end_dt Mocks too,
+    and .isoformat()/.strftime() on those would silently return more Mocks
+    instead of exercising the real parsing/formatting path).
+    """
     # Reset or create session
     if session_id in ExecutiveAgent.sessions:
         del ExecutiveAgent.sessions[session_id]
@@ -80,14 +93,23 @@ def _make_agent(session_id="test-session") -> ExecutiveAgent:
     import datetime
     import pytz
     agent.current_datetime = datetime.datetime.now()
-    agent.timezone = MagicMock()
+    agent.tz_name = "Europe/Berlin"
+    agent.timezone = pytz.timezone(agent.tz_name)
     return agent
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
 class TestCalendarEventCreation:
-    """Tests for _execute_calendar_event_creation."""
+    """Tests for ExecutiveAgent._exec_create_calendar (formerly named
+    _execute_calendar_event_creation; the method was renamed and its
+    args/return shapes changed — see docstrings below for what actually
+    changed, verified against the current implementation)."""
+
+    # Real dispatch key used by _execute_pending_action for this action;
+    # _exec_create_calendar itself only checks pending truthiness, but using
+    # the real key keeps the fixture faithful to actual call sites.
+    _PENDING_TYPE = "propose_create_calendar_event"
 
     def setup_method(self):
         """Clear idempotency store before each test."""
@@ -102,7 +124,7 @@ class TestCalendarEventCreation:
         action_data = _make_action_data()
 
         # Set a pending action so the guard passes
-        agent.memory.set_pending_action("create_calendar_event", action_data)
+        agent.memory.set_pending_action(self._PENDING_TYPE, action_data)
 
         api_response = _mock_http_response(201, {
             "id": "google-event-abc123",
@@ -119,7 +141,7 @@ class TestCalendarEventCreation:
 
         with patch("httpx.AsyncClient", return_value=mock_client):
             result = asyncio.get_event_loop().run_until_complete(
-                agent._execute_calendar_event_creation(action_data, "test_user")
+                agent._exec_create_calendar(action_data, "test_user")
             )
 
         assert result["success"] is True, f"Expected success=True, got: {result}"
@@ -134,10 +156,19 @@ class TestCalendarEventCreation:
     # Test 2: Failure when event_id missing (truthfulness check)
     # ─────────────────────────────────────────────────────────────────────────
     def test_failure_when_event_id_missing(self):
-        """2xx response WITHOUT event_id → failure, pending preserved."""
+        """2xx response WITHOUT event_id → failure.
+
+        Verified against the current implementation: this branch returns
+        {"message": ..., "success": False, "type": "error", "intent": ...}
+        with NO "error" key and NO "data" key at all (unlike the HTTP-error
+        branch below, which does include data.pending_action_preserved).
+        The pending action is preserved here only because clear_pending_action()
+        is never called on this path — there is no explicit "preserved" flag
+        to check for this specific branch.
+        """
         agent = _make_agent("session-no-id")
         action_data = _make_action_data()
-        agent.memory.set_pending_action("create_calendar_event", action_data)
+        agent.memory.set_pending_action(self._PENDING_TYPE, action_data)
 
         # 201 but no 'id' field in body
         api_response = _mock_http_response(201, {
@@ -154,16 +185,19 @@ class TestCalendarEventCreation:
 
         with patch("httpx.AsyncClient", return_value=mock_client):
             result = asyncio.get_event_loop().run_until_complete(
-                agent._execute_calendar_event_creation(action_data, "test_user")
+                agent._exec_create_calendar(action_data, "test_user")
             )
 
         assert result["success"] is False, f"Expected success=False, got: {result}"
         assert result["type"] == "error"
-        assert "event_id missing" in result.get("error", "").lower() or \
-               "event_id" in result.get("error", "").lower()
-        # pending_action_preserved flag must be set
-        assert result["data"].get("pending_action_preserved") is True
-        # Idempotency store must NOT have been written
+        assert "event id" in result["message"].lower(), (
+            f"Expected a 'no event ID' message, got: {result['message']!r}"
+        )
+        # No explicit pending_action_preserved flag on this branch — verify
+        # the real signal instead: clear_pending_action() was never called.
+        assert agent.memory.get_pending_action() is not None
+        # Idempotency store must NOT have been left with a real value —
+        # the "__pending__" placeholder is popped on this failure path.
         assert len(_CALENDAR_IDEMPOTENCY_STORE) == 0
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -173,7 +207,7 @@ class TestCalendarEventCreation:
         """4xx/5xx response → failure, pending_action NOT cleared (user can retry)."""
         agent = _make_agent("session-http-err")
         action_data = _make_action_data()
-        agent.memory.set_pending_action("create_calendar_event", action_data)
+        agent.memory.set_pending_action(self._PENDING_TYPE, action_data)
 
         api_response = _mock_http_response(403, {"detail": "OAuth token expired"})
 
@@ -184,7 +218,7 @@ class TestCalendarEventCreation:
 
         with patch("httpx.AsyncClient", return_value=mock_client):
             result = asyncio.get_event_loop().run_until_complete(
-                agent._execute_calendar_event_creation(action_data, "test_user")
+                agent._exec_create_calendar(action_data, "test_user")
             )
 
         assert result["success"] is False
@@ -197,10 +231,16 @@ class TestCalendarEventCreation:
     # Test 4: Idempotent duplicate returns same event_id
     # ─────────────────────────────────────────────────────────────────────────
     def test_idempotent_duplicate_returns_same_event_id(self):
-        """Second identical request returns cached event_id without calling API."""
+        """Second identical request returns cached event_id without calling API.
+
+        Idempotency is keyed on a hash of (user_id, title, start.isoformat(),
+        end.isoformat(), tz_name) — both agents must share the same tz_name
+        (both use the shared _make_agent default) and identical action_data
+        for the second call to actually hit the cache.
+        """
         agent1 = _make_agent("session-idempotent-1")
         action_data = _make_action_data()
-        agent1.memory.set_pending_action("create_calendar_event", action_data)
+        agent1.memory.set_pending_action(self._PENDING_TYPE, action_data)
 
         api_response = _mock_http_response(201, {
             "id": "google-event-xyz789",
@@ -217,7 +257,7 @@ class TestCalendarEventCreation:
         # First request
         with patch("httpx.AsyncClient", return_value=mock_client):
             result1 = asyncio.get_event_loop().run_until_complete(
-                agent1._execute_calendar_event_creation(action_data, "test_user")
+                agent1._exec_create_calendar(action_data, "test_user")
             )
 
         assert result1["success"] is True
@@ -225,7 +265,7 @@ class TestCalendarEventCreation:
 
         # Second request (duplicate) – new agent, same action_data, same user_id
         agent2 = _make_agent("session-idempotent-2")
-        agent2.memory.set_pending_action("create_calendar_event", action_data)
+        agent2.memory.set_pending_action(self._PENDING_TYPE, action_data)
 
         mock_client2 = AsyncMock()
         mock_client2.__aenter__ = AsyncMock(return_value=mock_client2)
@@ -234,7 +274,7 @@ class TestCalendarEventCreation:
 
         with patch("httpx.AsyncClient", return_value=mock_client2):
             result2 = asyncio.get_event_loop().run_until_complete(
-                agent2._execute_calendar_event_creation(action_data, "test_user")
+                agent2._exec_create_calendar(action_data, "test_user")
             )
 
         assert result2["success"] is True
@@ -253,12 +293,14 @@ class TestCalendarEventCreation:
         # Do NOT set pending action
 
         result = asyncio.get_event_loop().run_until_complete(
-            agent._execute_calendar_event_creation(action_data, "test_user")
+            agent._exec_create_calendar(action_data, "test_user")
         )
 
         assert result["success"] is False
         assert result["type"] == "error"
-        assert "No pending action" in result["error"]
+        assert "no pending" in result["message"].lower(), (
+            f"Expected a 'no pending calendar event' message, got: {result['message']!r}"
+        )
 
 
 class TestComputeCalendarRequestId:
@@ -294,24 +336,33 @@ class TestMicrosoftRouteExists:
 
     @classmethod
     def _get_routes(cls):
-        """Import the integrations router and return its (METHOD, path) pairs."""
+        """Import the integrations router and return its (METHOD, path) pairs.
+
+        If api.integrations was already imported for real elsewhere (the
+        normal case in the canonical test environment, where its actual
+        deps are installed), reuse that exact module object rather than
+        deleting it from sys.modules and reimporting under stubbed deps —
+        doing so used to leave every OTHER test file's captured reference
+        to api.integrations (e.g. test_email_foundation.py's `router` and
+        its `patch("api.integrations.get_token_storage")` calls) pointing
+        at the ORIGINAL module while sys.modules["api.integrations"] held a
+        different, stub-backed one, silently breaking their mocking (see
+        test_no_cross_file_pollution.py). Only stub-and-fresh-import when
+        api.integrations has never been imported at all in this process.
+        """
         import importlib
 
-        # Stub deps that api/integrations.py imports at module level
-        for mod in (
-            "google_auth_oauthlib", "google_auth_oauthlib.flow",
-            "google.oauth2.credentials", "googleapiclient",
-            "googleapiclient.discovery", "googleapiclient.errors",
-            "msal",
-        ):
-            sys.modules.setdefault(mod, MagicMock())
+        if "api.integrations" in sys.modules:
+            integrations_mod = sys.modules["api.integrations"]
+        else:
+            with stub_missing_modules(
+                "google_auth_oauthlib", "google_auth_oauthlib.flow",
+                "google.oauth2.credentials", "googleapiclient",
+                "googleapiclient.discovery", "googleapiclient.errors",
+                "msal",
+            ):
+                integrations_mod = importlib.import_module("api.integrations")
 
-        # Force reimport so stubs are active
-        for key in list(sys.modules.keys()):
-            if "api.integrations" in key or key == "api.integrations":
-                del sys.modules[key]
-
-        integrations_mod = importlib.import_module("api.integrations")
         router = integrations_mod.router
 
         routes = []
