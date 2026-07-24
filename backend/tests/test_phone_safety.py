@@ -1983,3 +1983,157 @@ class TestFarewellWording:
         import inspect
         src = inspect.getsource(_esl._conversation_loop)
         assert "Ich habe leider länger nichts von Ihnen gehört" in src
+
+
+# =============================================================================
+# Adaptive patience — explicit "give me a moment" requests
+# (SUBAGENT 2 / ORCHESTRATOR item 4)
+# =============================================================================
+
+class TestExplicitWaitRequestDetection:
+    """_is_explicit_wait_request() — whole-utterance match only, distinct
+    from the general hesitation-token set."""
+
+    @pytest.mark.parametrize("text", [
+        "Moment", "moment", "Einen Moment", "einen moment.",
+        "Momentchen", "Sekunde", "eine Sekunde", "Augenblick",
+        "ich schaue kurz", "ich muss kurz überlegen",
+        "lass mich kurz überlegen", "warte",
+        "One moment", "just a moment", "give me a second", "hold on",
+        "let me think",
+    ])
+    def test_german_and_english_wait_phrases_detected(self, text):
+        assert _esl._is_explicit_wait_request(text) is True
+
+    @pytest.mark.parametrize("text", [
+        "",
+        "weil",  # trailing-clause marker, NOT a wait-request
+        "wenn",
+        "Ich wollte fragen, ob wir einen Techniker bekommen können",
+        # A real complaint that happens to CONTAIN "warte" — must not match
+        # just because the whole-turn text isn't an exact wait phrase.
+        "Ich warte schon seit einer Stunde auf eine Antwort",
+        "Ja",
+        "Nein danke",
+    ])
+    def test_non_wait_phrases_not_detected(self, text):
+        assert _esl._is_explicit_wait_request(text) is False
+
+    def test_acknowledgement_text_de_and_en(self):
+        assert _esl._explicit_wait_acknowledgement("de") == "Kein Problem, ich warte."
+        assert _esl._explicit_wait_acknowledgement("en") == "No problem, take your time."
+
+    def test_acknowledgement_unknown_lang_falls_back_to_german(self):
+        assert _esl._explicit_wait_acknowledgement("fr") == _esl._explicit_wait_acknowledgement("de")
+
+
+class TestAdaptiveWaitRequestIntegration:
+    """Integration: an explicit wait-request must skip the LLM entirely,
+    speak the specific waiting acknowledgement (not the generic rotating
+    continuation prompt), and grant exactly the NEXT record() call a longer
+    window — reverting immediately afterward.
+    """
+
+    def _handler_capturing_record_args(self, hang_up_after: int = 0):
+        from pathlib import Path as _Path
+
+        handler = MagicMock()
+        record_calls = [0]
+        record_args: list[str] = []
+
+        def _is_hung_up(self):
+            return hang_up_after > 0 and record_calls[0] >= hang_up_after
+
+        type(handler).is_hung_up = property(_is_hung_up)
+
+        def _exec(app, arg=None, **kw):
+            if app == "record":
+                record_calls[0] += 1
+                record_args.append(arg)
+                _Path(arg.split()[0]).touch()
+            return True
+
+        handler.execute.side_effect = _exec
+        return handler, record_args
+
+    def _drive(self, tmp_path, transcripts, hang_up_after=3, initial_lang="de"):
+        from datetime import datetime, timezone
+        from voice.esl_call_handler import _conversation_loop
+
+        handler, record_args = self._handler_capturing_record_args(hang_up_after=hang_up_after)
+        spoken: list[str] = []
+        llm_called = [False]
+
+        async def _fake_get_response(*a, **kw):
+            llm_called[0] = True
+            return "should not be called"
+
+        it = iter(transcripts)
+
+        def _fake_transcribe(path, lang=None):
+            return next(it, ("", "de"))
+
+        with patch("voice.esl_call_handler._audio_dir", return_value=tmp_path), \
+             patch("voice.esl_call_handler._speak_and_play",
+                   side_effect=lambda h, t, lang=None: spoken.append(t)), \
+             patch("voice.esl_call_handler._get_filler_wav", return_value=""), \
+             patch("voice.esl_call_handler.transcribe_file", side_effect=_fake_transcribe), \
+             patch("voice.esl_call_handler.get_response", side_effect=_fake_get_response):
+            _conversation_loop(
+                handler=handler,
+                history=[],
+                caller="+4930123456789",
+                caller_name=None,
+                started_at=datetime.now(timezone.utc),
+                system_prompt="test",
+                turn_count_ref=[0],
+                uuid="uuid-wait-request",
+                initial_lang=initial_lang,
+            )
+
+        return {"spoken": spoken, "llm_called": llm_called[0], "record_args": record_args}
+
+    def test_einen_moment_opens_another_listening_turn_without_llm(self, tmp_path):
+        out = self._drive(tmp_path, [("Einen Moment", "de"), ("", "de")], hang_up_after=2)
+        assert out["llm_called"] is False, "LLM must never be called for an explicit wait-request turn"
+        assert "Kein Problem, ich warte." in out["spoken"]
+
+    def test_next_record_call_uses_longer_window_then_reverts(self, tmp_path):
+        out = self._drive(
+            tmp_path,
+            [("Einen Moment", "de"), ("", "de"), ("", "de")],
+            hang_up_after=3,
+        )
+        record_args = out["record_args"]
+        assert len(record_args) >= 3
+        first_max = int(record_args[0].split()[1])
+        second_max = int(record_args[1].split()[1])
+        third_max = int(record_args[2].split()[1])
+        assert first_max == _esl._RECORD_MAX_SECS
+        assert second_max == _esl._WAIT_MAX_SECS
+        assert second_max > first_max, "the retry after a wait-request must get a longer window"
+        # One-shot: the THIRD call (unrelated silent turn) must revert to
+        # the normal profile, not stay extended.
+        assert third_max == _esl._RECORD_MAX_SECS
+
+    def test_english_wait_phrase_also_skips_llm(self, tmp_path):
+        # initial_lang="en": conv_lang is only ever updated from a real,
+        # LLM-answered turn (see _caller_language() call site in
+        # esl_call_handler.py) — a short-circuited wait-request turn, like
+        # the existing hesitation-continuation path, always speaks in
+        # whatever conv_lang already was for the call.
+        out = self._drive(
+            tmp_path, [("just a moment", "en"), ("", "en")],
+            hang_up_after=2, initial_lang="en",
+        )
+        assert out["llm_called"] is False
+        assert "No problem, take your time." in out["spoken"]
+
+    def test_weil_alone_does_not_trigger_wait_handling(self, tmp_path):
+        # "weil" is a cut-off-clause marker (general hesitation path), not an
+        # explicit wait-request — must get the generic rotating continuation,
+        # not "Kein Problem, ich warte.", and must not extend the next window.
+        out = self._drive(tmp_path, [("weil", "de"), ("", "de")], hang_up_after=2)
+        assert "Kein Problem, ich warte." not in out["spoken"]
+        second_max = int(out["record_args"][1].split()[1])
+        assert second_max == _esl._RECORD_MAX_SECS

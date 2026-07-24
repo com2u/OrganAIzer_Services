@@ -184,6 +184,15 @@ _FINAL_NOTE_SILENCE_TIMEOUT = max(
 )
 _FINAL_NOTE_TIMEOUT         = _FINAL_NOTE_MAX_SECS + float(config.AI_RECORD_INITIAL_TIMEOUT_SECONDS)
 
+# Adaptive-patience recording profile — used for exactly ONE recording call,
+# immediately after the caller's entire previous turn was a short explicit
+# "give me a moment" request (see _is_explicit_wait_request() below).
+_WAIT_MAX_SECS        = config.AI_RECORD_MAX_SECONDS_AFTER_WAIT
+_WAIT_SILENCE_TIMEOUT = max(
+    1, int(round(config.AI_RECORD_SILENCE_SECONDS_AFTER_WAIT * 1000 / 20))
+)
+_WAIT_TIMEOUT         = _WAIT_MAX_SECS + float(config.AI_RECORD_INITIAL_TIMEOUT_SECONDS)
+
 
 # ── garbage transcription detection ───────────────────────────────────────────
 # Whisper occasionally returns single-character artefacts ("."), pure
@@ -358,6 +367,61 @@ def _is_likely_unfinished_utterance(text: str) -> bool:
         return True
 
     return False
+
+
+# ── explicit wait-request detection (adaptive patience) ──────────────────────
+# A short, curated set distinct from the general hesitation-token set above:
+# the caller's ENTIRE turn (not just a trailing word) must match one of these
+# — an explicit request for a pause, not a mid-sentence cut-off. Deliberately
+# does NOT include "weil"/"wenn" or any other trailing-clause marker: those
+# signal the caller was cut off mid-thought, not that they asked for time —
+# answering a cut-off "weil" with "kein Problem, ich warte" would be a
+# non-sequitur, and granting the longer recording window there would just
+# add latency without matching what the caller actually needs.
+_EXPLICIT_WAIT_PHRASES = frozenset({
+    "moment", "einen moment", "momentchen", "ein momentchen",
+    "sekunde", "eine sekunde", "kurz", "augenblick", "einen augenblick",
+    "ich schaue kurz", "ich schau kurz", "warte", "warten sie",
+    "ich muss kurz überlegen", "ich muss kurz ueberlegen",
+    "lass mich kurz überlegen", "lass mich kurz ueberlegen",
+    "one moment", "just a moment", "give me a second", "give me a moment",
+    "hold on", "let me check", "let me think", "one second", "a second",
+})
+
+
+def _is_explicit_wait_request(text: str) -> bool:
+    """
+    True when the caller's ENTIRE utterance (not a trailing fragment) is a
+    short, explicit request for a pause — "einen Moment", "Sekunde", "ich
+    schaue kurz", "ich muss kurz überlegen" and similar. Used to (a) skip the
+    LLM entirely and (b) grant the next recording call a longer window (see
+    _WAIT_MAX_SECS / _WAIT_SILENCE_TIMEOUT), since the caller just said they
+    need more time.
+
+    Exact whole-utterance match only — e.g. "ich warte schon seit einer
+    Stunde auf eine Antwort" (a COMPLAINT, not a wait-request) must NOT match
+    just because it contains "warte" somewhere in a longer sentence.
+    """
+    if not text:
+        return False
+    cleaned = text.strip().lower().rstrip(" .!?…,;:-–—\"'")
+    if not cleaned:
+        return False
+    return cleaned in _EXPLICIT_WAIT_PHRASES
+
+
+_EXPLICIT_WAIT_ACK: dict[str, str] = {
+    "de": "Kein Problem, ich warte.",
+    "en": "No problem, take your time.",
+}
+
+
+def _explicit_wait_acknowledgement(lang: str) -> str:
+    """Short acknowledgement for an explicit wait-request, distinct from the
+    generic rotating continuation prompt — this one specifically confirms
+    the AI will wait, matching what the caller actually asked for.
+    """
+    return _EXPLICIT_WAIT_ACK.get(lang, _EXPLICIT_WAIT_ACK["de"])
 
 
 # ── continuation prompts (varied) ─────────────────────────────────────────────
@@ -568,6 +632,12 @@ def _conversation_loop(
     # as misunderstood. A safety cap still applies to avoid infinite loops.
     _unfinished_streak = 0
     _MAX_UNFINISHED_STREAK = 3
+    # One-shot: set True for exactly one turn right after an explicit
+    # "give me a moment" request, so the NEXT recording call alone gets a
+    # longer window. Loop-local only — never persisted, never module-global
+    # — and cleared unconditionally after that single record() call
+    # regardless of its outcome (see the record-call block below).
+    _extend_next_record = False
 
     while not handler.is_hung_up:
         # ── check max call duration ───────────────────────────────────────────
@@ -589,13 +659,26 @@ def _conversation_loop(
 
         # ── record caller speech ──────────────────────────────────────────────
         rec_path = audio_dir / f"{uuid}_{turn_count_ref[0]}.wav"
+        if _extend_next_record:
+            # One-shot adaptive-patience profile — see _is_explicit_wait_
+            # request(). Cleared unconditionally right here, regardless of
+            # whether this record() call itself succeeds, so it can never
+            # linger into a second, unrelated turn.
+            _record_max_secs, _record_silence_timeout, _record_timeout = (
+                _WAIT_MAX_SECS, _WAIT_SILENCE_TIMEOUT, _WAIT_TIMEOUT,
+            )
+            _extend_next_record = False
+        else:
+            _record_max_secs, _record_silence_timeout, _record_timeout = (
+                _RECORD_MAX_SECS, _RECORD_SILENCE_TIMEOUT, _RECORD_TIMEOUT,
+            )
         record_arg = (
             f"{_fs_path(rec_path)} "
-            f"{_RECORD_MAX_SECS} "
+            f"{_record_max_secs} "
             f"{_RECORD_SILENCE_THRESH} "
-            f"{_RECORD_SILENCE_TIMEOUT}"
+            f"{_record_silence_timeout}"
         )
-        completed = handler.execute("record", record_arg, timeout=_RECORD_TIMEOUT)
+        completed = handler.execute("record", record_arg, timeout=_record_timeout)
 
         if handler.is_hung_up:
             _cleanup(str(rec_path))
@@ -613,6 +696,7 @@ def _conversation_loop(
         _proc: dict = {
             "text": "", "reply": "", "wav": "", "lang": conv_lang,
             "unfinished": False, "stt_failed": False, "tts_failed": False,
+            "wait_request": False,
         }
         _proc_done = threading.Event()
 
@@ -651,6 +735,19 @@ def _conversation_loop(
             # _proc["lang"] stays at conv_lang: noise carries no language signal.
             if _is_garbage_transcription(t):
                 _proc["text"] = t
+                _proc_done.set()
+                return
+            # Explicit "give me a moment" request (whole turn, not a trailing
+            # fragment) — skip the LLM and let the main loop grant a longer
+            # recording window on the retry instead of the generic
+            # continuation prompt. Checked BEFORE the general unfinished-
+            # utterance check since it is the more specific case (e.g. a bare
+            # "Moment" would also match the general hesitation-token check,
+            # but deserves the adaptive-patience handling here instead).
+            if _is_explicit_wait_request(t):
+                _proc["text"] = t
+                _proc["unfinished"] = True
+                _proc["wait_request"] = True
                 _proc_done.set()
                 return
             # Mid-sentence pause ("…äh", "…und, also,") — skip the LLM and let
@@ -975,10 +1072,19 @@ def _conversation_loop(
             )
             _unfinished_streak += 1
             if _unfinished_streak <= _MAX_UNFINISHED_STREAK:
-                # Rotate the wording so repeated mid-sentence pauses don't get
-                # the identical sentence each time (Priority: reduce repetition).
-                continuation_msg = _rotating_continuation(conv_lang, _unfinished_streak)
-                _speak_and_play(handler, continuation_msg, lang=conv_lang)
+                if _proc.get("wait_request"):
+                    # Explicit "give me a moment" — specific acknowledgement
+                    # (not the generic rotating continuation prompt) and a
+                    # longer window on the very next recording call.
+                    _speak_and_play(
+                        handler, _explicit_wait_acknowledgement(conv_lang), lang=conv_lang
+                    )
+                    _extend_next_record = True
+                else:
+                    # Rotate the wording so repeated mid-sentence pauses don't get
+                    # the identical sentence each time (Priority: reduce repetition).
+                    continuation_msg = _rotating_continuation(conv_lang, _unfinished_streak)
+                    _speak_and_play(handler, continuation_msg, lang=conv_lang)
                 if handler.is_hung_up:
                     break
                 continue

@@ -172,6 +172,21 @@ AI_RECORD_FINAL_NOTE_SILENCE_SECONDS: float = float(
     os.environ.get("AI_RECORD_FINAL_NOTE_SILENCE_SECONDS", "2.6")
 )
 
+# ── Adaptive patience after an explicit "give me a moment" request ──────────
+# When a caller's ENTIRE turn is a short explicit wait-request ("einen
+# Moment", "Sekunde", "ich schaue kurz", "ich muss kurz überlegen" — see
+# esl_call_handler.py's _is_explicit_wait_request()), the SINGLE next
+# recording call uses this longer profile instead of the main loop's default
+# — a caller who just said they need a moment gets a genuinely longer window
+# on the retry, not the same one that likely cut them off in the first
+# place. Applies to exactly one recording call, then reverts automatically.
+AI_RECORD_MAX_SECONDS_AFTER_WAIT: int = int(
+    os.environ.get("AI_RECORD_MAX_SECONDS_AFTER_WAIT", "20")
+)
+AI_RECORD_SILENCE_SECONDS_AFTER_WAIT: float = float(
+    os.environ.get("AI_RECORD_SILENCE_SECONDS_AFTER_WAIT", "4.5")
+)
+
 # Extra slack added to the ESL execute() timeout on top of AI_RECORD_MAX_SECONDS,
 # so FreeSWITCH has time to flush the WAV and return after the recording cap is
 # reached. Increase only if you see "record timed out" warnings on slow links.
