@@ -208,8 +208,13 @@ class TestConsentBeforeFinalNoteAndTransferOnce(_CallDriver):
         assert out["llm_called"] is False  # never reached the LLM
 
         # Stage 2 ordering: consent question spoken before the final-note question.
+        # A brief rotating acknowledgement (see esl_call_handler._rotating_ack)
+        # is now prepended to both — the final-note prompt therefore ENDS WITH
+        # the canonical question text rather than equalling it exactly.
         consent_idx = next(i for i, s in enumerate(out["speak_calls"]) if "aufgezeichnet" in s)
-        note_idx = next(i for i, s in enumerate(out["speak_calls"]) if s == hh.final_note_question())
+        note_idx = next(
+            i for i, s in enumerate(out["speak_calls"]) if s.endswith(hh.final_note_question())
+        )
         assert consent_idx < note_idx
 
         # Transfer (deflect) happens exactly once.
@@ -252,7 +257,9 @@ class TestFinalNoteAskedAtMostOnceWiring(_CallDriver):
         ]
         state = hh.new_state()
         out = self._drive(tmp_path, monkeypatch, transcriptions, handoff_state=state)
-        note_asks = [s for s in out["speak_calls"] if s == hh.final_note_question()]
+        # Ends with the canonical question text — a brief rotating
+        # acknowledgement is now prepended (see esl_call_handler._rotating_ack).
+        note_asks = [s for s in out["speak_calls"] if s.endswith(hh.final_note_question())]
         assert len(note_asks) == 1
         assert state["final_note_asked"] is True
 

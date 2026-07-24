@@ -456,16 +456,40 @@ def _rotating_continuation(lang: str, attempt: int) -> str:
     return pool[(max(1, attempt) - 1) % len(pool)]
 
 
-# ── hesitation-streak → unclear-path bridge (one-time) ────────────────────────
-# Fired exactly once, the moment `_unfinished_streak` first exceeds
-# `_MAX_UNFINISHED_STREAK` and the loop falls through into the shared
-# garbage/unclear-transcription handling. Without this, that fall-through's
-# first message ("Ich höre Ihnen zu…") and second message ("...ich habe Sie
-# nicht ganz verstanden, könnten Sie das wiederholen?") read as the AI having
-# suddenly stopped following a caller who has, in fact, been coherently mid-
-# explanation the entire time — just slowly. This bridges the transition by
-# naming what is actually happening (still gathering their thoughts) and
-# asking for a short summary, instead of implying the audio was unclear.
+# ── brief acknowledgements (bounded, rotating) ────────────────────────────────
+# Same 5 phrases already sanctioned in llm_bridge.py's system prompt ("Vary
+# your acknowledgements: Rotate naturally — 'Verstanden.', 'Alles klar.',
+# 'Okay.', 'Gut.', 'In Ordnung.'") so the deterministic and LLM-generated
+# registers never sound out of sync. Same indexed-modulo rotation as
+# _rotating_continuation above — deliberately no randomization, no added
+# personality, just guarantees the same phrase never repeats back to back.
+_ACK_PHRASES: dict[str, tuple[str, ...]] = {
+    "de": ("Verstanden.", "Alles klar.", "Okay.", "Gut.", "In Ordnung."),
+    "en": ("Understood.", "Alright.", "Okay.", "Got it.", "Sure."),
+}
+
+
+def _rotating_ack(lang: str, attempt: int) -> str:
+    """Return a brief acknowledgement for *lang*, rotating by the 1-based
+    *attempt* so consecutive uses in the same call never repeat back to back.
+    """
+    pool = _ACK_PHRASES.get(lang, _ACK_PHRASES["de"])
+    return pool[(max(1, attempt) - 1) % len(pool)]
+
+
+# ── hesitation-streak → unclear-path bridge (once per call) ──────────────────
+# Fired the first time `_unfinished_streak` exceeds `_MAX_UNFINISHED_STREAK`
+# and the loop falls through into the shared garbage/unclear-transcription
+# handling. Without this, that fall-through's first message ("Ich höre
+# Ihnen zu…") and second message ("...ich habe Sie nicht ganz verstanden,
+# könnten Sie das wiederholen?") read as the AI having suddenly stopped
+# following a caller who has, in fact, been coherently mid-explanation the
+# entire time — just slowly. This bridges the transition by naming what is
+# actually happening (still gathering their thoughts) and asking for a short
+# summary, instead of implying the audio was unclear. Guarded by a call-scope
+# `_bridge_shown` flag in _conversation_loop so it genuinely fires at most
+# once per call — `_unfinished_streak` resets on any real utterance, so
+# without that flag this could recur verbatim later in a long call.
 _HESITATION_STREAK_BRIDGE: dict[str, str] = {
     "de": (
         "Lassen Sie sich Zeit — sagen Sie mir am besten kurz in ein, zwei "
@@ -638,6 +662,12 @@ def _conversation_loop(
     # — and cleared unconditionally after that single record() call
     # regardless of its outcome (see the record-call block below).
     _extend_next_record = False
+    # Whether the one-time hesitation-streak bridge message has already been
+    # spoken this call — see _hesitation_streak_bridge()'s module comment.
+    _bridge_shown = False
+    # How many brief acknowledgements have been spoken this call so far —
+    # feeds _rotating_ack() so consecutive acknowledgements never repeat.
+    _ack_attempt = 0
 
     while not handler.is_hung_up:
         # ── check max call duration ───────────────────────────────────────────
@@ -1114,11 +1144,19 @@ def _conversation_loop(
             # the caller has been coherently trying to say something the whole
             # time, just slowly. Dropping straight into "I didn't catch that"
             # here would wrongly read as the AI suddenly giving up on
-            # understanding them. Bridge once with wording that acknowledges
-            # the hesitation instead, then merge into the shared unclear-turn
-            # counter/farewell bookkeeping below as normal.
-            if _proc.get("unfinished") and _unfinished_streak == _MAX_UNFINISHED_STREAK + 1:
+            # understanding them. Bridge once PER CALL (guarded by
+            # _bridge_shown — a second hesitation run later in the same call
+            # falls through to the normal soft/repeat wording below instead
+            # of repeating the identical bridge sentence) with wording that
+            # acknowledges the hesitation, then merge into the shared
+            # unclear-turn counter/farewell bookkeeping below as normal.
+            if (
+                _proc.get("unfinished")
+                and _unfinished_streak == _MAX_UNFINISHED_STREAK + 1
+                and not _bridge_shown
+            ):
                 _speak_and_play(handler, _hesitation_streak_bridge(conv_lang), lang=conv_lang)
+                _bridge_shown = True
             elif _unclear_count == 1:
                 soft_msg = (
                     "I'm listening — please go ahead."
@@ -1180,7 +1218,14 @@ def _conversation_loop(
             # ── recording consent ─────────────────────────────────────────────
             # IMPORTANT: Escalation consent is always German (legal/compliance requirement).
             # Do not condition on conv_lang — consent wording must be stable and professional.
+            # A brief acknowledgement first — without it, the caller's own
+            # explanation (an ESCALATE: reply is never spoken) is followed by
+            # an abrupt jump straight into the consent question with no sign
+            # the AI registered what they just said. Always German too, to
+            # match the consent question's own register.
+            _ack_attempt += 1
             consent_question = (
+                f"{_rotating_ack('de', _ack_attempt)} "
                 "Bevor ich Sie weiterleite — sind Sie damit einverstanden, "
                 "dass dieses Gespräch zu Qualitätszwecken aufgezeichnet wird? "
                 "Bitte sagen Sie Ja oder Nein."
@@ -1216,7 +1261,16 @@ def _conversation_loop(
             # record_final_note_response() always marks the note collected.
             if handoff_state is not None and human_handoff_dialogue.should_ask_final_note(handoff_state):
                 human_handoff_dialogue.mark_final_note_asked(handoff_state)
-                _speak_and_play(handler, human_handoff_dialogue.final_note_question(), lang="de")
+                # Brief acknowledgement of the caller's consent answer before
+                # moving to the next question — same rotation counter as the
+                # consent question above, so the two never repeat the same
+                # word back to back.
+                _ack_attempt += 1
+                final_note_prompt = (
+                    f"{_rotating_ack('de', _ack_attempt)} "
+                    f"{human_handoff_dialogue.final_note_question()}"
+                )
+                _speak_and_play(handler, final_note_prompt, lang="de")
                 final_note_text = None
                 if not handler.is_hung_up:
                     note_path = _audio_dir() / f"{uuid}_final_note.wav"

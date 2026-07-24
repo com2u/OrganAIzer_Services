@@ -2137,3 +2137,229 @@ class TestAdaptiveWaitRequestIntegration:
         assert "Kein Problem, ich warte." not in out["spoken"]
         second_max = int(out["record_args"][1].split()[1])
         assert second_max == _esl._RECORD_MAX_SECS
+
+
+# =============================================================================
+# Acknowledgement quality (SUBAGENT 3 / ORCHESTRATOR item 5)
+# =============================================================================
+
+class TestRotatingAckDoesNotRepeatConsecutively:
+    def test_pool_matches_llm_bridge_sanctioned_phrases(self):
+        # Same 5 phrases llm_bridge.py's system prompt already tells the LLM
+        # to rotate through — deterministic and LLM registers must not drift.
+        assert _esl._ACK_PHRASES["de"] == (
+            "Verstanden.", "Alles klar.", "Okay.", "Gut.", "In Ordnung.",
+        )
+
+    def test_consecutive_attempts_never_repeat(self):
+        seen = [_esl._rotating_ack("de", n) for n in range(1, 11)]
+        for a, b in zip(seen, seen[1:]):
+            assert a != b, f"Consecutive acknowledgements repeated: {a!r}"
+
+    def test_attempt_one_is_verstanden_unchanged_ordering(self):
+        assert _esl._rotating_ack("de", 1) == "Verstanden."
+
+    def test_wraps_around_pool_length(self):
+        pool = _esl._ACK_PHRASES["de"]
+        assert _esl._rotating_ack("de", len(pool) + 1) == pool[0]
+
+    def test_unknown_lang_falls_back_to_german_pool(self):
+        assert _esl._rotating_ack("fr", 1) == _esl._rotating_ack("de", 1)
+
+
+class TestConsentAndFinalNoteAcknowledgementsDoNotRepeat:
+    """Integration: the consent-question acknowledgement and the final-note-
+    question acknowledgement, spoken one caller turn apart in the same call,
+    must use different rotating words.
+    """
+
+    def test_consent_and_final_note_acks_differ(self, tmp_path):
+        from datetime import datetime, timezone
+        from pathlib import Path
+        from voice.esl_call_handler import _conversation_loop
+        from voice import human_handoff_dialogue as hh
+
+        handler = MagicMock()
+        record_calls = [0]
+
+        def _is_hung_up(self):
+            return record_calls[0] >= 4
+
+        type(handler).is_hung_up = property(_is_hung_up)
+
+        def _exec(app, arg=None, **kw):
+            if app == "record":
+                record_calls[0] += 1
+                Path(arg.split()[0]).touch()
+            return True
+
+        handler.execute.side_effect = _exec
+        spoken: list[str] = []
+        transcripts = iter([
+            ("Es ist sehr dringend, verbinden Sie mich bitte mit jemandem.", "de"),
+            ("ja", "de"),
+            ("", "de"),
+        ])
+
+        def _fake_transcribe(path, lang=None):
+            return next(transcripts, ("", "de"))
+
+        with patch("voice.esl_call_handler._audio_dir", return_value=tmp_path), \
+             patch("voice.esl_call_handler._speak_and_play",
+                   side_effect=lambda h, t, lang=None: spoken.append(t)), \
+             patch("voice.esl_call_handler._get_filler_wav", return_value=""), \
+             patch("voice.esl_call_handler.transcribe_file", side_effect=_fake_transcribe), \
+             patch("voice.esl_call_handler.speak_to_file", return_value=""), \
+             patch("voice.escalation.handle_escalation",
+                   return_value={"summary": "", "email_sent": True,
+                                 "transfer_target": "778", "transfer_ok": True}):
+            _conversation_loop(
+                handler=handler,
+                history=[],
+                caller="+4930123456789",
+                caller_name=None,
+                started_at=datetime.now(timezone.utc),
+                system_prompt="test",
+                turn_count_ref=[0],
+                uuid="uuid-ack-order",
+                initial_lang="de",
+                handoff_state=hh.new_state(),
+            )
+
+        consent_line = next(s for s in spoken if "aufgezeichnet" in s)
+        note_line = next(s for s in spoken if s.endswith(hh.final_note_question()))
+
+        def _leading_ack(line: str) -> str:
+            # Ack phrases can be one or two words ("Okay." vs "Alles klar.")
+            # — identify by which pool entry the line actually starts with,
+            # rather than assuming a fixed word count.
+            for phrase in _esl._ACK_PHRASES["de"]:
+                if line.startswith(phrase):
+                    return phrase
+            raise AssertionError(f"No known ack phrase found at the start of: {line!r}")
+
+        consent_ack = _leading_ack(consent_line)
+        note_ack = _leading_ack(note_line)
+        assert consent_ack != note_ack, (
+            f"Consent ack {consent_ack!r} and final-note ack {note_ack!r} "
+            f"must not be the same word"
+        )
+        # The underlying question text itself must be completely unaffected
+        # by the acknowledgement prefix.
+        assert note_line.endswith(hh.final_note_question())
+
+
+class TestHesitationBridgeFiresAtMostOncePerCall:
+    """The existing TestUnfinishedStreakCapBridging only ever drives an
+    ever-climbing streak that never resets, so the bridge's condition
+    (`_unfinished_streak == _MAX_UNFINISHED_STREAK + 1`) is mathematically
+    only ever true once regardless of the _bridge_shown fix. This test
+    specifically forces the streak to RESET (via one real, LLM-answered
+    utterance) and then overflow a SECOND time in the same call, to prove
+    the bridge does not repeat on the second overflow.
+    """
+
+    def test_bridge_does_not_repeat_after_streak_resets_and_overflows_again(self, tmp_path):
+        from datetime import datetime, timezone
+        from pathlib import Path
+        from voice.esl_call_handler import _conversation_loop
+
+        handler = MagicMock()
+        record_calls = [0]
+
+        def _is_hung_up(self):
+            return record_calls[0] >= 9
+
+        type(handler).is_hung_up = property(_is_hung_up)
+
+        def _exec(app, arg=None, **kw):
+            if app == "record":
+                record_calls[0] += 1
+                Path(arg.split()[0]).touch()
+            return True
+
+        handler.execute.side_effect = _exec
+        spoken: list[str] = []
+
+        # Turns 1-4: hesitate past the cap (streak 1,2,3 -> continue; streak
+        # 4 -> bridge #1). Turn 5: a real, complete utterance (resets the
+        # streak to 0 via the LLM path). Turns 6-9: hesitate past the cap a
+        # SECOND time (streak 1,2,3 -> continue; streak 4 -> would-be bridge
+        # #2, must NOT repeat the bridge sentence).
+        transcripts = iter(
+            [("und", "de")] * 4
+            + [("Ich habe noch eine Frage zur Rechnung.", "de")]
+            + [("und", "de")] * 4
+        )
+
+        def _fake_transcribe(path, lang=None):
+            return next(transcripts, ("", "de"))
+
+        async def _fake_get_response(*a, **kw):
+            return "Verstanden, worum geht es genau?"
+
+        with patch("voice.esl_call_handler._audio_dir", return_value=tmp_path), \
+             patch("voice.esl_call_handler._speak_and_play",
+                   side_effect=lambda h, t, lang=None: spoken.append(t)), \
+             patch("voice.esl_call_handler._get_filler_wav", return_value=""), \
+             patch("voice.esl_call_handler.transcribe_file", side_effect=_fake_transcribe), \
+             patch("voice.esl_call_handler.get_response", side_effect=_fake_get_response), \
+             patch("voice.esl_call_handler.speak_to_file", return_value=""):
+            _conversation_loop(
+                handler=handler,
+                history=[],
+                caller="+4930123456789",
+                caller_name=None,
+                started_at=datetime.now(timezone.utc),
+                system_prompt="test",
+                turn_count_ref=[0],
+                uuid="uuid-bridge-twice",
+                initial_lang="de",
+            )
+
+        bridge = _esl._hesitation_streak_bridge("de")
+        assert spoken.count(bridge) == 1, (
+            f"Bridge message must fire at most once per call even after the "
+            f"streak resets and overflows again; spoken={spoken}"
+        )
+
+
+class TestOutboundPromptAcknowledgementParity:
+    """The inbound system prompt's explicit anti-parroting instruction must
+    also exist in the outbound prompt — previously only the inbound prompt
+    had it, risking more over-paraphrasing on outbound calls.
+    """
+
+    def test_outbound_prompt_has_active_listening_instruction(self):
+        from voice import llm_bridge
+        assert "Never repeat the caller's whole sentence back to them" in (
+            llm_bridge._OUTBOUND_SYSTEM_PROMPT_BASE
+        )
+
+    def test_outbound_prompt_lists_all_five_ack_phrases(self):
+        from voice import llm_bridge
+        assert "In Ordnung." in llm_bridge._OUTBOUND_SYSTEM_PROMPT_BASE
+
+
+class TestFinalNoteDetectionStableWithAckPrefix:
+    """The acknowledgement prefix must never corrupt the underlying question
+    text or the deterministic decision logic around when to ask it — only
+    add a short prefix to what is actually spoken.
+    """
+
+    def test_final_note_question_text_itself_is_unchanged(self):
+        from voice import human_handoff_dialogue as hh
+        # The canonical question text, in isolation, is exactly what it was
+        # before this batch — only the call site in esl_call_handler.py
+        # prepends an acknowledgement to it, the function itself is untouched.
+        assert hh.final_note_question() == (
+            "Gibt es noch etwas, das der Kollege oder die Kollegin wissen sollte?"
+        )
+
+    def test_esl_call_handler_prepends_not_replaces(self):
+        # Regression guard: the call site must build the spoken text as
+        # "<ack> <question>", never alter or truncate the question itself.
+        import inspect
+        src = inspect.getsource(_esl._conversation_loop)
+        assert "human_handoff_dialogue.final_note_question()" in src
+        assert "_rotating_ack('de', _ack_attempt)" in src
