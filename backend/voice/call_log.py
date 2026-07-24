@@ -52,11 +52,17 @@ def record(
     turn_count: int,
     transcript_summary: str = "",
     transcript: Optional[list[dict]] = None,
+    unresolved_concerns: Optional[list[str]] = None,
 ) -> None:
     """
     Append one call record to logs/call_log.jsonl.
     If *transcript* is provided, also archive the full conversation to
     logs/transcripts/<date>_<caller>.jsonl.
+
+    unresolved_concerns: optional short list of caller concerns (see
+        voice/concern_tracking.py) that were still open when the call ended
+        — i.e. never resolved and never handed off — so the after-call log
+        for a NON-escalated call still records that something was left open.
 
     Never raises — logging errors are swallowed so a log failure
     cannot crash an active call.
@@ -73,6 +79,7 @@ def record(
             "duration_seconds": duration_s,
             "turn_count":       turn_count,
             "summary":          transcript_summary,
+            "unresolved_concerns": unresolved_concerns or [],
         }
         with open(_LOG_FILE, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")

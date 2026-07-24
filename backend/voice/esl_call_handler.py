@@ -38,6 +38,7 @@ from utils.lang_tracking import (
     update_conversation_language as _update_conversation_language,
 )
 from voice import call_log, caller_resolution_dialogue, contacts as _contacts, config
+from voice import concern_tracking
 from voice import human_handoff_dialogue
 from voice.audio_bridge import transcribe_file, speak_to_file
 from voice.llm_bridge import get_response, new_history, OUTBOUND_SYSTEM_PROMPT
@@ -537,6 +538,7 @@ def _conversation_loop(
     dialogue_state: Optional[dict] = None,
     identity_state: Optional[dict] = None,
     handoff_state: Optional[dict] = None,
+    concern_state: Optional[list] = None,
 ) -> bool:
     """
     Core record → transcribe → LLM → speak loop.
@@ -710,6 +712,22 @@ def _conversation_loop(
                     _proc_done.set()
                     return
 
+            # ── multi-intent concern tracking (deterministic; see
+            # voice/concern_tracking.py) ──────────────────────────────────────
+            # Runs on every turn that reaches this point (even ones that will
+            # short-circuit into scheduling below) so a second concern raised
+            # in the same breath as an appointment request is still tracked.
+            # Explicit-marker detection only ("und außerdem", "zusätzlich",
+            # ...) — never general sentence-splitting. `_new_concern` is used
+            # below, after the LLM reply is computed, to prepend a brief
+            # acknowledgement — never to change WHAT the LLM answers.
+            _new_concern = None
+            if concern_state is not None:
+                try:
+                    _new_concern = concern_tracking.observe_turn(concern_state, t)
+                except Exception as exc:  # never let concern tracking break a live call
+                    logger.error("Concern tracking error: %s", exc, exc_info=True)
+
             # ── appointment scheduling (deterministic; slots come from Scheduler) ──
             # A per-call state machine handles appointment intent WITHOUT the LLM
             # inventing availability. It returns None when the turn is not part of
@@ -776,7 +794,16 @@ def _conversation_loop(
                     handoff_extra = human_handoff_dialogue.build_prompt_extra(handoff_state)
                 except Exception as exc:  # never let handoff tracking break a live call
                     logger.error("Human handoff dialogue error: %s", exc, exc_info=True)
-            combined_extra_parts = [p for p in (extra, identity_extra, handoff_extra) if p]
+            # ── open secondary concerns reminder (see voice/concern_tracking.py) ──
+            concern_extra = None
+            if concern_state is not None:
+                try:
+                    concern_extra = concern_tracking.build_prompt_extra(concern_state)
+                except Exception as exc:  # never let concern tracking break a live call
+                    logger.error("Concern tracking error: %s", exc, exc_info=True)
+            combined_extra_parts = [
+                p for p in (extra, identity_extra, handoff_extra, concern_extra) if p
+            ]
             combined_extra = "\n".join(combined_extra_parts) if combined_extra_parts else None
             try:
                 r = asyncio.run(
@@ -816,6 +843,21 @@ def _conversation_loop(
                     r = fallback
                     if history and history[-1].get("role") == "assistant":
                         history[-1]["content"] = r
+            # ── multi-intent acknowledgement (deterministic, see
+            # voice/concern_tracking.py) ──────────────────────────────────────
+            # A second concern was just detected via an explicit marker this
+            # turn — prepend a short, fixed acknowledgement so the caller
+            # hears that it was heard and will not be dropped, without
+            # quoting their own words back to them (that doesn't compose
+            # grammatically from an arbitrary fragment) and without an extra
+            # TTS call — folded into the same reply that is about to be
+            # spoken and stored in history.
+            if _new_concern is not None and not r.upper().startswith("ESCALATE:"):
+                open_count = len(concern_tracking.open_concerns(concern_state))
+                ack = concern_tracking.acknowledgement_for_new_concern(open_count, lang=_proc["lang"])
+                r = f"{ack} {r}"
+                if history and history[-1].get("role") == "assistant":
+                    history[-1]["content"] = r
             _proc["reply"] = r
             # Pre-generate TTS in the caller's conversation language, unless the
             # LLM triggered a special action (ESCALATE replies are never spoken
@@ -1099,13 +1141,25 @@ def _conversation_loop(
             # the transfer below (outbound socket, "ext XML default") is the
             # single authoritative handoff.
             rec_file = str(call_rec_path) if call_rec_path and call_rec_path.exists() else None
+            # Other concerns the caller raised earlier in this same call that
+            # are still open (see voice/concern_tracking.py) — captured here,
+            # BEFORE marking them handed_off below, so the escalation email
+            # never silently drops a secondary topic.
+            _open_concern_texts = (
+                [c["text"] for c in concern_tracking.open_concerns(concern_state)]
+                if concern_state is not None else []
+            )
             # Single structured handoff_context dict (never several loose kwargs)
             # — see voice/human_handoff_dialogue.build_handoff_context(). None
             # for calls that never had a handoff_state (outbound calls today).
             handoff_context = (
-                human_handoff_dialogue.build_handoff_context(handoff_state)
+                human_handoff_dialogue.build_handoff_context(
+                    handoff_state, concerns=_open_concern_texts
+                )
                 if handoff_state is not None else None
             )
+            if concern_state is not None:
+                concern_tracking.mark_all_handed_off(concern_state)
             esc_result = handle_escalation(
                 caller, caller_name, history, reason, started_at,
                 call_uuid=uuid, esl_handler=handler,
@@ -1392,6 +1446,11 @@ def handle_esl_call(handler, phone_state: dict) -> None:
     # Per-call appointment dialogue state (in-memory, never persisted, no cross-call
     # leakage). Drives the deterministic Scheduler flow inside _conversation_loop.
     appointment_state = scheduler_dialogue.new_state()
+    # Per-call tracker for multiple caller concerns mentioned in one call
+    # (in-memory, never persisted, no cross-call leakage). See
+    # voice/concern_tracking.py. Present for both inbound and outbound calls,
+    # same as appointment_state.
+    concern_state = concern_tracking.new_state()
     # Per-call caller/customer identification state (in-memory, never persisted).
     # Populated below for inbound calls only — outbound calls already know who
     # they dialled via outbound_ctx. See voice/caller_resolution_dialogue.py.
@@ -1486,6 +1545,7 @@ def handle_esl_call(handler, phone_state: dict) -> None:
                 uuid=uuid, call_rec_path=call_rec_path,
                 initial_lang=greeting_lang,
                 dialogue_state=appointment_state,
+                concern_state=concern_state,
             )
             turn_count = turn_ref[0]
             return
@@ -1569,6 +1629,7 @@ def handle_esl_call(handler, phone_state: dict) -> None:
             dialogue_state=appointment_state,
             identity_state=identity_state,
             handoff_state=handoff_state,
+            concern_state=concern_state,
         )
         turn_count = turn_ref[0]
 
@@ -1586,6 +1647,11 @@ def handle_esl_call(handler, phone_state: dict) -> None:
             handler.hangup()
 
         ended_at = datetime.now(timezone.utc)
+        # Concerns still "open" at this point were never resolved AND never
+        # handed off (escalation marks them handed_off — see the escalation
+        # block above) — surfaces a silently-dropped secondary concern even
+        # for calls that never escalated.
+        _open_concern_texts = [c["text"] for c in concern_tracking.open_concerns(concern_state)]
         call_log.record(
             caller=caller,
             caller_name=caller_name,
@@ -1594,6 +1660,7 @@ def handle_esl_call(handler, phone_state: dict) -> None:
             ended_at=ended_at,
             turn_count=turn_count,
             transcript=history,
+            unresolved_concerns=_open_concern_texts,
         )
         logger.info(
             "ESL call ended: %s  duration=%ds  turns=%d",

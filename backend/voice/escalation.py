@@ -454,6 +454,12 @@ def handle_escalation(
         handoff_lines.append(
             f"Rückrufnummer (nur dieser Anruf): {handoff_context['callback_number_current_call']}"
         )
+    if handoff_context.get("unresolved_concerns"):
+        # Other topics the caller raised earlier in the same call that were
+        # never resolved — see voice/concern_tracking.py. Deterministic, not
+        # dependent on the LLM summary below happening to mention them.
+        concerns_line = "; ".join(handoff_context["unresolved_concerns"])
+        handoff_lines.append(f"Weitere offene Anliegen: {concerns_line}")
     handoff_block = ("\n".join(handoff_lines) + "\n") if handoff_lines else ""
 
     body = (

@@ -284,7 +284,7 @@ def record_final_note_response(state: dict, utterance: Optional[str]) -> None:
     state["final_note_text"] = sanitized.strip()
 
 
-def build_handoff_context(state: dict) -> dict:
+def build_handoff_context(state: dict, concerns: Optional[list[str]] = None) -> dict:
     """
     Single structured summary of this call's handoff dialogue, meant to be
     passed as the one ``handoff_context`` kwarg to
@@ -292,8 +292,13 @@ def build_handoff_context(state: dict) -> dict:
     kwargs. callback_number_current_call is the raw number (current-call-only
     metadata) — callers of THIS function must add it to the escalation email/
     metadata directly and must never forward it into an LLM prompt.
+
+    concerns: optional short list of OTHER unresolved concerns the caller
+        mentioned earlier in the same call (see voice/concern_tracking.py),
+        distinct from reason_text (the reason for THIS handoff itself) — so
+        a secondary topic never silently gets lost in the escalation email.
     """
-    return {
+    ctx = {
         "human_requested": state.get("human_requested", False),
         "category": state.get("category"),
         "reason_known": state.get("reason_known", False),
@@ -305,6 +310,9 @@ def build_handoff_context(state: dict) -> dict:
         "final_note_text": state.get("final_note_text"),
         "callback_number_current_call": state.get("callback_number_current_call"),
     }
+    if concerns:
+        ctx["unresolved_concerns"] = concerns
+    return ctx
 
 
 # ── category helpers ──────────────────────────────────────────────────────────

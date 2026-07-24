@@ -27,6 +27,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from voice import human_handoff_dialogue as hh  # noqa: E402
+from voice import concern_tracking as ct  # noqa: E402
 from voice import config as voice_config  # noqa: E402
 
 
@@ -39,6 +40,7 @@ class _CallDriver:
     def _drive(
         self, tmp_path, monkeypatch, transcriptions,
         handoff_state=None, get_response_replies=None, hangup_after_records=None,
+        concern_state=None,
     ):
         from voice.esl_call_handler import _conversation_loop
 
@@ -115,6 +117,7 @@ class _CallDriver:
                 dialogue_state=None,
                 identity_state=None,
                 handoff_state=handoff_state,
+                concern_state=concern_state,
             )
 
         return {
@@ -429,3 +432,145 @@ class TestHandoffContextNeverReachesLLMSummary:
         # It must be present, and only, in the structured body field.
         assert "Rückrufnummer (nur dieser Anruf)" in captured_email["body"]
         assert raw_callback in captured_email["body"]
+
+
+# =============================================================================
+# Multi-intent concern tracking reaches handoff (see voice/concern_tracking.py)
+# =============================================================================
+
+class TestUnresolvedConcernReachesHandoff(_CallDriver):
+    """
+    A concern raised earlier in the same call (via an explicit multi-intent
+    marker) must survive to the escalation's handoff_context — even though
+    the call ultimately escalates over a DIFFERENT, later reason.
+    """
+
+    def test_unresolved_concern_included_in_handoff_context(self, tmp_path, monkeypatch):
+        transcriptions = [
+            # turn 1: OFFER_HELP action, AND raises a second, unrelated
+            # concern via the explicit "und außerdem" marker.
+            (
+                "Ich möchte einen Mitarbeiter sprechen, es geht um meine Rechnung, "
+                "und außerdem ist unser WLAN sehr langsam.",
+                "de",
+            ),
+            ("Nein, ich möchte trotzdem mit jemandem sprechen.", "de"),  # turn 2: insist -> ESCALATE_NOW
+            ("ja", "de"),   # consent
+            ("", "de"),     # final note (silence)
+        ]
+        concern_state = ct.new_state()
+        out = self._drive(
+            tmp_path, monkeypatch, transcriptions,
+            handoff_state=hh.new_state(),
+            concern_state=concern_state,
+            get_response_replies=["Ich kann das gerne selbst prüfen."],
+        )
+        assert out["escalation_calls"], "handle_escalation was never called"
+        handoff_context = out["escalation_calls"][0]["handoff_context"]
+        assert handoff_context is not None
+        assert handoff_context.get("unresolved_concerns"), (
+            f"Expected the WLAN concern raised in turn 1 to reach the handoff "
+            f"context; got: {handoff_context}"
+        )
+        assert any("wlan" in c.lower() for c in handoff_context["unresolved_concerns"])
+        # Once handed off, the concern must be marked handed_off in the
+        # per-call state — not left "open" (would look duplicated if a
+        # second escalation somehow occurred in the same call).
+        assert all(c["status"] == "handed_off" for c in concern_state)
+
+    def test_no_concern_state_does_not_break_escalation(self, tmp_path, monkeypatch):
+        # concern_state=None (e.g. an older call site that hasn't been
+        # updated) must not break escalation — handoff_context must still be
+        # built, just without an unresolved_concerns key.
+        transcriptions = [
+            ("Ich möchte einen Mitarbeiter sprechen, es geht um meine Rechnung.", "de"),
+            ("Nein, ich möchte trotzdem mit jemandem sprechen.", "de"),
+            ("ja", "de"),
+            ("", "de"),
+        ]
+        out = self._drive(
+            tmp_path, monkeypatch, transcriptions,
+            handoff_state=hh.new_state(),
+            concern_state=None,
+            get_response_replies=["Ich kann das gerne selbst prüfen."],
+        )
+        assert out["escalation_calls"], "handle_escalation was never called"
+        handoff_context = out["escalation_calls"][0]["handoff_context"]
+        assert handoff_context is not None
+        assert "unresolved_concerns" not in handoff_context
+
+
+# =============================================================================
+# Boundary — unresolved concerns render into the deterministic email body
+# =============================================================================
+
+class TestUnresolvedConcernsInEmailBody:
+    def test_unresolved_concerns_line_appears_in_email_body(self, monkeypatch):
+        from voice import escalation as esc
+
+        captured_email = {}
+
+        def _fake_send_smtp(subject, body, recording_path=None):
+            captured_email["subject"] = subject
+            captured_email["body"] = body
+            return True
+
+        handoff_context = {
+            "category": "STANDARD_HUMAN_REQUEST",
+            "reason_text": "Frage zur Rechnung",
+            "final_note_text": None,
+            "callback_number_current_call": None,
+            "unresolved_concerns": ["unser WLAN ist sehr langsam"],
+        }
+
+        with patch("voice.escalation._llm_summary", new=AsyncMock(return_value="Zusammenfassung.")), \
+             patch("voice.escalation._send_via_gmail", return_value=False), \
+             patch("voice.escalation._send_smtp_email", side_effect=_fake_send_smtp), \
+             patch("voice.escalation.transfer_to_extension", return_value=True):
+            _run_in_thread(lambda: esc.handle_escalation(
+                caller="+4915199988877",
+                caller_name=None,
+                transcript=[{"role": "user", "content": "Ich habe eine Frage zur Rechnung."}],
+                escalation_reason="STANDARD_HUMAN_REQUEST",
+                started_at=datetime.now(timezone.utc),
+                call_uuid="uuid-concerns-1",
+                esl_handler=MagicMock(),
+                handoff_context=handoff_context,
+            ))
+
+        assert "Weitere offene Anliegen" in captured_email["body"]
+        assert "unser WLAN ist sehr langsam" in captured_email["body"]
+
+    def test_no_unresolved_concerns_key_omits_the_line(self, monkeypatch):
+        from voice import escalation as esc
+
+        captured_email = {}
+
+        def _fake_send_smtp(subject, body, recording_path=None):
+            captured_email["subject"] = subject
+            captured_email["body"] = body
+            return True
+
+        handoff_context = {
+            "category": "STANDARD_HUMAN_REQUEST",
+            "reason_text": "Frage zur Rechnung",
+            "final_note_text": None,
+            "callback_number_current_call": None,
+        }
+
+        with patch("voice.escalation._llm_summary", new=AsyncMock(return_value="Zusammenfassung.")), \
+             patch("voice.escalation._send_via_gmail", return_value=False), \
+             patch("voice.escalation._send_smtp_email", side_effect=_fake_send_smtp), \
+             patch("voice.escalation.transfer_to_extension", return_value=True):
+            _run_in_thread(lambda: esc.handle_escalation(
+                caller="+4915199988877",
+                caller_name=None,
+                transcript=[{"role": "user", "content": "Ich habe eine Frage zur Rechnung."}],
+                escalation_reason="STANDARD_HUMAN_REQUEST",
+                started_at=datetime.now(timezone.utc),
+                call_uuid="uuid-concerns-2",
+                esl_handler=MagicMock(),
+                handoff_context=handoff_context,
+            ))
+
+        assert "Weitere offene Anliegen" not in captured_email["body"]
