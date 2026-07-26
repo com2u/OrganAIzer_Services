@@ -1,0 +1,45 @@
+# Line endings for files that Linux/WSL executes or parses.
+#
+# Git already stores every file listed below with LF — `git ls-files --eol`
+# reports i/lf across the board. The bug this file fixes is on CHECKOUT: with
+# core.autocrlf=true and no attributes, a fresh clone on Windows writes CRLF
+# into the working tree, and bash then refuses to run the scripts:
+#
+#   render_inbound_dialplan.sh: line 26: $'\r': command not found
+#   render_inbound_dialplan.sh: line 27: set: pipefail: invalid option name
+#
+# That is not hypothetical. tests/test_freeswitch_dialplan_template.py passes
+# in a long-lived working tree whose copy predates the conversion, and fails in
+# a clean worktree of the same commit.
+#
+# Deliberately scoped: no blanket `* text=auto`. Only files that are executed
+# or read on Linux are pinned, so unrelated files keep their current handling
+# and no mass renormalization is triggered.
+
+# Shell scripts — run by bash in WSL, in the backend container, and on the
+# deployment host. A single CR makes them unrunnable.
+*.sh                            text eol=lf
+
+# Container build and runtime inputs.
+Dockerfile                      text eol=lf
+.dockerignore                   text eol=lf
+docker-compose.yml              text eol=lf
+
+# nginx configs, parsed inside Linux containers.
+# Currently frontend/nginx.conf and nginx/conf.d/organizer.conf.
+*.conf                          text eol=lf
+
+# Env templates. These get copied to .env and read by `docker --env-file`,
+# which keeps a trailing CR as part of the value rather than stripping it.
+# Matches .env.example at the repo root, backend/, and frontend/.
+.env.example                    text eol=lf
+
+# FreeSWITCH dialplan and gateway XML, read by FreeSWITCH in WSL. Scoped to
+# this directory on purpose rather than a blanket *.xml, so any Windows-side
+# XML added later is unaffected.
+backend/voice/freeswitch/*.xml  text eol=lf
+
+# Windows-native tooling keeps CRLF.
+*.bat                           text eol=crlf
+*.cmd                           text eol=crlf
+*.ps1                           text eol=crlf
