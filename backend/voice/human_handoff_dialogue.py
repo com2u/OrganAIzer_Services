@@ -255,7 +255,18 @@ def should_ask_final_note(state: dict) -> bool:
     return True
 
 
-def final_note_question() -> str:
+def final_note_question(open_items: Optional[str] = None) -> str:
+    """The pre-transfer "anything else?" question. When *open_items* is given
+    (a spoken German fragment naming the still-open concerns by CATEGORY
+    label — see concern_tracking.open_category_labels(), never raw
+    caller-text snippets, which do not compose grammatically), the question
+    names them instead of asking a blank catch-all.
+    """
+    if open_items:
+        return (
+            f"Gibt es zu Ihren weiteren Anliegen — {open_items} — "
+            "oder sonst noch etwas, das der Kollege oder die Kollegin wissen sollte?"
+        )
     return _FINAL_NOTE_QUESTION
 
 

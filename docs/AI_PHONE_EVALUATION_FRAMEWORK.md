@@ -202,9 +202,15 @@ agent's actual behaviour.
   emergency, credentials/pricing needed, low confidence) it emits exactly
   `ESCALATE: <reason> — <key detail>`, then the caller is **deflected** into the
   COMtrexx waiting room (orbit `778`, then `779`) and hears native orbit music;
-  pickup is **manual**. The escalation consent question and transfer announcement
-  are always spoken in **German**, regardless of the conversation language
-  (pinned by `backend/tests/test_escalation_language.py`).
+  pickup is **manual**. On a **multi-concern call** the system first speaks one
+  deterministic handover-summary sentence (what is settled vs. what the
+  Mitarbeiter takes over, built from `voice/concern_tracking.py` category
+  labels — never raw caller text), and the final-note question names the
+  still-open concerns by category. The handover summary, escalation consent
+  question, and transfer announcement are always spoken in **German**,
+  regardless of the conversation language (pinned by
+  `backend/tests/test_escalation_language.py` and
+  `backend/tests/test_phone_safety.py::TestThreeConcernEnumerationEscalationFlow`).
 - **Poor:** escalates too late (or never) on an emergency; escalates needlessly on a
   routine question; or the transfer fails.
 - **Common failure:** an escalation that tries to **bridge** to the orbit instead of

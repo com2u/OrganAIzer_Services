@@ -2393,7 +2393,131 @@ class TestFinalNoteDetectionStableWithAckPrefix:
     def test_esl_call_handler_prepends_not_replaces(self):
         # Regression guard: the call site must build the spoken text as
         # "<ack> <question>", never alter or truncate the question itself.
+        # The question function may receive the open-concern category labels
+        # (see concern_tracking.open_category_labels) but nothing else may be
+        # interposed between the ack and the question.
         import inspect
         src = inspect.getsource(_esl._conversation_loop)
-        assert "human_handoff_dialogue.final_note_question()" in src
+        assert "human_handoff_dialogue.final_note_question(_open_labels)" in src
         assert "_rotating_ack('de', _ack_attempt)" in src
+
+
+# =============================================================================
+# Live-call regression (2026-07-25 test call): three-concern enumeration
+# opening + outage escalation. Pins the full deterministic sequence — concern
+# capture, spoken handover summary before the consent question, final-note
+# question naming the open categories, and the escalation email receiving the
+# unresolved concerns.
+# =============================================================================
+
+class TestThreeConcernEnumerationEscalationFlow:
+    def test_live_transcript_flow(self, tmp_path):
+        from datetime import datetime, timezone
+        from pathlib import Path
+        from voice.esl_call_handler import _conversation_loop
+        from voice import human_handoff_dialogue as hh
+        from voice import concern_tracking as ct
+
+        handler = MagicMock()
+        record_calls = [0]
+
+        def _is_hung_up(self):
+            return record_calls[0] >= 8  # safety net; escalation exits first
+
+        type(handler).is_hung_up = property(_is_hung_up)
+
+        def _exec(app, arg=None, **kw):
+            if app == "record":
+                record_calls[0] += 1
+                Path(arg.split()[0]).touch()
+            return True
+
+        handler.execute.side_effect = _exec
+        spoken: list[str] = []
+
+        # Caller side of the real transcript, then consent + final note.
+        transcripts = iter([
+            # Verbatim live-call opening, including the STT cut-off "die
+            # ich..." — a paraphrase ending in a modal verb ("...besprechen
+            # wollte.") would trip the unfinished-utterance heuristic and
+            # never reach concern tracking at all.
+            ("Ja, also wie gesagt, das Internet funktioniert nicht seit zwei "
+             "Tagen. Die Telefonanlage muss inspeziert werden. Und ich habe "
+             "eine Frage zur Rechnung von der letzten Woche. Das sind drei "
+             "Dinge, die ich...", "de"),
+            ("Alle Geräte sind betroffen, es ist komplett weg seit gestern "
+             "Morgen.", "de"),
+            ("Die LEDs am Router sind rot und blinken schnell.", "de"),
+            ("Ja, einverstanden.", "de"),          # recording consent
+            ("Nein, das war alles.", "de"),        # final pre-transfer note
+        ])
+
+        def _fake_transcribe(path, lang=None):
+            return next(transcripts, ("", "de"))
+
+        replies = iter([
+            "Verstanden. Beginnen wir mit dem Internet, das ist am dringendsten.",
+            "Alles klar. Welchen Anbieter nutzen Sie und leuchten die LEDs anders als sonst?",
+            "ESCALATE: Internet-Totalausfall – Router-LEDs rot, seit gestern ohne Funktion",
+        ])
+
+        async def _fake_get_response(*a, **kw):
+            return next(replies, "ESCALATE: Fallback")
+
+        concern_state = ct.new_state()
+        esc_mock = MagicMock(return_value={
+            "summary": "", "email_sent": True,
+            "transfer_target": "778", "transfer_ok": True,
+        })
+
+        with patch("voice.esl_call_handler._audio_dir", return_value=tmp_path), \
+             patch("voice.esl_call_handler._speak_and_play",
+                   side_effect=lambda h, t, lang=None: spoken.append(t)), \
+             patch("voice.esl_call_handler._get_filler_wav", return_value=""), \
+             patch("voice.esl_call_handler.transcribe_file", side_effect=_fake_transcribe), \
+             patch("voice.esl_call_handler.get_response", side_effect=_fake_get_response), \
+             patch("voice.esl_call_handler.speak_to_file", return_value=""), \
+             patch("voice.escalation.handle_escalation", esc_mock):
+            escalated = _conversation_loop(
+                handler=handler,
+                history=[],
+                caller="+4966112345678",
+                caller_name=None,
+                started_at=datetime.now(timezone.utc),
+                system_prompt="test",
+                turn_count_ref=[0],
+                uuid="uuid-three-concerns",
+                initial_lang="de",
+                handoff_state=hh.new_state(),
+                concern_state=concern_state,
+            )
+
+        assert escalated is True
+
+        # Both secondary concerns were captured from the enumerated opening.
+        assert len(concern_state) == 2
+        texts = [c["text"].lower() for c in concern_state]
+        assert any("telefonanlage" in t for t in texts)
+        assert any("rechnung" in t for t in texts)
+
+        # Handover summary spoken, categories only, BEFORE the consent question.
+        summary_idx = next(
+            i for i, s in enumerate(spoken)
+            if s.startswith("Ihre weiteren Anliegen")
+        )
+        consent_idx = next(i for i, s in enumerate(spoken) if "aufgezeichnet" in s)
+        assert summary_idx < consent_idx
+        assert "die weiteren Fragen" in spoken[summary_idx]
+        assert "telefonanlage" not in spoken[summary_idx].lower()
+
+        # Final-note question names the open categories, not a blank catch-all.
+        note_line = next(s for s in spoken if "wissen sollte" in s)
+        assert "zu Ihren weiteren Anliegen" in note_line
+        assert "die weiteren Fragen" in note_line
+
+        # Escalation email context received both unresolved concerns, and the
+        # tracker marked them handed off afterwards.
+        handoff_context = esc_mock.call_args.kwargs["handoff_context"]
+        unresolved = handoff_context["unresolved_concerns"]
+        assert len(unresolved) == 2
+        assert all(c["status"] == "handed_off" for c in concern_state)

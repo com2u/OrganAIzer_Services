@@ -87,20 +87,24 @@ def _caller_language(text: str, current: str) -> str:
 # the caller hears during processing.
 # Multiple phrases per language are rotated round-robin so the caller never
 # hears the same phrase twice in a row.
+# Filler texts must be neutral waiting phrases only — never promise-shaped
+# ("Ich schaue das kurz nach.", "Ich bin gleich bei Ihnen."): a filler can be
+# immediately followed by an unspoken ESCALATE + the consent question, so a
+# promised check or return would be a commitment the call never keeps.
 _FILLER_TEXTS: dict[str, list[str]] = {
     "de": [
         "Einen Moment bitte.",
-        "Ich schaue das kurz nach.",
+        "Einen kleinen Moment.",
         "Einen Augenblick.",
         "Kurz Geduld bitte.",
-        "Ich bin gleich bei Ihnen.",
+        "Danke für Ihre Geduld.",
     ],
     "en": [
         "One moment please.",
-        "Let me check that for you.",
+        "Just a second.",
         "Just a moment.",
         "Bear with me.",
-        "Right with you.",
+        "Thanks for your patience.",
     ],
 }
 
@@ -1215,6 +1219,22 @@ def _conversation_loop(
             if handoff_state is not None:
                 human_handoff_dialogue.mark_handoff_confirmed(handoff_state)
 
+            # ── handover summary (multi-concern calls only) ───────────────────
+            # One deterministic sentence — what is settled vs. what the
+            # Mitarbeiter takes over — built from concern-tracker categories
+            # (see voice/concern_tracking.py), spoken BEFORE the consent
+            # question. Deterministic on purpose: the LLM's ESCALATE reply is
+            # never spoken, so it cannot deliver this sentence itself. Always
+            # German, matching the rest of the escalation sequence.
+            if concern_state is not None:
+                try:
+                    _handover_summary = concern_tracking.handover_summary_sentence(concern_state)
+                except Exception as exc:  # never let the summary break an escalation
+                    logger.warning("Handover summary failed: %s", exc)
+                    _handover_summary = None
+                if _handover_summary:
+                    _speak_and_play(handler, _handover_summary, lang="de")
+
             # ── recording consent ─────────────────────────────────────────────
             # IMPORTANT: Escalation consent is always German (legal/compliance requirement).
             # Do not condition on conv_lang — consent wording must be stable and professional.
@@ -1266,9 +1286,24 @@ def _conversation_loop(
                 # consent question above, so the two never repeat the same
                 # word back to back.
                 _ack_attempt += 1
+                # Name the still-open concerns (category labels, see
+                # voice/concern_tracking.py) instead of a blank catch-all —
+                # None/empty keeps the generic question. final_note_labels()
+                # (not open_category_labels()) so that a call where the caller
+                # announced more concerns than we ever tracked falls back to
+                # the open-ended question rather than naming a list that only
+                # sounds complete.
+                try:
+                    _open_labels = (
+                        concern_tracking.final_note_labels(concern_state)
+                        if concern_state is not None else None
+                    )
+                except Exception as exc:  # never let labels break the transfer
+                    logger.warning("Open-concern labels failed: %s", exc)
+                    _open_labels = None
                 final_note_prompt = (
                     f"{_rotating_ack('de', _ack_attempt)} "
-                    f"{human_handoff_dialogue.final_note_question()}"
+                    f"{human_handoff_dialogue.final_note_question(_open_labels)}"
                 )
                 _speak_and_play(handler, final_note_prompt, lang="de")
                 final_note_text = None
