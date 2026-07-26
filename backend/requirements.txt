@@ -12,6 +12,17 @@ python-multipart==0.0.20
 # Environment variables
 python-dotenv==1.0.0
 
+# Executive Agent runtime deps — services/executive_agent_service.py imports
+# BOTH at module level, so the service fails at import time without them.
+# Neither was listed here before: httpx only ever arrived transitively via
+# openai-whisper -> torch -> huggingface_hub (and would vanish the moment the
+# STT stack below is commented out, as that section explicitly invites), and
+# pytz arrived from nothing at all — it was only present in developer venvs
+# by manual installation. Pinned explicitly so a clean
+# `pip install -r requirements.txt` is sufficient to start the backend.
+httpx==0.28.1
+pytz==2026.2
+
 # Text-to-Speech
 # Primary: edge-tts — Microsoft Edge TTS, free, no API key, ~200 ms latency
 edge-tts>=6.1.0
