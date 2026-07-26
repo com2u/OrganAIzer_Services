@@ -238,12 +238,17 @@ pending action so the user can retry:
 
 ```bash
 cd backend
-# Install test deps once:
-pip install pytest pytest-asyncio
+# Install test deps once (pinned — do NOT install pytest/pytest-asyncio ad hoc;
+# requirements-dev.txt pulls in requirements.txt via -r):
+pip install -r requirements-dev.txt
 
 # Run calendar event creation tests:
 python -m pytest tests/test_calendar_event_creation.py -v
 ```
+
+For the **full** suite use `pytest . -q` (not `pytest tests/`) from `backend/`
+under WSL — see `knowledge/procedures/backend-validation.md` for the canonical
+command and why `tests/` alone is incomplete.
 
 Expected output:
 ```

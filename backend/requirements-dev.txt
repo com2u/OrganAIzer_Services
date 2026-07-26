@@ -1,0 +1,27 @@
+# Test-only dependencies. NOT installed in the production image —
+# backend/Dockerfile and start.sh install requirements.txt only, keeping the
+# runtime image lean. Install in dev/CI/test environments with:
+#
+#   pip install -r requirements.txt -r requirements-dev.txt
+#
+# Layers on top of requirements.txt; never duplicate a pin from that file
+# here, or the two can drift and pip will refuse to resolve them together.
+# Anything a shipped module imports at runtime (httpx, pytz, ...) belongs in
+# requirements.txt, not here — even if only the tests happen to exercise it.
+
+-r requirements.txt
+
+# Test runner. Was previously installed ad hoc into the venv and never
+# recorded, so a rebuilt environment silently had no way to run the suite.
+pytest==9.1.1
+
+# Needed for the @pytest.mark.asyncio tests in backend/test_auth.py. Without
+# it pytest does not recognise the marker and every async test errors out
+# with "async def functions are not natively supported".
+#
+# 1.4.0 declares pytest<10,>=8.4, so it is compatible with the pytest 9.1.1
+# pinned above. Do NOT drop to the 0.2x line: those cap pytest below 9 and
+# will silently downgrade the runner. No asyncio_mode config is needed —
+# the repo has no pytest.ini/pyproject.toml, and 1.x defaults to strict
+# mode, which is exactly what test_auth.py's explicit markers expect.
+pytest-asyncio==1.4.0
