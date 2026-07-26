@@ -12,7 +12,6 @@ chat_with_tools is mocked for every test that reaches the LLM loop.
 httpx.AsyncClient is patched to assert it is never called on propose_ paths.
 """
 
-import asyncio
 import json
 import sys
 import os
@@ -20,12 +19,19 @@ from unittest.mock import patch, MagicMock, AsyncMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from tests.conftest import run_isolated
 from services.tool_definitions import TOOLS, CONFIRMATION_REQUIRED_TOOLS
 from services.executive_agent_service import ExecutiveAgent
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    # See tests/conftest.py::run_isolated — plain
+    # asyncio.get_event_loop().run_until_complete(...) depends on the main
+    # thread's legacy "current event loop" state, which anything running
+    # earlier in the same pytest process can clear (production code calling
+    # asyncio.run(), or pytest-asyncio tearing down an async test). That
+    # made every test below fail on collection order alone.
+    return run_isolated(coro)
 
 
 def _llm_response(tool_name: str, args: dict) -> dict:

@@ -426,9 +426,12 @@ class TestOAuthCallback:
 
             mock_storage.return_value.save_tokens.side_effect = capture_save
 
-            import asyncio
+            from tests.conftest import run_isolated
             from api.integrations import _ms_handle_callback
-            asyncio.get_event_loop().run_until_complete(
+            # See tests/conftest.py::run_isolated — must not depend on the
+            # main thread's legacy "current event loop" state, which earlier
+            # tests in the same process can leave cleared.
+            run_isolated(
                 _ms_handle_callback(code="auth-code-xyz", state="default_user")
             )
 

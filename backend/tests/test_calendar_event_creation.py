@@ -16,7 +16,6 @@ Run with:
   python -m pytest tests/test_calendar_event_creation.py -v
 """
 
-import asyncio
 import hashlib
 import json
 import sys
@@ -27,18 +26,22 @@ from unittest.mock import AsyncMock, MagicMock, patch
 # ── Allow importing backend modules without installing as a package ──────────
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from tests.conftest import stub_missing_modules
+# run_isolated: see tests/conftest.py — the async call sites below must not
+# depend on the main thread's legacy "current event loop" state, which
+# anything running earlier in the same pytest process can clear.
+from tests.conftest import run_isolated, stub_missing_modules
 
 # services.executive_agent_service hard-imports httpx and pytz at module
-# level; stub only if genuinely absent, and never leave the stub behind for
-# later-collected test files (see test_no_cross_file_pollution.py).
-with stub_missing_modules("pytz", "httpx"):
-    from services.executive_agent_service import (
-        ExecutiveAgent,
-        ConversationMemory,
-        _CALENDAR_IDEMPOTENCY_STORE,
-        _compute_calendar_request_id,
-    )
+# level. Both are now pinned runtime dependencies in requirements.txt, so
+# this import is plain: if either is genuinely missing the environment is
+# broken and should say so loudly, rather than silently running these tests
+# against a MagicMock stand-in for a real dependency.
+from services.executive_agent_service import (
+    ExecutiveAgent,
+    ConversationMemory,
+    _CALENDAR_IDEMPOTENCY_STORE,
+    _compute_calendar_request_id,
+)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -140,7 +143,7 @@ class TestCalendarEventCreation:
         mock_client.post = AsyncMock(return_value=api_response)
 
         with patch("httpx.AsyncClient", return_value=mock_client):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = run_isolated(
                 agent._exec_create_calendar(action_data, "test_user")
             )
 
@@ -184,7 +187,7 @@ class TestCalendarEventCreation:
         mock_client.post = AsyncMock(return_value=api_response)
 
         with patch("httpx.AsyncClient", return_value=mock_client):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = run_isolated(
                 agent._exec_create_calendar(action_data, "test_user")
             )
 
@@ -217,7 +220,7 @@ class TestCalendarEventCreation:
         mock_client.post = AsyncMock(return_value=api_response)
 
         with patch("httpx.AsyncClient", return_value=mock_client):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = run_isolated(
                 agent._exec_create_calendar(action_data, "test_user")
             )
 
@@ -256,7 +259,7 @@ class TestCalendarEventCreation:
 
         # First request
         with patch("httpx.AsyncClient", return_value=mock_client):
-            result1 = asyncio.get_event_loop().run_until_complete(
+            result1 = run_isolated(
                 agent1._exec_create_calendar(action_data, "test_user")
             )
 
@@ -273,7 +276,7 @@ class TestCalendarEventCreation:
         mock_client2.post = AsyncMock(return_value=api_response)
 
         with patch("httpx.AsyncClient", return_value=mock_client2):
-            result2 = asyncio.get_event_loop().run_until_complete(
+            result2 = run_isolated(
                 agent2._exec_create_calendar(action_data, "test_user")
             )
 
@@ -292,7 +295,7 @@ class TestCalendarEventCreation:
         action_data = _make_action_data()
         # Do NOT set pending action
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = run_isolated(
             agent._exec_create_calendar(action_data, "test_user")
         )
 
